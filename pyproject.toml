@@ -1,0 +1,131 @@
+[project]
+name = "forecast_realtime"
+version = "0.5.3"
+
+description = "A package for producing real-time forecasts"
+
+authors = [
+    {name="Paul Labonne", email="paul.labonne@bankofengland.co.uk"},
+    {name="Sumer Singh", email = "sumer.singh@bankofengland.co.uk"},
+    {name="Harry Li", email = "Harry.Li@bankofengland.co.uk"},
+    {name="Nades Raviraj", email = "Nades.Raviraj@bankofengland.co.uk"},
+]
+
+maintainers = [
+    {name="Paul Labonne", email="paul.labonne@bankofengland.co.uk"},
+    {name="Sumer Singh", email = "sumer.singh@bankofengland.co.uk"},
+]
+
+license = "MIT"
+
+readme = "README.md"
+
+requires-python = ">=3.11"
+
+dependencies = [
+    # forecast-evaluation depends on a compatible statsmodels version.
+    # Remove this constraint when forecast-evaluation resolves the compatibility issue.
+    "statsmodels>=0.14.0,<0.15.0",
+    "forecast_evaluation>=0.1.13",
+    "pandas >= 3.0.3",
+    "scipy >= 1.17.1",
+    "tqdm >= 4.67.3",
+    "numpy >= 2.4.5",
+    "pyarrow >= 24.0.0", # Required by external model wrappers.
+]
+
+[project.optional-dependencies]
+dev = [
+    "pre_commit >= 4.6.0",
+    "pytest >= 9.0.3",
+    "pytest-xdist", # Enables parallel test runs with pytest -n auto.
+    "pydoclint >= 0.9.1",
+    "syrupy >= 5.2.0",
+    "ruff >= 0.15.13",
+]
+
+docs = [
+    "mkdocstrings[python]",
+    "zensical",
+]
+
+notebooks = [
+    "marimo==0.24.0",
+    "news_decomp>=0.0.7",
+]
+
+models = [
+    "bvar >= 0.3.1",
+    "nowcast-midas >= 0.0.1",
+    "scikit-learn >= 1.8.0",
+    "xgboost >= 3.2.0",
+]
+
+ridge = ["scikit-learn >= 1.8.0"]
+lasso = ["scikit-learn >= 1.8.0"]
+elasticnet = ["scikit-learn >= 1.8.0"]
+random_forest = ["scikit-learn >= 1.8.0"]
+xgboost = ["xgboost >= 3.2.0"]
+bvar = ["bvar >= 0.3.1"]
+nowcast_midas = ["nowcast-midas>=0.0.1"]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+forecast_realtime = [
+    "runners/*.r",
+    "runners/*.m",
+    "runners/*.jl",
+    "models/r_scripts/*.r",
+]
+
+[tool.ruff]
+line-length = 90
+target-version = "py311"
+
+[tool.ruff.lint]
+# Enable specific rules
+select = [
+    "E",  # pycodestyle
+    "F",  # pyflakes
+    "I",  # isort
+    "UP", # pyupgrade
+]
+
+# Ignore specific rules
+ignore = [
+    "D100", # Missing docstring in public module
+    "D104", # Missing docstring in public package,
+    "D213",
+    "D211"
+]
+
+# Exclude files and directories
+exclude = [
+    ".git",
+    ".ruff_cache",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.png",
+    "examples/**",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # Ignore unused imports in __init__.py files
+
+[tool.pydoclint]
+style = "numpy"
+arg-type-hints-in-signature = true
+arg-type-hints-in-docstring = true
+skip-checking-short-docstrings = true
+skip-checking-private-functions = true
+skip-checking-raises = true
+allow-init-docstring = true
+check-class-attributes = false
+should-document-star-arguments = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

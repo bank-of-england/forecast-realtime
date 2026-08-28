@@ -1,0 +1,121 @@
+[project]
+site_name = "forecast-realtime"
+site_description = "Use forecast-realtime for running forecasting models in real-time settings."
+site_author = "Bank of England"
+copyright = "Copyright &copy; 2026 Bank of England"
+
+# Set the public documentation URL after deployment.
+# site_url = "https://www.example.com/"
+
+# Set repository links after the GitHub repository becomes public.
+# repo_url = "https://github.com/bank-of-england/forecast-realtime"
+# repo_name = "bank-of-england/forecast-realtime"
+# edit_uri = "edit/main/docs/"
+
+nav = [
+  { "Home" = "index.md" },
+  { "API Reference" = "api.md" },
+  { "Guides" = [
+    { "Usage" = "usage.md" },
+    { "Models" = "models.md" },
+    { "Forecast trees" = "forecast_tree.md" },
+    { "Adding a model" = "adding_a_model.md" },
+    { "Forecasting strategy" = "forecasting_strategy.md" },
+    { "Dummy strategy" = "dummies_strategy.md" },
+    { "Input metric transformations" = "input_metric_transformation_plan.md" },
+  ] },
+  { "Examples" = [
+    { "Demo models" = "notebooks/demo_models.md" },
+  ] },
+  { "About" = "about.md" },
+]
+
+# Load the documentation site's JavaScript.
+extra_javascript = [
+  "javascripts/mathjax.js",
+  { url = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js", async = true },
+]
+
+# Render public Python objects from src/.
+[project.plugins.mkdocstrings]
+enabled = true
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["src"]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+show_source = false
+show_root_heading = true
+members_order = "source"
+show_signature_annotations = true
+
+[project.theme]
+language = "en"
+features = [
+  "content.code.annotate",
+  "content.code.copy",
+  "content.code.select",
+  "content.footnote.tooltips",
+  "content.tabs.link",
+  "content.tooltips",
+  "navigation.footer",
+  "navigation.indexes",
+  "navigation.instant",
+  "navigation.instant.prefetch",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+]
+
+# Optional theme icon used when no image logo is configured.
+# [project.theme.icon]
+# logo = "lucide/activity"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
+[project.markdown_extensions]
+abbr = {}
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+toc.permalink = true
+pymdownx.arithmatex.generic = true
+pymdownx.betterem = {}
+pymdownx.caret = {}
+pymdownx.details = {}
+pymdownx.emoji.emoji_generator = "zensical.extensions.emoji.to_svg"
+pymdownx.emoji.emoji_index = "zensical.extensions.emoji.twemoji"
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.line_spans = "__span"
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.keys = {}
+pymdownx.magiclink = {}
+pymdownx.mark = {}
+pymdownx.smartsymbols = {}
+pymdownx.superfences.custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]
+pymdownx.tabbed.alternate_style = true
+pymdownx.tabbed.combine_header_slug = true
+pymdownx.tasklist.custom_checkbox = true
+pymdownx.tilde = {}
