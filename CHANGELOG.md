@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.5.5
+- Version to test opera system wide workflows are operational.
+
 ## 0.5.4
 - Updated sampling of synthetic data to be reproducible across platforms.
 
