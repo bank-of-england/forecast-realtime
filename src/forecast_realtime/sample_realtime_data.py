@@ -111,12 +111,9 @@ def _generate_synthetic_mixed_frequency_data(
     quarterly_variables = [f"quarterly_{index}" for index in range(1, N + 1)]
 
     rng = np.random.default_rng(seed)
-    latent = rng.multivariate_normal(
-        mean=np.zeros(2 * N),
-        cov=_build_covariance(N, mode),
-        size=len(monthly_dates),
-        check_valid="raise",
-    )
+    covariance = _build_covariance(N, mode)
+    standard_normal = rng.standard_normal((len(monthly_dates), 2 * N))
+    latent = standard_normal @ np.linalg.cholesky(covariance).T
     monthly_levels = (
         pd.DataFrame(
             latent[:, :N], index=monthly_dates, columns=monthly_variables
