@@ -5,9 +5,7 @@ name: OPERA ecosystem pipelines
 
 on:
   pull_request:
-    branches: [main]
-  push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
