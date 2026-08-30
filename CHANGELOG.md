@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.5
+## 0.5.6
 - Version to test opera system wide workflows are operational.
 
 ## 0.5.4
