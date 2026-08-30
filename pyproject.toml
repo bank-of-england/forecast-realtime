@@ -1,6 +1,6 @@
 [project]
 name = "forecast_realtime"
-version = "0.5.5"
+version = "0.5.6"
 
 description = "A package for producing real-time forecasts"
 
