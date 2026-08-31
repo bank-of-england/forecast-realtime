@@ -1,6 +1,6 @@
 function result = forecast_lm(action, varargin)
 % forecast_lm.m
-% Least-squares regression on a time trend plus any regressors.
+% Ordinary least squares (OLS) regression on a time trend plus any regressors.
 
 % fit:      result = forecast_lm('fit', y, X, params)
 % forecast: result = forecast_lm('forecast', model, steps, X, y, params)
@@ -22,6 +22,8 @@ if strcmp(action, 'fit')
     end
 
     % Return a model struct — the runner saves it to model.mat
+    % OLS via QR (numerically stable); solves X*coefficients = Y, i.e.
+    % coefficients = (X'X)^-1 X'Y, where X = design and Y = values.
     result.coefficients = design \ values;
     result.n_obs        = n_obs;
     result.col_names    = y.Properties.VariableNames(1);

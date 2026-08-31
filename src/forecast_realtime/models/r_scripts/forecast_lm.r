@@ -34,6 +34,12 @@ fit <- function(y, X, params) {
   # value ~ time_index + `regressor 1` + `regressor 2` + ...
   predictors <- c("time_index", sprintf("`%s`", regressors))
   model_formula <- as.formula(paste("value ~", paste(predictors, collapse = " + ")))
+  # OLS via QR (numerically stable); lm_model$coefficients holds the named
+  # coefficient vector solving value ~ time_index + regressors, equivalent to
+  # coefficients = (X'X)^-1 X'Y. The whole lm_model object (not just the
+  # coefficients) is stored in estimated_model$model below and saved to
+  # model.rds by the runner, then reused directly by predict() in forecast().
+  #
   # na.action = na.exclude keeps fitted()/residuals() the same length as the
   # input data (padding dropped rows with NA) without affecting the
   # estimated coefficients.

@@ -101,10 +101,13 @@ runtime and must therefore be trusted code. The wrapper protects generated
 command and path literals, but it does not sandbox the external script.
 
 ```python
+from pathlib import Path
+
 import forecast_realtime as rt
 from forecast_realtime import RModel, MATLABModel, JuliaModel
 
-model = RModel("my_model.R", p=4, shrinkage=0.5)
+# Resolve the script relative to this file so it works from any directory
+model = RModel(str(Path(__file__).parent / "my_model.R"), p=4, shrinkage=0.5)
 
 ets = rt.models.RFableETS(error="A", trend="A", season="N")
 arima = rt.models.RFableARIMA(p=1, d=0, q=0)
