@@ -27,16 +27,16 @@ from forecast_realtime import MATLABModel
 _MATLAB_SCRIPT = str(Path(__file__).parent / "forecast_lm.m")
 
 
-def run_demo(*, n_vintages: int = 3, steps: int = 12):
+def run_demo(*, n_vintages: int = 3, steps: int = 12) -> rt.RealTimeModel:
     """Run the MATLAB OLS model over the most recent vintages.
 
     Parameters
     ----------
-    n_vintages : int, optional
+    n_vintages : int
         Number of vintages to back-test, counted back from the latest vintage
         in the data. Each vintage costs one MATLAB fit plus one MATLAB
         forecast, so keep this small. Default 3.
-    steps : int, optional
+    steps : int
         Number of periods to forecast at each vintage. Default 12.
 
     Returns
