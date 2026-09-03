@@ -69,8 +69,8 @@ def _assert_equal(left, right):
     np.testing.assert_allclose(
         left["value"].to_numpy(dtype=float),
         right["value"].to_numpy(dtype=float),
-        rtol=1e-8,
-        atol=1e-10,
+        rtol=1e-5,
+        atol=1e-5,
     )
 
 

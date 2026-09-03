@@ -37,13 +37,13 @@ models implemented in R, MATLAB, or Julia.
 ### Install from PyPI
 
 ```bash
-pip install forecast_realtime
+pip install forecast-realtime
 ```
 
 Install the model integrations you need with an extra:
 
 ```bash
-pip install "forecast_realtime[models]"
+pip install "forecast-realtime[models]"
 ```
 
 ### Set up a development environment
@@ -54,7 +54,7 @@ cd forecast-realtime
 conda create --name forecast-realtime
 conda activate forecast-realtime
 conda install pip
-pip install -e ".[dev,docs]"
+pip install -e ".[dev,docs,notebooks,models]"
 pre-commit install
 ```
 
