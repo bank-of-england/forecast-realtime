@@ -1,4 +1,4 @@
-import importlib.util
+import importlib
 from pathlib import Path
 
 import pytest
@@ -13,6 +13,22 @@ _spec = importlib.util.spec_from_file_location(
 )
 _sample_data = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_sample_data)
+
+
+@pytest.fixture(scope="session")
+def xgboost_available():
+    """Skip tests when XGBoost or its native runtime cannot be loaded."""
+    try:
+        importlib.import_module("xgboost")
+    except ModuleNotFoundError:
+        pytest.skip("xgboost is not installed")
+    except Exception as error:
+        if (
+            error.__class__.__name__ != "XGBoostError"
+            or not error.__class__.__module__.startswith("xgboost")
+        ):
+            raise
+        pytest.skip(f"xgboost native library could not be loaded: {error}")
 
 
 @pytest.fixture(scope="session")

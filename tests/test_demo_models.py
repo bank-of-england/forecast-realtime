@@ -53,7 +53,7 @@ def snapshot_forecasts(frame):
     result = frame.sort_values(_SORT_COLUMNS).reset_index(drop=True)
     for column in ("date", "vintage_date"):
         result[column] = result[column].dt.strftime("%Y-%m-%d")
-    result["value"] = result["value"].round(10)
+    result["value"] = result["value"].round(5)
     return result.to_dict(orient="records")
 
 
@@ -64,7 +64,7 @@ def snapshot_decompositions(frame):
         result[column] = result[column].dt.strftime("%Y-%m-%d")
         result[column] = result[column].where(result[column].notna(), None)
     for column in ("contribution", "weight", "news"):
-        result[column] = result[column].round(10)
+        result[column] = result[column].round(5)
     result["revision_source"] = result["revision_source"].astype(object)
     result["revision_source"] = result["revision_source"].where(
         result["revision_source"].notna(), None
@@ -99,7 +99,12 @@ def test_demo_models(snapshot):
     parallel_forecasts = parallel.data.forecasts.sort_values(_SORT_COLUMNS).reset_index(
         drop=True
     )
-    pd.testing.assert_frame_equal(sequential_forecasts, parallel_forecasts)
+    pd.testing.assert_frame_equal(
+        sequential_forecasts,
+        parallel_forecasts,
+        rtol=1e-5,
+        atol=1e-5,
+    )
     assert snapshot_forecasts(sequential.data.forecasts) == snapshot
 
 

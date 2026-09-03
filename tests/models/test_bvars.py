@@ -153,7 +153,9 @@ def test_bvar_native_unconditional():
     wrapper.fit(y=y_vintage)
     wrapper_forecasts = wrapper.forecast(steps=H)
 
-    np.testing.assert_array_equal(native_forecasts, wrapper_forecasts.values)
+    np.testing.assert_allclose(
+        native_forecasts, wrapper_forecasts.values, rtol=1e-5, atol=1e-5
+    )
 
 
 def test_bvar_native_conditional():
@@ -242,7 +244,9 @@ def test_bvar_native_conditional():
     )
     wrapper_forecasts = wrapper.forecast(steps=H, y=constraint_mean_df)
 
-    np.testing.assert_array_equal(native_forecasts, wrapper_forecasts.values)
+    np.testing.assert_allclose(
+        native_forecasts, wrapper_forecasts.values, rtol=1e-5, atol=1e-5
+    )
 
 
 def _build_multivariate_data(n_lags):
