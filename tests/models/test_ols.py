@@ -10,6 +10,10 @@ from forecast_realtime._utils import build_lagged_design, regularise_missing_row
 from ..schemas import minimal_decomposition_schema
 from .sample_regression import sample_ar2_data, sample_ar4_data, sample_regression_data
 
+# ForecastRidge/ForecastLasso/ForecastElasticNet are referenced at import time
+# (parametrize decorators) and need the ``[models]`` extra.
+pytest.importorskip("sklearn")
+
 
 def test_build_lagged_design_uses_previous_calendar_period():
     """A missing quarter produces a missing lag instead of skipping it."""

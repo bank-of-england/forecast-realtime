@@ -2,6 +2,10 @@
 
 import numpy as np
 import pandas as pd
+import pytest
+
+# examples/demo_models.py builds scikit-learn models from the ``[models]`` extra.
+pytest.importorskip("sklearn")
 
 from examples.demo_models import run_demo
 from tests.models.test_fable import requires_r_fable

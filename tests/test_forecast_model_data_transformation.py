@@ -13,6 +13,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+# TreeRegression imports scikit-learn, installed via the ``[models]`` extra.
+pytest.importorskip("sklearn")
+
 from forecast_realtime._utils import regularise_missing_rows
 from forecast_realtime.forecast_model import ForecastModel, NoUsableTransformedYError
 from forecast_realtime.models.ols import ForecastOLS

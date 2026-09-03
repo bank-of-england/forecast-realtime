@@ -18,6 +18,10 @@ from forecast_realtime.real_time_model import _level_contributions
 
 from .schemas import decomposition_schema
 
+# ForecastRidge/ForecastLasso/ForecastElasticNet are referenced at import time
+# (parametrize decorators) and need scikit-learn from the ``[models]`` extra.
+pytest.importorskip("sklearn")
+
 
 class _RequiredForecastOptionModel(ForecastModel):
     """Require one model option during both fitting and forecasting."""

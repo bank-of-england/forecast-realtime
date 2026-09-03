@@ -35,7 +35,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# ``dev`` is the full contributor set: tooling plus everything the quality
+# checks need, so ``pip install -e ".[dev]"`` is all that is required.
 dev = [
+    "forecast_realtime[docs,notebooks,models]",
     "pre_commit >= 4.6.0",
     "pytest >= 9.0.3",
     "pytest-xdist", # Enables parallel test runs with pytest -n auto.
