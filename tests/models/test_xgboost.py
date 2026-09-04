@@ -1,15 +1,14 @@
 """Tests for XGBoost model."""
 
-import pytest
-
-pytest.importorskip("xgboost")
-
 import numpy as np
 import pandas as pd
+import pytest
 
 import forecast_realtime as rt
 
 from .sample_regression import sample_regression_data
+
+pytestmark = pytest.mark.usefixtures("xgboost_available")
 
 
 def test_xgb_recursive_noiseless():

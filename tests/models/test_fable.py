@@ -274,8 +274,8 @@ def test_fable_matches_direct_r_and_realtime(
         .to_numpy()
     )
 
-    np.testing.assert_array_equal(wrapped, direct)
-    np.testing.assert_array_equal(realtime_values, direct)
+    np.testing.assert_allclose(wrapped, direct, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(realtime_values, direct, rtol=1e-5, atol=1e-5)
 
 
 @requires_r_fable

@@ -12,7 +12,7 @@ R, MATLAB, or Julia) forecasting model.
 ## Installation
 
 ```bash
-pip install forecast_realtime[models]
+pip install "forecast-realtime[models]"
 ```
 
 ## Quick demo

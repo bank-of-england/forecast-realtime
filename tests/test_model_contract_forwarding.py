@@ -1,5 +1,8 @@
 import pytest
 
+# TreeRegression imports scikit-learn, installed via the ``[models]`` extra.
+pytest.importorskip("sklearn")
+
 from forecast_realtime.external_model import ExternalModel
 from forecast_realtime.linear_regression import LinearRegression
 from forecast_realtime.tree_regression import TreeRegression

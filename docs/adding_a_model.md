@@ -4,6 +4,33 @@ This guide explains how to integrate a new forecasting model into the ecosystem.
 
 ---
 
+## Where to Put the Code
+
+Put your model in your own project; you do not need to edit or install files
+inside `forecast_realtime`. To try the Python moving-average example below,
+create this file:
+
+```text
+my_forecast_project/
+└── run_forecast.py
+```
+
+Paste both Python blocks from [Example: Moving Average in
+Python](#example-moving-average-in-python) into `run_forecast.py`: put the
+`MovingAverage` class first and the real-time forecast code after it. Then run:
+
+```console
+cd my_forecast_project
+python run_forecast.py
+```
+
+For a larger project, move the class to a separate module and import it into
+`run_forecast.py`. No package registration is required. Models written in R,
+MATLAB, or Julia need an additional external script; [Where to Put an External
+Script](#where-to-put-an-external-script) explains how to supply its path.
+
+---
+
 ## Interface Requirements
 
 Any model that participates in the ecosystem must subclass `ForecastModel` and provide three things:
@@ -457,6 +484,62 @@ language, but this does not sandbox the script or its parameters. Fable
 
 Your functions never touch `cache_dir`, `saveRDS`, `write_parquet`, or any other file I/O — the runner scripts handle all of that.
 
+### Where to Put an External Script
+
+Save the external script wherever you keep your model code. When you create an
+`RModel`, `MATLABModel`, or `JuliaModel`, pass the path to that script. The
+script does not have to share a directory with your Python file.
+
+Keeping both files together is a simple option. For the R example below, the
+project would look like this:
+
+```text
+my_forecast_project/
+├── run_forecast.py
+└── ma_model.R
+```
+
+Use `ma_model.m` for MATLAB or `ma_model.jl` for Julia. Put the Python wrapper
+code in `run_forecast.py`, and build the script path from that file's location:
+
+```python
+from pathlib import Path
+
+script = Path(__file__).resolve().with_name("ma_model.R")
+model = RModel(str(script), window_size=4)
+```
+
+This path works whether you run `python run_forecast.py` from the project
+directory or invoke the file from elsewhere. A bare path such as
+`"ma_model.R"` depends on the process's current working directory and may fail
+later when R, MATLAB, or Julia starts.
+
+If you keep external scripts in a subdirectory, include it in the path:
+
+```text
+my_forecast_project/
+├── run_forecast.py
+└── models/
+    └── ma_model.R
+```
+
+```python
+script = Path(__file__).resolve().parent / "models" / "ma_model.R"
+model = RModel(str(script), window_size=4)
+```
+
+In a notebook, `__file__` is unavailable. Define the project directory
+explicitly and build the path from it:
+
+```python
+project_dir = Path("/absolute/path/to/my_forecast_project")
+model = RModel(str(project_dir / "ma_model.R"), window_size=4)
+```
+
+The package neither searches for the script nor copies it into your project.
+The examples below use the two-file layout above. For a complete MATLAB wrapper,
+see `tests/models/matlab_scripts/demo_forecast_lm_matlab.py`.
+
 ### Function Signatures Your Script Must Define
 
 | Language | `fit` | `forecast` |
@@ -472,14 +555,17 @@ Your functions never touch `cache_dir`, `saveRDS`, `write_parquet`, or any other
 `RModel` takes the path to your `.R` script plus any keyword arguments you want forwarded as parameters:
 
 ```python
+from pathlib import Path
+
 import forecast_evaluation as fe
 import forecast_realtime as rt
 from forecast_realtime import RModel
 
 forecast_data = fe.ForecastData(load_fer=True)
 
+# Resolve the script relative to this file so it works from any directory
 # "window_size=4" becomes params$window_size inside the R script
-model = RModel("ma_model.R", window_size=4)
+model = RModel(str(Path(__file__).parent / "ma_model.R"), window_size=4)
 rt_model = rt.RealTimeModel(data=forecast_data, models=model)
 rt_model.forecast(
     y_variables=["cpisa"],
@@ -528,14 +614,17 @@ forecast <- function(model, steps, X, y, params) {
 `MATLABModel` takes the path to your `.m` file. The file's stem is called as a MATLAB function:
 
 ```python
+from pathlib import Path
+
 import forecast_evaluation as fe
 import forecast_realtime as rt
 from forecast_realtime import MATLABModel
 
 forecast_data = fe.ForecastData(load_fer=True)
 
+# Resolve the script relative to this file so it works from any directory
 # "window_size=4" becomes params.window_size inside the MATLAB function
-model = MATLABModel("ma_model.m", window_size=4)
+model = MATLABModel(str(Path(__file__).parent / "ma_model.m"), window_size=4)
 rt_model = rt.RealTimeModel(data=forecast_data, models=model)
 rt_model.forecast(
     y_variables=["cpisa"],
@@ -590,14 +679,17 @@ end
 `JuliaModel` takes the path to your `.jl` script:
 
 ```python
+from pathlib import Path
+
 import forecast_evaluation as fe
 import forecast_realtime as rt
 from forecast_realtime import JuliaModel
 
 forecast_data = fe.ForecastData(load_fer=True)
 
+# Resolve the script relative to this file so it works from any directory
 # "window_size=4" becomes params["window_size"] inside the Julia script
-model = JuliaModel("ma_model.jl", window_size=4)
+model = JuliaModel(str(Path(__file__).parent / "ma_model.jl"), window_size=4)
 rt_model = rt.RealTimeModel(data=forecast_data, models=model)
 rt_model.forecast(
     y_variables=["cpisa"],
@@ -659,10 +751,14 @@ expressions and are evaluated by the R process.
 Pass `debug="fit"` or `debug="forecast"` when creating the model:
 
 ```python
-model = RModel("ma_model.R", debug="fit", window_size=4)
+from pathlib import Path
+
+script = str(Path(__file__).parent / "ma_model.R")
+
+model = RModel(script, debug="fit", window_size=4)
 model.fit(y)  # opens an interactive R REPL, calls fit()
 
-model = RModel("ma_model.R", debug="forecast", window_size=4)
+model = RModel(script, debug="forecast", window_size=4)
 model.fit(y)  # runs fit normally
 model.forecast(4)  # opens an interactive R REPL, calls forecast()
 ```

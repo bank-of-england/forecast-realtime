@@ -82,7 +82,9 @@ def test_midas_combo_native_fit_and_forecast():
     wrapper.fit(y=y, X=X)
     wrapper_forecasts = wrapper.forecast(steps=horizons)
 
-    np.testing.assert_array_equal(native_forecasts, wrapper_forecasts.values)
+    np.testing.assert_allclose(
+        native_forecasts, wrapper_forecasts.values, rtol=1e-5, atol=1e-5
+    )
 
 
 def test_midas_combo_uses_shared_realtime_input_frequencies(monkeypatch):

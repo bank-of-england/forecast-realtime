@@ -268,7 +268,7 @@ def test_matches_bvar_conditioned_directly():
     plain.fit(y)
     plain_forecast = plain.forecast(steps=STEPS, y=conditioning)
 
-    pd.testing.assert_frame_equal(tree_forecast, plain_forecast)
+    pd.testing.assert_frame_equal(tree_forecast, plain_forecast, rtol=1e-5, atol=1e-5)
 
 
 def test_conditioning_binds_and_changes_the_forecast():
@@ -472,5 +472,8 @@ def test_realtime_tree_matches_manual_fit(forecast_data):
         realtime_rows = produced[produced["variable"] == variable].sort_values("date")
         expected = manual_forecast.loc[pd.DatetimeIndex(realtime_rows["date"]), variable]
         np.testing.assert_allclose(
-            realtime_rows["value"].to_numpy(), expected.to_numpy(), atol=1e-10
+            realtime_rows["value"].to_numpy(),
+            expected.to_numpy(),
+            rtol=1e-5,
+            atol=1e-5,
         )

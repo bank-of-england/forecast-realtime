@@ -91,7 +91,9 @@ class ExternalModel(ForecastModel):
     Parameters
     ----------
     script : str
-        Path to the external script (e.g. ``my_model.R``).
+        Path to the external script (e.g. ``my_model.R``). Resolved against the
+        current working directory, so build it from ``__file__`` (see Examples)
+        to keep it independent of where Python is launched from.
     debug : str | None
         If ``"fit"`` or ``"forecast"``, drop into an interactive debug REPL
         for that stage instead of running the script. Default None.
@@ -107,7 +109,9 @@ class ExternalModel(ForecastModel):
 
     Examples
     --------
-    >>> model = RModel("my_model.R", p=4, horizon=8)
+    >>> from pathlib import Path
+    >>> script = str(Path(__file__).parent / "my_model.R")
+    >>> model = RModel(script, p=4, horizon=8)
     >>> model.fit(y)
     >>> forecasts = model.forecast(steps=4)
     """

@@ -8,6 +8,9 @@ import forecast_realtime as rt
 
 from .sample_regression import sample_ar2_data, sample_regression_data
 
+# rt.models.RandomForest needs scikit-learn, installed via the ``[models]`` extra.
+pytest.importorskip("sklearn")
+
 
 class _LagEchoEstimator:
     """Stub estimator returning the ``target_lag2`` column of the design row."""

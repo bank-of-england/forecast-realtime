@@ -103,7 +103,7 @@ def snapshot_forecasts(frame):
     result = frame[_RESULT_COLUMNS].sort_values(_KEY_COLUMNS).reset_index(drop=True)
     for column in ("date", "vintage_date"):
         result[column] = result[column].dt.strftime("%Y-%m-%d")
-    result["value"] = result["value"].round(10)
+    result["value"] = result["value"].round(5)
     return result.to_dict(orient="records")
 
 

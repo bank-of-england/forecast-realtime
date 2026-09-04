@@ -19,7 +19,7 @@ def test_public_exports_use_forecast_class_names():
     assert models.ForecastElasticNet.__name__ == "ForecastElasticNet"
 
 
-def test_all_public_exports_are_available_from_star_import():
+def test_all_public_exports_are_available_from_star_import(xgboost_available):
     """Every name in __all__ should be defined and importable."""
     namespace = {}
     exec("from forecast_realtime.models import *", namespace)
@@ -35,7 +35,7 @@ def test_fable_exports_resolve_via_lazy_public_api():
     assert models.RFableARIMA.__name__ == "RFableARIMA"
 
 
-def test_xgboost_public_export_is_available():
+def test_xgboost_public_export_is_available(xgboost_available):
     """XGBoost remains available as a public class."""
 
     assert models.XGBoost.__name__ == "XGBoost"
