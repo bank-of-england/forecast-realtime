@@ -457,6 +457,29 @@ language, but this does not sandbox the script or its parameters. Fable
 
 Your functions never touch `cache_dir`, `saveRDS`, `write_parquet`, or any other file I/O — the runner scripts handle all of that.
 
+### Where to Put Your Script
+
+The path you pass to `RModel`, `MATLABModel` or `JuliaModel` is resolved against
+the **process's current working directory** at construction time, and it is not
+validated there — a path that does not exist fails later with an error from R,
+MATLAB or Julia rather than a Python `FileNotFoundError`. A bare relative path
+like `"ma_model.R"` therefore only works if you happen to launch Python from the
+directory holding the script.
+
+Keep the script next to the Python module that uses it and build the path from
+`__file__`, so it resolves the same way regardless of which directory you run
+from:
+
+```python
+from pathlib import Path
+
+model = RModel(str(Path(__file__).parent / "ma_model.R"), window_size=4)
+```
+
+The examples below follow that pattern. See
+`tests/models/matlab_scripts/demo_forecast_lm_matlab.py` for a complete runnable
+wrapper script.
+
 ### Function Signatures Your Script Must Define
 
 | Language | `fit` | `forecast` |
@@ -472,14 +495,17 @@ Your functions never touch `cache_dir`, `saveRDS`, `write_parquet`, or any other
 `RModel` takes the path to your `.R` script plus any keyword arguments you want forwarded as parameters:
 
 ```python
+from pathlib import Path
+
 import forecast_evaluation as fe
 import forecast_realtime as rt
 from forecast_realtime import RModel
 
 forecast_data = fe.ForecastData(load_fer=True)
 
+# Resolve the script relative to this file so it works from any directory
 # "window_size=4" becomes params$window_size inside the R script
-model = RModel("ma_model.R", window_size=4)
+model = RModel(str(Path(__file__).parent / "ma_model.R"), window_size=4)
 rt_model = rt.RealTimeModel(data=forecast_data, models=model)
 rt_model.forecast(
     y_variables=["cpisa"],
@@ -528,14 +554,17 @@ forecast <- function(model, steps, X, y, params) {
 `MATLABModel` takes the path to your `.m` file. The file's stem is called as a MATLAB function:
 
 ```python
+from pathlib import Path
+
 import forecast_evaluation as fe
 import forecast_realtime as rt
 from forecast_realtime import MATLABModel
 
 forecast_data = fe.ForecastData(load_fer=True)
 
+# Resolve the script relative to this file so it works from any directory
 # "window_size=4" becomes params.window_size inside the MATLAB function
-model = MATLABModel("ma_model.m", window_size=4)
+model = MATLABModel(str(Path(__file__).parent / "ma_model.m"), window_size=4)
 rt_model = rt.RealTimeModel(data=forecast_data, models=model)
 rt_model.forecast(
     y_variables=["cpisa"],
@@ -590,14 +619,17 @@ end
 `JuliaModel` takes the path to your `.jl` script:
 
 ```python
+from pathlib import Path
+
 import forecast_evaluation as fe
 import forecast_realtime as rt
 from forecast_realtime import JuliaModel
 
 forecast_data = fe.ForecastData(load_fer=True)
 
+# Resolve the script relative to this file so it works from any directory
 # "window_size=4" becomes params["window_size"] inside the Julia script
-model = JuliaModel("ma_model.jl", window_size=4)
+model = JuliaModel(str(Path(__file__).parent / "ma_model.jl"), window_size=4)
 rt_model = rt.RealTimeModel(data=forecast_data, models=model)
 rt_model.forecast(
     y_variables=["cpisa"],
@@ -659,10 +691,14 @@ expressions and are evaluated by the R process.
 Pass `debug="fit"` or `debug="forecast"` when creating the model:
 
 ```python
-model = RModel("ma_model.R", debug="fit", window_size=4)
+from pathlib import Path
+
+script = str(Path(__file__).parent / "ma_model.R")
+
+model = RModel(script, debug="fit", window_size=4)
 model.fit(y)  # opens an interactive R REPL, calls fit()
 
-model = RModel("ma_model.R", debug="forecast", window_size=4)
+model = RModel(script, debug="forecast", window_size=4)
 model.fit(y)  # runs fit normally
 model.forecast(4)  # opens an interactive R REPL, calls forecast()
 ```
