@@ -264,7 +264,7 @@ class ForecastMultiMIDAS(ForecastModel):
         for _, row in forecasts_df.iterrows():
             h = int(row["horizon"])
             if h < steps:
-                forecasts[h, 0] = row["forecast"]
+                forecasts[h, 0] = row["value"]
                 dates[h] = pd.Timestamp(row["date"])
 
         return pd.DataFrame(

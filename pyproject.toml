@@ -58,10 +58,13 @@ notebooks = [
 ]
 
 models = [
-    "bvar >= 0.3.1",
-    "nowcast-midas >= 0.0.1",
-    "scikit-learn >= 1.8.0",
-    "xgboost >= 3.2.0",
+    "forecast_realtime[ridge]",
+    "forecast_realtime[lasso]",
+    "forecast_realtime[elasticnet]",
+    "forecast_realtime[random_forest]",
+    "forecast_realtime[xgboost]",
+    "forecast_realtime[bvar]",
+    "forecast_realtime[nowcast_midas]",
 ]
 
 ridge = ["scikit-learn >= 1.8.0"]
@@ -70,7 +73,7 @@ elasticnet = ["scikit-learn >= 1.8.0"]
 random_forest = ["scikit-learn >= 1.8.0"]
 xgboost = ["xgboost >= 3.2.0"]
 bvar = ["bvar >= 0.3.1"]
-nowcast_midas = ["nowcast-midas>=0.0.1"]
+nowcast_midas = ["nowcast-midas>=0.0.2"]
 
 [build-system]
 requires = ["setuptools"]

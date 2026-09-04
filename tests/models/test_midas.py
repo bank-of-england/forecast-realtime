@@ -60,7 +60,7 @@ def test_midas_native_fit_and_forecast():
     for _, row in native_forecasts_df.iterrows():
         h = int(row["horizon"])
         if h < 4:
-            native_forecasts[h, 0] = row["forecast"]
+            native_forecasts[h, 0] = row["value"]
 
     # --- ForecastMIDAS wrapper ---
     wrapper = rt.models.ForecastMIDAS(
