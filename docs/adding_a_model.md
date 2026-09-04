@@ -4,6 +4,33 @@ This guide explains how to integrate a new forecasting model into the ecosystem.
 
 ---
 
+## Where to Put the Code
+
+Put your model in your own project; you do not need to edit or install files
+inside `forecast_realtime`. To try the Python moving-average example below,
+create this file:
+
+```text
+my_forecast_project/
+└── run_forecast.py
+```
+
+Paste both Python blocks from [Example: Moving Average in
+Python](#example-moving-average-in-python) into `run_forecast.py`: put the
+`MovingAverage` class first and the real-time forecast code after it. Then run:
+
+```console
+cd my_forecast_project
+python run_forecast.py
+```
+
+For a larger project, move the class to a separate module and import it into
+`run_forecast.py`. No package registration is required. Models written in R,
+MATLAB, or Julia need an additional external script; [Where to Put an External
+Script](#where-to-put-an-external-script) explains how to supply its path.
+
+---
+
 ## Interface Requirements
 
 Any model that participates in the ecosystem must subclass `ForecastModel` and provide three things:
@@ -457,28 +484,61 @@ language, but this does not sandbox the script or its parameters. Fable
 
 Your functions never touch `cache_dir`, `saveRDS`, `write_parquet`, or any other file I/O — the runner scripts handle all of that.
 
-### Where to Put Your Script
+### Where to Put an External Script
 
-The path you pass to `RModel`, `MATLABModel` or `JuliaModel` is resolved against
-the **process's current working directory** at construction time, and it is not
-validated there — a path that does not exist fails later with an error from R,
-MATLAB or Julia rather than a Python `FileNotFoundError`. A bare relative path
-like `"ma_model.R"` therefore only works if you happen to launch Python from the
-directory holding the script.
+Save the external script wherever you keep your model code. When you create an
+`RModel`, `MATLABModel`, or `JuliaModel`, pass the path to that script. The
+script does not have to share a directory with your Python file.
 
-Keep the script next to the Python module that uses it and build the path from
-`__file__`, so it resolves the same way regardless of which directory you run
-from:
+Keeping both files together is a simple option. For the R example below, the
+project would look like this:
+
+```text
+my_forecast_project/
+├── run_forecast.py
+└── ma_model.R
+```
+
+Use `ma_model.m` for MATLAB or `ma_model.jl` for Julia. Put the Python wrapper
+code in `run_forecast.py`, and build the script path from that file's location:
 
 ```python
 from pathlib import Path
 
-model = RModel(str(Path(__file__).parent / "ma_model.R"), window_size=4)
+script = Path(__file__).resolve().with_name("ma_model.R")
+model = RModel(str(script), window_size=4)
 ```
 
-The examples below follow that pattern. See
-`tests/models/matlab_scripts/demo_forecast_lm_matlab.py` for a complete runnable
-wrapper script.
+This path works whether you run `python run_forecast.py` from the project
+directory or invoke the file from elsewhere. A bare path such as
+`"ma_model.R"` depends on the process's current working directory and may fail
+later when R, MATLAB, or Julia starts.
+
+If you keep external scripts in a subdirectory, include it in the path:
+
+```text
+my_forecast_project/
+├── run_forecast.py
+└── models/
+    └── ma_model.R
+```
+
+```python
+script = Path(__file__).resolve().parent / "models" / "ma_model.R"
+model = RModel(str(script), window_size=4)
+```
+
+In a notebook, `__file__` is unavailable. Define the project directory
+explicitly and build the path from it:
+
+```python
+project_dir = Path("/absolute/path/to/my_forecast_project")
+model = RModel(str(project_dir / "ma_model.R"), window_size=4)
+```
+
+The package neither searches for the script nor copies it into your project.
+The examples below use the two-file layout above. For a complete MATLAB wrapper,
+see `tests/models/matlab_scripts/demo_forecast_lm_matlab.py`.
 
 ### Function Signatures Your Script Must Define
 
