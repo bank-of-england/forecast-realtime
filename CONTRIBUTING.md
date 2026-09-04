@@ -34,6 +34,7 @@ The hooks run:
 - API documentation generation in `docs/api.md`
 - Notebook documentation freshness checks
 - NumPy-style docstring checks with `pydoclint`
+- A Zensical documentation build
 - The full pytest suite in parallel
 
 To run the same checks without making a commit:
