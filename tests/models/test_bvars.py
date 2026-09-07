@@ -1,4 +1,5 @@
-# Load ForecastData with FER dataset
+"""Tests for ForecastBVAR using deterministic synthetic data."""
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -8,7 +9,13 @@ pytest.importorskip("bvar")
 import bvar as bv
 import forecast_evaluation as fe
 
-forecast_data = fe.ForecastData(load_fer=True)
+import forecast_realtime as rt
+
+sample_data = rt.generate_synthetic_data(
+    N=2,
+    first_period="2015-01-31",
+    endpoint="2024-12-31",
+)
 
 
 def test_bvar_declares_missing_values_unsupported():
@@ -104,11 +111,11 @@ def test_bvar_native_unconditional():
     """Test that native bvar and ForecastBVAR wrapper produce identical results."""
     import forecast_realtime as rt
 
-    variables = ["cpisa", "gdpkp"]
-    outturns = forecast_data.outturns.copy()
+    variables = ["quarterly_1", "quarterly_2"]
+    outturns = sample_data.query("metric == 'levels'").copy()
     outturns = outturns[outturns["variable"].isin(variables)]
 
-    vintage = pd.Timestamp("2015-03-31")
+    vintage = pd.Timestamp("2024-06-30")
     y_vintage = outturns[outturns["vintage_date"] <= vintage].copy()
     y_vintage = y_vintage.sort_values("vintage_date", ascending=False).drop_duplicates(
         subset=["date", "variable"], keep="first"
@@ -163,15 +170,11 @@ def test_bvar_native_conditional():
     ForecastBVAR wrapper produce identical conditional results."""
     import forecast_realtime as rt
 
-    variables = ["cpisa", "gdpkp"]
-    outturns = forecast_data.outturns.copy()
+    variables = ["quarterly_1", "quarterly_2"]
+    outturns = sample_data.query("metric == 'levels'").copy()
     outturns = outturns[outturns["variable"].isin(variables)]
-    forecasts = forecast_data.forecasts.copy()
-    forecasts = forecasts[
-        (forecasts["variable"].isin(variables)) & (forecasts["source"] == "mpr")
-    ]
 
-    vintage = pd.Timestamp("2015-03-31")
+    vintage = pd.Timestamp("2024-06-30")
 
     # Training data
     y_vintage = outturns[outturns["vintage_date"] <= vintage].copy()
@@ -181,24 +184,16 @@ def test_bvar_native_conditional():
     y_vintage = y_vintage.pivot(index="date", columns="variable", values="value")
     y_vintage = y_vintage[y_vintage.index < vintage].dropna()
 
-    # Conditioning forecasts
-    fcst_vintage = forecasts[forecasts["vintage_date"] <= vintage].copy()
-    fcst_vintage = fcst_vintage.sort_values(
-        "vintage_date", ascending=False
-    ).drop_duplicates(subset=["date", "variable"], keep="first")
-    fcst_pivot = fcst_vintage.pivot(index="date", columns="variable", values="value")
-    fcst_pivot = fcst_pivot[fcst_pivot.index >= vintage]
-
-    # Build conditioning matrix: cpisa conditioned for 2 steps, gdpkp for 1
+    # Build deterministic conditioning paths: quarterly_1 for two steps and
+    # quarterly_2 for one.
     H = 4
     y_columns = list(y_vintage.columns)
     constraint_mean = np.full((H, len(y_columns)), np.nan)
-    conditioning = {"cpisa": 1, "gdpkp": 0}
+    conditioning = {"quarterly_1": 1, "quarterly_2": 0}
     for var, steps_ahead in conditioning.items():
         adjusted = steps_ahead + 1
         col_idx = y_columns.index(var)
-        if var in fcst_pivot.columns:
-            constraint_mean[:adjusted, col_idx] = fcst_pivot[var].values[:adjusted]
+        constraint_mean[:adjusted, col_idx] = y_vintage[var].iloc[-1]
 
     # --- Native bvar ---
     prior = bv.NaturalConjugate(minnesota=True, soc=True, sur=True)
@@ -240,7 +235,11 @@ def test_bvar_native_conditional():
     constraint_mean_df = pd.DataFrame(
         constraint_mean,
         columns=y_vintage.columns,
-        index=pd.date_range(start=vintage, periods=H, freq="QE"),
+        index=pd.date_range(
+            start=y_vintage.index[-1] + pd.offsets.QuarterEnd(),
+            periods=H,
+            freq="QE",
+        ),
     )
     wrapper_forecasts = wrapper.forecast(steps=H, y=constraint_mean_df)
 

@@ -309,18 +309,24 @@ class MovingAverage(ForecastModel):
 import forecast_evaluation as fe
 import forecast_realtime as rt
 
-forecast_data = fe.ForecastData(load_fer=True)
+sample_data = rt.generate_synthetic_data(
+    N=2,
+    first_period="2015-01-31",
+    endpoint="2024-12-31",
+)
+forecast_data = fe.NowcastData(outturns_data=sample_data)
 
 ma_model = MovingAverage(window_size=4)
 rt_model = rt.RealTimeModel(data=forecast_data, models=ma_model)
 
 # Run forecasts (optionally with decomposition)
 rt_model.forecast(
-    y_variables=["cpisa"],
-    data_transformation={"cpisa": "pop"},
-    steps=8,
+    y_variables=["quarterly_1"],
+    data_transformation={"quarterly_1": "pop"},
+    steps=2,
     label="MA(4)",
-    first_vintage="2015-01-01",
+    first_vintage="2024-01-31",
+    last_vintage="2024-06-30",
     decomp=False,  # Set to True to enable decomposition
 )
 
@@ -428,18 +434,24 @@ class SimpleOLS(ForecastModel):
 import forecast_evaluation as fe
 import forecast_realtime as rt
 
-forecast_data = fe.ForecastData(load_fer=True)
+sample_data = rt.generate_synthetic_data(
+    N=2,
+    first_period="2015-01-31",
+    endpoint="2024-12-31",
+)
+forecast_data = fe.NowcastData(outturns_data=sample_data)
 
 ols_model = SimpleOLS(fit_intercept=True)
 rt_model = rt.RealTimeModel(data=forecast_data, models=ols_model)
 
 rt_model.forecast(
-    y_variables=["cpisa"],
-    X_variables=["gdpkp", "unemp"],
-    data_transformation={"cpisa": "pop", "gdpkp": "pop", "unemp": "levels"},
-    steps=12,
+    y_variables=["quarterly_1"],
+    X_variables=["quarterly_2"],
+    data_transformation={"quarterly_1": "pop", "quarterly_2": "pop"},
+    steps=2,
     label="OLS",
-    first_vintage="2015-01-01",
+    first_vintage="2024-01-31",
+    last_vintage="2024-06-30",
     X_imputation="last",
     decomp=True,  # Enable decomposition
 )
@@ -561,18 +573,24 @@ import forecast_evaluation as fe
 import forecast_realtime as rt
 from forecast_realtime import RModel
 
-forecast_data = fe.ForecastData(load_fer=True)
+sample_data = rt.generate_synthetic_data(
+    N=2,
+    first_period="2015-01-31",
+    endpoint="2024-12-31",
+)
+forecast_data = fe.NowcastData(outturns_data=sample_data)
 
 # Resolve the script relative to this file so it works from any directory
 # "window_size=4" becomes params$window_size inside the R script
 model = RModel(str(Path(__file__).parent / "ma_model.R"), window_size=4)
 rt_model = rt.RealTimeModel(data=forecast_data, models=model)
 rt_model.forecast(
-    y_variables=["cpisa"],
-    data_transformation={"cpisa": "pop"},
-    steps=8,
+    y_variables=["quarterly_1"],
+    data_transformation={"quarterly_1": "pop"},
+    steps=2,
     label="MA(4) R",
-    first_vintage="2015-01-01",
+    first_vintage="2024-01-31",
+    last_vintage="2024-06-30",
 )
 ```
 
@@ -620,18 +638,24 @@ import forecast_evaluation as fe
 import forecast_realtime as rt
 from forecast_realtime import MATLABModel
 
-forecast_data = fe.ForecastData(load_fer=True)
+sample_data = rt.generate_synthetic_data(
+    N=2,
+    first_period="2015-01-31",
+    endpoint="2024-12-31",
+)
+forecast_data = fe.NowcastData(outturns_data=sample_data)
 
 # Resolve the script relative to this file so it works from any directory
 # "window_size=4" becomes params.window_size inside the MATLAB function
 model = MATLABModel(str(Path(__file__).parent / "ma_model.m"), window_size=4)
 rt_model = rt.RealTimeModel(data=forecast_data, models=model)
 rt_model.forecast(
-    y_variables=["cpisa"],
-    data_transformation={"cpisa": "pop"},
-    steps=8,
+    y_variables=["quarterly_1"],
+    data_transformation={"quarterly_1": "pop"},
+    steps=2,
     label="MA(4) MATLAB",
-    first_vintage="2015-01-01",
+    first_vintage="2024-01-31",
+    last_vintage="2024-06-30",
 )
 ```
 
@@ -685,18 +709,24 @@ import forecast_evaluation as fe
 import forecast_realtime as rt
 from forecast_realtime import JuliaModel
 
-forecast_data = fe.ForecastData(load_fer=True)
+sample_data = rt.generate_synthetic_data(
+    N=2,
+    first_period="2015-01-31",
+    endpoint="2024-12-31",
+)
+forecast_data = fe.NowcastData(outturns_data=sample_data)
 
 # Resolve the script relative to this file so it works from any directory
 # "window_size=4" becomes params["window_size"] inside the Julia script
 model = JuliaModel(str(Path(__file__).parent / "ma_model.jl"), window_size=4)
 rt_model = rt.RealTimeModel(data=forecast_data, models=model)
 rt_model.forecast(
-    y_variables=["cpisa"],
-    data_transformation={"cpisa": "pop"},
-    steps=8,
+    y_variables=["quarterly_1"],
+    data_transformation={"quarterly_1": "pop"},
+    steps=2,
     label="MA(4) Julia",
-    first_vintage="2015-01-01",
+    first_vintage="2024-01-31",
+    last_vintage="2024-06-30",
 )
 ```
 

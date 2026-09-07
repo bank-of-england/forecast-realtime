@@ -26,6 +26,18 @@ def test_build_lagged_design_uses_previous_calendar_period():
     assert pd.isna(design.loc[pd.Timestamp("2020-09-30"), "target_lag1"])
 
 
+def test_build_lagged_design_warns_for_unknown_X_lags_key():
+    index = pd.date_range("2020-01-31", periods=3, freq="ME")
+    y = pd.DataFrame({"target": [1.0, 2.0, 3.0]}, index=index)
+    X = pd.DataFrame({"driver": [4.0, 5.0, 6.0]}, index=index)
+
+    with pytest.warns(UserWarning, match=r"absent from X: \['typo'\]"):
+        design = build_lagged_design(y, X, y_lags=0, X_lags={"driver": 1, "typo": 2})
+
+    assert "driver_lag1" in design
+    assert not any(column.startswith("typo") for column in design.columns)
+
+
 def test_ols_scaling():
     """Test basic recursive fit with synthetic data."""
     y_train, X_train, y_test, X_test, true_coef = sample_regression_data(

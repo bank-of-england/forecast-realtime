@@ -19,6 +19,11 @@ def test_public_exports_use_forecast_class_names():
     assert models.ForecastElasticNet.__name__ == "ForecastElasticNet"
 
 
+def test_dir_lists_public_model_exports():
+    """Interactive discovery should expose the lazy public model names."""
+    assert set(models.__all__) <= set(dir(models))
+
+
 def test_all_public_exports_are_available_from_star_import(xgboost_available):
     """Every name in __all__ should be defined and importable."""
     namespace = {}

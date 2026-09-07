@@ -1,15 +1,18 @@
 """Snapshot regression for the compact model demonstration."""
 
+import importlib
+
 import numpy as np
 import pandas as pd
 import pytest
 
-# examples/demo_models.py builds scikit-learn models from the ``[models]`` extra.
-pytest.importorskip("sklearn")
-
-from examples.demo_models import run_demo
-from tests.models.test_fable import requires_r_fable
 from tests.schemas import decomposition_schema
+
+# The demo builds models from the complete ``[models]`` extra.
+for dependency in ("sklearn", "bvar", "nowcast_midas"):
+    pytest.importorskip(dependency)
+
+run_demo = pytest.importorskip("forecast_realtime.examples.demo_models").run_demo
 
 _SORT_COLUMNS = [
     "date",
@@ -48,6 +51,13 @@ _DECOMPOSITION_KEY_COLUMNS = [
 ]
 
 
+def test_packaged_example_modules_import():
+    """Every shipped example module is importable without external runtimes."""
+    for module in ("demo_models", "demo_models_fable", "midas_bvar_tree"):
+        imported = importlib.import_module(f"forecast_realtime.examples.{module}")
+        assert imported.__package__ == "forecast_realtime.examples"
+
+
 def snapshot_forecasts(frame):
     """Normalise the demo's forecast records for a deterministic snapshot."""
     result = frame.sort_values(_SORT_COLUMNS).reset_index(drop=True)
@@ -72,7 +82,14 @@ def snapshot_decompositions(frame):
     return result.to_dict(orient="records")
 
 
-@requires_r_fable
+def test_demo_models_runs():
+    """The default demo includes its Python model results."""
+    result = run_demo(N_vintages=2)
+
+    sources = set(result.data.forecasts["source"])
+    assert {"Big OLS", "Small OLS", "Ridge", "LASSO", "Elastic Net"} <= sources
+
+
 def test_demo_models(snapshot):
     """The demo is stable and parallel execution matches sequential execution."""
     sequential = run_demo(N_vintages=6)
@@ -84,7 +101,6 @@ def test_demo_models(snapshot):
         "Ridge",
         "LASSO",
         "Elastic Net",
-        "Fable ARIMA",
         "Bridge OLS",
         "MIDAS",
         "BVAR",
@@ -108,10 +124,13 @@ def test_demo_models(snapshot):
     assert snapshot_forecasts(sequential.data.forecasts) == snapshot
 
 
-@requires_r_fable
 def test_demo_models_decompositions(snapshot):
     """Demo decompositions reconstruct native forecasts and revisions."""
-    result = run_demo(N_vintages=2, decomp=True, reconstruct_levels=False)
+    result = run_demo(
+        N_vintages=2,
+        decomp=True,
+        reconstruct_levels=False,
+    )
 
     assert result.decompositions is not None
     assert not result.decompositions.empty

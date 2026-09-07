@@ -1,16 +1,18 @@
 # Usage
 
-The snippets below use this shared setup. Each model is run for every data
-vintage by the same `RealTimeModel` instance.
+The snippets below use the package's simulated mixed-frequency real-time data.
+Each example creates a fresh `NowcastData` and `RealTimeModel` so its forecasts
+do not affect the next example.
 
 ```python
 import forecast_evaluation as fe
 import forecast_realtime as rt
 
-forecast_data = fe.ForecastData(load_fer=True)
-model_1 = rt.models.ForecastOLS(label="OLS")
-model_2 = rt.models.ForecastRidge(label="Ridge", cv=5, scale=True)
-rt_model = rt.RealTimeModel(data=forecast_data, models=[model_1, model_2])
+sample_data = rt.generate_synthetic_data(
+    N=2,
+    first_period="2015-01-31",
+    endpoint="2024-12-31",
+)
 ```
 
 ## Lags
@@ -19,13 +21,21 @@ The linear, tree and neural models support autoregressive (`y_lags`) and
 distributed (`X_lags`) lags, supplied at forecast time:
 
 ```python
+forecast_data = fe.NowcastData(outturns_data=sample_data.copy())
+rt_model = rt.RealTimeModel(
+    data=forecast_data,
+    models=rt.models.ForecastRidge(cv=5, scale=True),
+)
 rt_model.forecast(
-    y_variables=["cpisa"],
-    X_variables=["gdpkp", "unemp"],
-    data_transformation={"cpisa": "pop", "gdpkp": "pop", "unemp": "pop"},
-    steps=12,
+    y_variables=["quarterly_1"],
+    X_variables=["quarterly_2"],
+    data_transformation={"quarterly_1": "pop", "quarterly_2": "pop"},
+    steps=2,
     y_lags=4,  # append y_{t-1} … y_{t-4}
-    X_lags={"oil": 4, "fx": 1},  # per-regressor lag counts (an int applies to all)
+    X_lags={"quarterly_2": 2},  # an int applies the same count to every regressor
+    X_imputation="last",
+    first_vintage="2024-01-31",
+    last_vintage="2024-06-30",
 )
 ```
 
@@ -40,11 +50,18 @@ or a `{name: date}` mapping; the same argument works on `ForecastModel.fit(...)`
 and `RealTimeModel.forecast(...)`.
 
 ```python
+forecast_data = fe.NowcastData(outturns_data=sample_data.copy())
+rt_model = rt.RealTimeModel(
+    data=forecast_data,
+    models=rt.models.ForecastOLS(label="OLS"),
+)
 rt_model.forecast(
-    y_variables=["cpisa"],
-    data_transformation={"cpisa": "pop"},
-    steps=12,
-    dummies=["2020-06-30"],  # or {"covid": "2020-06-30"}
+    y_variables=["quarterly_1"],
+    data_transformation={"quarterly_1": "pop"},
+    steps=2,
+    dummies=["2020-06-30"],  # or {"outlier": "2020-06-30"}
+    first_vintage="2024-01-31",
+    last_vintage="2024-06-30",
 )
 ```
 
@@ -60,12 +77,19 @@ short of the forecast horizon. Set `X_imputation` to fill those gaps at both fit
 and forecast time:
 
 ```python
+forecast_data = fe.NowcastData(outturns_data=sample_data.copy())
+rt_model = rt.RealTimeModel(
+    data=forecast_data,
+    models=rt.models.ForecastRidge(cv=5, scale=True),
+)
 rt_model.forecast(
-    y_variables=["cpisa"],
-    X_variables=["gdpkp"],
-    data_transformation={"cpisa": "pop", "gdpkp": "pop"},
-    steps=12,
+    y_variables=["quarterly_1"],
+    X_variables=["quarterly_2"],
+    data_transformation={"quarterly_1": "pop", "quarterly_2": "pop"},
+    steps=2,
     X_imputation="last",
+    first_vintage="2024-01-31",
+    last_vintage="2024-06-30",
 )  # None | "zero" | "last" | "mean" | "ar1_t"
 ```
 
@@ -103,7 +127,7 @@ metric argument is needed:
 
 ```python
 model = rt.models.ForecastOLS(
-    data_transformation={"cpisa": "diff"},
+    data_transformation={"quarterly_1": "diff"},
 )
 ```
 When several models are compared, each model-specific mapping takes precedence
@@ -136,13 +160,20 @@ the model to implement `_forecast_decomp()`; models without that method return
 `None`.
 
 ```python
+forecast_data = fe.NowcastData(outturns_data=sample_data.copy())
+rt_model = rt.RealTimeModel(
+    data=forecast_data,
+    models=rt.models.ForecastRidge(cv=5, scale=True),
+)
 rt_model.forecast(
-    y_variables=["cpisa"],
-    X_variables=["gdpkp"],
-    data_transformation={"cpisa": "pop", "gdpkp": "pop"},
-    steps=12,
+    y_variables=["quarterly_1"],
+    X_variables=["quarterly_2"],
+    data_transformation={"quarterly_1": "pop", "quarterly_2": "pop"},
+    steps=2,
     decomp=True,
     X_imputation="last",
+    first_vintage="2024-01-31",
+    last_vintage="2024-06-30",
 )
 print(rt_model.decompositions)
 ```
@@ -155,19 +186,22 @@ methodology.
 The vintage loop can run in parallel across models and vintage batches:
 
 ```python
-rt_model.forecast(
-    y_variables=["cpisa"],
-    data_transformation={"cpisa": "levels"},
-    steps=4,
-    parallel=True,
-)  # auto batch size
-rt_model.forecast(
-    y_variables=["cpisa"],
-    data_transformation={"cpisa": "levels"},
-    steps=4,
-    parallel=True,
-    max_workers=8,
-)  # cap the worker count
+if __name__ == "__main__":
+    forecast_data = fe.NowcastData(outturns_data=sample_data.copy())
+    rt_model = rt.RealTimeModel(
+        data=forecast_data,
+        models=rt.models.ForecastOLS(label="OLS"),
+    )
+    rt_model.forecast(
+        y_variables=["quarterly_1"],
+        data_transformation={"quarterly_1": "levels"},
+        steps=2,
+        y_lags=4,
+        parallel=True,
+        max_workers=2,
+        first_vintage="2024-01-31",
+        last_vintage="2024-06-30",
+    )
 ```
 
 With `parallel=True`, `ForecastTree` callable transforms and model instances

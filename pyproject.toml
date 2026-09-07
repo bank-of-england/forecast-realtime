@@ -124,6 +124,7 @@ exclude = [
 
 [tool.pydoclint]
 style = "numpy"
+exclude = '\.venv|\.git|build|dist|site|__pycache__'
 arg-type-hints-in-signature = true
 arg-type-hints-in-docstring = true
 skip-checking-short-docstrings = true

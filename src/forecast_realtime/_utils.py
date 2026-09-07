@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
@@ -23,6 +25,13 @@ def validate_forecast_horizons(horizons, steps: int, model_name: str) -> None:
 def resolve_X_lags(X_lags: int | dict, columns) -> dict:
     """Turn ``X_lags`` (int or dict) into a ``{col: int}`` map for ``columns``."""
     if isinstance(X_lags, dict):
+        unknown_columns = sorted(set(X_lags) - set(columns), key=str)
+        if unknown_columns:
+            warnings.warn(
+                f"X_lags contains columns absent from X: {unknown_columns}",
+                UserWarning,
+                stacklevel=2,
+            )
         return {c: int(X_lags.get(c, 0)) for c in columns}
     return {c: int(X_lags) for c in columns}
 

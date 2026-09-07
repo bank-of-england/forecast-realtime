@@ -32,11 +32,11 @@ def _optional_model(name):
             for dependency in dependencies
         ):
             raise
-        extra_hint = f".[{extra}]" if extra else ""
+        extra_hint = f'"forecast-realtime[{extra}]"' if extra else ""
         raise ModuleNotFoundError(
             f"Optional model {name!r} requires the missing dependency "
             f"{missing_name!r}. Install the project extra with "
-            f"pip install -e {extra_hint}.",
+            f"pip install {extra_hint}.",
             name=missing_name,
         ) from error
     return getattr(module, name)
@@ -71,6 +71,9 @@ __all__ = [
 
 class _LazyModelsModule(ModuleType):
     """Resolve registered model attributes to their classes."""
+
+    def __dir__(self):
+        return __all__
 
     def __getattribute__(self, name):
         value = ModuleType.__getattribute__(self, name)

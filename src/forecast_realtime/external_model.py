@@ -158,8 +158,23 @@ class ExternalModel(ForecastModel):
 
     def _new_cache_dir(self) -> None:
         """Create the temporary cache directory for this model instance."""
+        if getattr(self, "_owns_tmpdir", False):
+            self._tmpdir.cleanup()
         self._tmpdir = tempfile.TemporaryDirectory()
+        self._owns_tmpdir = True
         self.cache_dir = Path(self._tmpdir.name)
+
+    def __getstate__(self) -> dict:
+        """Return copy state without transferring cache-directory ownership."""
+        state = self.__dict__.copy()
+        state["_owns_tmpdir"] = False
+        return state
+
+    def _commit_fit(self, candidate: "ExternalModel") -> None:
+        """Publish a fit after explicitly cleaning the superseded cache."""
+        if getattr(self, "_owns_tmpdir", False):
+            self._tmpdir.cleanup()
+        super()._commit_fit(candidate)
 
     @property
     def params_path(self) -> str:

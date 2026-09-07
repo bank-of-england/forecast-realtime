@@ -1,10 +1,14 @@
-"""Demonstration of several forecast models on synthetic real-time data."""
+"""Demonstrate forecast models on synthetic real-time data.
+
+Install ``forecast-realtime[models]`` before running this example.
+"""
 
 import forecast_evaluation as fe
 from sklearn.model_selection import TimeSeriesSplit
 
 import forecast_realtime as rt
-from examples.midas_bvar_tree import BVARMIDASTree
+
+from .midas_bvar_tree import BVARMIDASTree
 
 
 def run_demo(
@@ -94,15 +98,6 @@ def run_demo(
             scale=True,
             formula=big_regression,
         ),
-        rt.models.RFableARIMA(
-            label="Fable ARIMA",
-            p=1,
-            d=0,
-            q=0,
-            xreg="quarterly_2",
-            index="quarter",
-            formula="quarterly_1 ~ quarterly_2",
-        ),
         rt.models.ForecastBridgeOLS(
             label="Bridge OLS",
             formula="quarterly_1 ~ monthly_1 + quarterly_2",
@@ -141,20 +136,5 @@ def run_demo(
 
 
 if __name__ == "__main__":
-    from news_decomp import NewsData
-
-    demo = run_demo(
-        N_vintages=6,
-        decomp=True,
-        reconstruct_levels=False,
-    )
-
-    # launch forecast dashboard in a browser
-    demo.data.run_dashboard()
-
-    # news decomposition analysis
-    news_data = NewsData(demo.decompositions)
-    news_data.report(
-        variable="quarterly_1",
-        source="Ridge",
-    )
+    demo = run_demo(N_vintages=6)
+    print(demo.data.forecasts.head())

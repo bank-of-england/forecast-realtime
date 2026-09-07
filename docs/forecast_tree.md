@@ -199,12 +199,12 @@ it maps the children's forecasts onto the fitted variables **by name** and
 passes them on as constraint paths, so **each leaf must be labelled after the
 variable it nowcasts**.
 
-`ConditionalBVAR` is not part of the package — it lives in
-[examples/midas_bvar_tree.py](../examples/midas_bvar_tree.py) as a worked example
-of writing a custom transform, alongside the runnable tree below.
+`ConditionalBVAR` is shipped in the `forecast_realtime.examples.midas_bvar_tree`
+module as a worked example rather than as part of the public models API. The
+module also includes the runnable tree below.
 
 ```python
-from examples.midas_bvar_tree import ConditionalBVAR  # example code
+from forecast_realtime.examples.midas_bvar_tree import ConditionalBVAR
 
 from forecast_realtime import ForecastTree, TreeNode
 from forecast_realtime.models.midas import ForecastMIDAS

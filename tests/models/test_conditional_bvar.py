@@ -1,12 +1,6 @@
-"""Tests for the MIDAS-nowcast -> BVAR tree in ``examples/midas_bvar_tree.py``.
+"""Tests for the packaged MIDAS-nowcast -> BVAR example tree."""
 
-``ConditionalBVAR`` is example code rather than a packaged model, so it is
-loaded from the script by path (as ``conftest.py`` does for ``sample_data.py``).
-"""
-
-import importlib.util
 import warnings
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -16,15 +10,9 @@ from forecast_evaluation import compute_accuracy_statistics
 pytest.importorskip("bvar")
 pytest.importorskip("nowcast_midas")
 
+from forecast_realtime.examples.midas_bvar_tree import ConditionalBVAR
 from forecast_realtime.forecast_tree import ForecastTree, TreeNode
 from forecast_realtime.models import ForecastBVAR, ForecastMIDAS
-
-_EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "midas_bvar_tree.py"
-_spec = importlib.util.spec_from_file_location("midas_bvar_tree", _EXAMPLE)
-_example = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_example)
-
-ConditionalBVAR = _example.ConditionalBVAR
 
 STEPS = 4
 HORIZONS = [0, 1, 2, 3]

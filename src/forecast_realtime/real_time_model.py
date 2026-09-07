@@ -122,6 +122,31 @@ def _run_forecast_task(task: ForecastTask) -> ForecastRunResult:
     return ForecastRunResult(*result)
 
 
+def _failed_forecast_task(task: ForecastTask, error: Exception) -> ForecastRunResult:
+    """Warn and return an empty result when one model task fails."""
+    warnings.warn(
+        f"Model {task.model.label!r} failed for its forecast batch with "
+        f"{type(error).__name__}: {error}. Skipping this model batch.",
+        UserWarning,
+    )
+    return ForecastRunResult(
+        forecasts=pd.DataFrame(
+            columns=[
+                "date",
+                "vintage_date",
+                "forecast_horizon",
+                "variable",
+                "value",
+                "metric",
+                "source",
+                "frequency",
+            ]
+        ),
+        decompositions=None,
+        all_vintages_skipped=True,
+    )
+
+
 def _validate_conditioning(role, selected_variables, horizons, sources, steps):
     horizon_name = f"{role}_steps_ahead"
     source_name = f"{role}_sources"
@@ -863,12 +888,29 @@ class RealTimeModel:
     @staticmethod
     def _execute_forecast_tasks(tasks, *, parallel, max_workers):
         """Schedule tasks without aggregating or publishing their results."""
+        isolate_failures = len({id(task.model) for task in tasks}) > 1
         if not parallel:
-            return [_run_forecast_task(task) for task in tasks]
+            if not isolate_failures:
+                return [_run_forecast_task(task) for task in tasks]
+            results = []
+            for task in tasks:
+                try:
+                    results.append(_run_forecast_task(task))
+                except Exception as error:
+                    results.append(_failed_forecast_task(task, error))
+            return results
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(_run_forecast_task, task) for task in tasks]
-            return [future.result() for future in futures]
+            if not isolate_failures:
+                return [future.result() for future in futures]
+            results = []
+            for task, future in zip(tasks, futures, strict=True):
+                try:
+                    results.append(future.result())
+                except Exception as error:
+                    results.append(_failed_forecast_task(task, error))
+            return results
 
     @staticmethod
     def _aggregate_forecast_results(
@@ -1824,8 +1866,12 @@ def example_ridge():
 
     import forecast_realtime as rt
 
-    # Load ForecastData with FER dataset
-    forecast_data = fe.ForecastData(load_fer=True)
+    sample_data = rt.generate_synthetic_data(
+        N=2,
+        first_period="2015-01-31",
+        endpoint="2024-12-31",
+    )
+    forecast_data = fe.NowcastData(outturns_data=sample_data)
 
     # Create Ridge model with 5-fold cross-validation
     forecast_model = rt.models.ForecastRidge(label="Ridge", cv=5)
@@ -1838,12 +1884,13 @@ def example_ridge():
 
     # Run real-time forecast
     rt_model.forecast(
-        y_variables=["cpisa"],
-        data_transformation={"cpisa": "pop"},
-        steps=12,
+        y_variables=["quarterly_1"],
+        data_transformation={"quarterly_1": "pop"},
+        steps=2,
+        y_lags=4,
         label="Ridge",
-        first_vintage="2015-01-01",
-        X_imputation="last",
+        first_vintage="2024-01-31",
+        last_vintage="2024-06-30",
     )
 
     rt_model.data.run_dashboard()
@@ -1855,11 +1902,12 @@ def example_bvar():
 
     import forecast_realtime as rt
 
-    # Load ForecastData with FER dataset
-    forecast_data = fe.ForecastData(load_fer=True)
-
-    # filter dates
-    forecast_data.filter(start_date="1991-01-31")
+    sample_data = rt.generate_synthetic_data(
+        N=2,
+        first_period="2015-01-31",
+        endpoint="2024-12-31",
+    )
+    forecast_data = fe.NowcastData(outturns_data=sample_data)
 
     # Load a BVAR model with the features you want
     bvar_model = rt.models.ForecastBVAR(
@@ -1874,19 +1922,12 @@ def example_bvar():
 
     # Run real-time forecast
     rt_model.forecast(
-        y_variables=["cpisa", "unemp", "gdpkp"],
-        data_transformation={"cpisa": "pop", "unemp": "levels", "gdpkp": "pop"},
-        y_steps_ahead={
-            "cpisa": 1,
-            "unemp": 0,
-        },  # conditioning assumption (quarter-ahead starting with the nowcast)
-        y_sources={
-            "cpisa": "mpr",
-            "unemp": "mpr",
-        },  # which forecasts to use as conditioning assumptions
-        steps=13,  # forecasts up to 3-year ahead
-        label="Conditional BVAR",
-        first_vintage="2015-03-31",
+        y_variables=["quarterly_1", "quarterly_2"],
+        data_transformation={"quarterly_1": "pop", "quarterly_2": "pop"},
+        steps=2,
+        label="BVAR",
+        first_vintage="2024-01-31",
+        last_vintage="2024-06-30",
     )
 
     rt_model.data.run_dashboard(host="127.0.0.2")

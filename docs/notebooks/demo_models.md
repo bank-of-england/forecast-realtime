@@ -7,13 +7,9 @@ header: |-
 ---
 
 ```python {.marimo}
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from news_decomp import NewsData
 
-from examples.demo_models import run_demo
+from forecast_realtime.examples.demo_models import run_demo
 ```
 
 ```python {.marimo}

@@ -50,6 +50,42 @@ class _CaptureFitModel(ForecastModel):
         return pd.DataFrame({self.y.columns[0]: np.zeros(steps)})
 
 
+class _FailingFitModel(ForecastModel):
+    """Fail during fitting to exercise per-model isolation."""
+
+    def _fit(self, y, X=None, **kwargs):
+        raise RuntimeError("deliberate fit failure")
+
+    def _forecast(self, steps, X=None, y=None, **kwargs):
+        raise AssertionError("forecast must not run after a failed fit")
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_model_fit_failure_does_not_discard_other_models(forecast_data, parallel):
+    """A failed model is skipped while successful model forecasts are kept."""
+    broken = _FailingFitModel(label="broken")
+    working = rt.models.ForecastOLS(label="working")
+    model = rt.RealTimeModel(
+        data=forecast_data,
+        models=[broken, working],
+    )
+    working.label = "broken"
+
+    with pytest.warns(UserWarning, match="Model 'broken'.*deliberate fit failure"):
+        model.forecast(
+            y_variables=["monthly_a"],
+            data_transformation={"monthly_a": "levels"},
+            steps=1,
+            first_vintage="2020-01-31",
+            last_vintage="2020-01-31",
+            parallel=parallel,
+            max_workers=2,
+        )
+
+    assert not model.data.forecasts.empty
+    assert set(model.data.forecasts["source"]) == {"broken"}
+
+
 @pytest.mark.parametrize(
     ("transformation", "expected_first", "expected_last"),
     [
@@ -2629,8 +2665,8 @@ class TestParallelExecution:
         data,
         model,
         label,
-        y_variables=["cpisa"],
-        X_variables=["unemp"],
+        y_variables=["quarterly_1"],
+        X_variables=["quarterly_2"],
         data_transformation=None,
         parallel=False,
         batch_size=10,
@@ -2648,10 +2684,10 @@ class TestParallelExecution:
             y_variables=y_variables,
             X_variables=X_variables,
             data_transformation=data_transformation,
-            steps=8,
+            steps=2,
             label=label,
-            first_vintage="2015-03-31",
-            last_vintage="2018-12-31",
+            first_vintage="2024-01-31",
+            last_vintage="2024-06-30",
             parallel=parallel,
             batch_size=batch_size,
             y_lags=y_lags,
@@ -2705,13 +2741,12 @@ class TestParallelExecution:
     @pytest.fixture
     def setup_data(self):
         """Load and prepare test data for parallel execution tests."""
-        forecast_data = fe.ForecastData(load_fer=True)
-        forecast_data.filter(
-            variables=["cpisa", "unemp"],
-            start_vintage="2015-01-01",
-            end_vintage="2020-12-31",
+        sample_data = rt.generate_synthetic_data(
+            N=2,
+            first_period="2015-01-31",
+            endpoint="2024-12-31",
         )
-        return forecast_data
+        return fe.NowcastData(outturns_data=sample_data)
 
     @pytest.fixture
     def setup_models(self):
@@ -2719,7 +2754,7 @@ class TestParallelExecution:
         return [
             rt.models.ForecastOLS(forecast_strategy="recursive", label="ForecastOLS_rec"),
             rt.models.ForecastOLS(
-                forecast_strategy="direct", steps=8, label="ForecastOLS_dir"
+                forecast_strategy="direct", steps=2, label="ForecastOLS_dir"
             ),
         ]
 
@@ -2781,12 +2816,12 @@ class TestParallelExecution:
         rt_par = rt.RealTimeModel(data=setup_data.copy(), models=setup_models)
         start_time = time.time()
         rt_par.forecast(
-            y_variables=["cpisa"],
-            X_variables=["unemp"],
-            data_transformation={"cpisa": "pop", "unemp": "pop"},
-            steps=8,
-            first_vintage="2015-03-31",
-            last_vintage="2018-12-31",
+            y_variables=["quarterly_1"],
+            X_variables=["quarterly_2"],
+            data_transformation={"quarterly_1": "pop", "quarterly_2": "pop"},
+            steps=2,
+            first_vintage="2024-01-31",
+            last_vintage="2024-06-30",
             parallel=True,
             y_lags=4,
             X_imputation="zero",
@@ -2871,12 +2906,12 @@ class TestParallelExecution:
 
         start_time = time.time()
         rt_model.forecast(
-            y_variables=["cpisa"],
-            X_variables=["unemp"],
-            data_transformation={"cpisa": "pop", "unemp": "pop"},
-            steps=8,
-            first_vintage="2015-03-31",
-            last_vintage="2018-12-31",
+            y_variables=["quarterly_1"],
+            X_variables=["quarterly_2"],
+            data_transformation={"quarterly_1": "pop", "quarterly_2": "pop"},
+            steps=2,
+            first_vintage="2024-01-31",
+            last_vintage="2024-06-30",
             parallel=True,
             # batch_size=None -> auto-computed based on num_workers
             y_lags=4,
@@ -2885,12 +2920,12 @@ class TestParallelExecution:
 
         start_time = time.time()
         rt_model.forecast(
-            y_variables=["cpisa"],
-            X_variables=["unemp"],
-            data_transformation={"cpisa": "pop", "unemp": "pop"},
-            steps=8,
-            first_vintage="2015-03-31",
-            last_vintage="2018-12-31",
+            y_variables=["quarterly_1"],
+            X_variables=["quarterly_2"],
+            data_transformation={"quarterly_1": "pop", "quarterly_2": "pop"},
+            steps=2,
+            first_vintage="2024-01-31",
+            last_vintage="2024-06-30",
             parallel=False,
             y_lags=4,
         )

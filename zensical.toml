@@ -16,13 +16,13 @@ nav = [
   { "Home" = "index.md" },
   { "API Reference" = "api.md" },
   { "Guides" = [
+    { "Importing data" = "importing_data.md" },
     { "Usage" = "usage.md" },
     { "Models" = "models.md" },
     { "Forecast trees" = "forecast_tree.md" },
     { "Adding a model" = "adding_a_model.md" },
     { "Forecasting strategy" = "forecasting_strategy.md" },
     { "Dummy strategy" = "dummies_strategy.md" },
-    { "Input metric transformations" = "input_metric_transformation_plan.md" },
   ] },
   { "Examples" = [
     { "Demo models" = "notebooks/demo_models.md" },

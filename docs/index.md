@@ -147,6 +147,8 @@ src/forecast_realtime/
 ## Contents
 
 - [API Reference](api.md) — public classes and built-in model interfaces.
+- [Importing data](importing_data.md) — `ForecastData` containers and the
+  outturn schema.
 - [Usage](usage.md) — lags, dummies, imputation, transformations, news
   decomposition, and parallel execution.
 - [Models](models.md) — built-in models and R, MATLAB, and Julia wrappers.
@@ -154,5 +156,3 @@ src/forecast_realtime/
 - [Adding a model](adding_a_model.md) — the complete `ForecastModel` contract.
 - [Forecasting strategy](forecasting_strategy.md) — forecasting methodology.
 - [Dummy strategy](dummies_strategy.md) — outlier dummy handling.
-- [Input metric transformations](input_metric_transformation_plan.md) — input
-  metric selection and transformation design.

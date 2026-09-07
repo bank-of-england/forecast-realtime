@@ -120,6 +120,7 @@ class TestCacheDirIsolation:
         model.fit(quarterly_data)
 
         assert model.cache_dir != first
+        assert not first.exists()
 
     def test_deepcopies_do_not_share_a_directory(self):
         """RealTimeModel deep-copies the model for every vintage."""
