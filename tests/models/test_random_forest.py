@@ -123,7 +123,7 @@ def test_rf_recursive_two_y_lags_noiseless():
 
 
 def test_rf_recursive_noiseless():
-    """RandomForest recovers the true relationship on noiseless linear data."""
+    """RandomForest recovers noiseless forecasts and fitted values."""
     y_train, X_train, y_test, X_test, _ = sample_regression_data(
         n_train=10000,
         n_test=5,
@@ -136,6 +136,15 @@ def test_rf_recursive_noiseless():
 
     model = rt.models.RandomForest(n_estimators=100, random_state=42)
     model.fit(y_train, X=X_train)
+
+    fitted = model.fitted_values_.dropna()
+    # Bootstrap aggregation means in-sample predictions are not an exact
+    # interpolation, unlike the out-of-sample forecast; atol reflects the
+    # measured in-sample deviation for this deterministic (seeded) fit.
+    np.testing.assert_allclose(
+        fitted.to_numpy(), y_train.loc[fitted.index].to_numpy().ravel(), atol=0.7
+    )
+
     forecasts = model.forecast(steps=len(y_test), X=X_test)
 
     assert isinstance(forecasts, pd.DataFrame)
@@ -279,27 +288,3 @@ def test_rf_requires_x():
         assert False, "Should have raised ValueError"
     except ValueError:
         pass
-
-
-def test_fitted_values_recovers_insample():
-    """fitted_values_ recovers y_train in-sample on noiseless data."""
-    y_train, X_train, y_test, X_test, _ = sample_regression_data(
-        n_train=10000,
-        n_test=5,
-        b1=2.0,
-        b2=-1.0,
-        noise_std=0,
-        forecast_type="recursive",
-        random_seed=42,
-    )
-
-    model = rt.models.RandomForest(n_estimators=100, random_state=42)
-    model.fit(y_train, X=X_train)
-
-    fitted = model.fitted_values_.dropna()
-    # Bootstrap aggregation means in-sample predictions are not an exact
-    # interpolation, unlike the out-of-sample forecast; atol reflects the
-    # measured in-sample deviation for this deterministic (seeded) fit.
-    np.testing.assert_allclose(
-        fitted.to_numpy(), y_train.loc[fitted.index].to_numpy().ravel(), atol=0.7
-    )

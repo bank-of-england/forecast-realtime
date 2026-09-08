@@ -122,6 +122,7 @@ def _run_bvar(panel):
 
 def test_monthly_bivariate_bvar_levels_and_logs_preserve_metric_contracts(
     sample_realtime_complete,
+    bvar_python_kernel,
 ):
     full = _run_bvar(sample_realtime_complete)
     levels = _run_bvar(_levels_only(sample_realtime_complete))

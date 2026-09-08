@@ -19,10 +19,12 @@ from forecast_realtime.external_model import JuliaModel
 _OLS_JL_SCRIPT = str(Path(__file__).parent / "jl_scripts" / "ols_model.jl")
 
 
-def _julia_runner_deps_available() -> bool:
-    """Return ``True`` when ``julia`` and the ``runner.jl`` packages are present."""
+@pytest.fixture(scope="session")
+def julia_runner_deps_available():
+    """Skip tests when Julia or the runner dependencies are unavailable."""
+    reason = "julia not on PATH or Parquet2/DataFrames not installed"
     if shutil.which("julia") is None:
-        return False
+        pytest.skip(reason)
     probe = 'using Parquet2, DataFrames; print("OK")'
     try:
         result = subprocess.run(
@@ -32,14 +34,12 @@ def _julia_runner_deps_available() -> bool:
             timeout=180,
         )
     except Exception:
-        return False
-    return "OK" in result.stdout
+        pytest.skip(reason)
+    if "OK" not in result.stdout:
+        pytest.skip(reason)
 
 
-pytestmark = pytest.mark.skipif(
-    not _julia_runner_deps_available(),
-    reason="julia not on PATH or Parquet2/DataFrames not installed",
-)
+pytestmark = pytest.mark.usefixtures("julia_runner_deps_available")
 
 
 @pytest.fixture

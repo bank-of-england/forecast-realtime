@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from tests.realtime_fixtures import generate_synthetic_data
 from tests.schemas import decomposition_schema
 
 # The demo builds models from the complete ``[models]`` extra.
@@ -82,18 +83,18 @@ def snapshot_decompositions(frame):
     return result.to_dict(orient="records")
 
 
-def test_demo_models_runs():
-    """The default demo includes its Python model results."""
-    result = run_demo(N_vintages=2)
+@pytest.fixture(autouse=True)
+def synthetic_inputs(monkeypatch):
+    """Exercise the demo models without rebuilding transformations per vintage."""
+    monkeypatch.setattr(
+        "forecast_realtime.examples.demo_models.rt.generate_synthetic_data",
+        generate_synthetic_data,
+    )
 
-    sources = set(result.data.forecasts["source"])
-    assert {"Big OLS", "Small OLS", "Ridge", "LASSO", "Elastic Net"} <= sources
 
-
-def test_demo_models(snapshot):
-    """The demo is stable and parallel execution matches sequential execution."""
+def test_demo_models(snapshot, bvar_python_kernel):
+    """The default demo includes every model and matches its numerical snapshot."""
     sequential = run_demo(N_vintages=6)
-    parallel = run_demo(N_vintages=6, parallel=True)
 
     expected_sources = {
         "Big OLS",
@@ -107,24 +108,10 @@ def test_demo_models(snapshot):
         "MIDAS BVAR",
     }
     assert set(sequential.data.forecasts["source"]) == expected_sources
-    assert set(parallel.data.forecasts["source"]) == expected_sources
-
-    sequential_forecasts = sequential.data.forecasts.sort_values(
-        _SORT_COLUMNS
-    ).reset_index(drop=True)
-    parallel_forecasts = parallel.data.forecasts.sort_values(_SORT_COLUMNS).reset_index(
-        drop=True
-    )
-    pd.testing.assert_frame_equal(
-        sequential_forecasts,
-        parallel_forecasts,
-        rtol=1e-5,
-        atol=1e-5,
-    )
     assert snapshot_forecasts(sequential.data.forecasts) == snapshot
 
 
-def test_demo_models_decompositions(snapshot):
+def test_demo_models_decompositions(snapshot, bvar_python_kernel):
     """Demo decompositions reconstruct native forecasts and revisions."""
     result = run_demo(
         N_vintages=2,

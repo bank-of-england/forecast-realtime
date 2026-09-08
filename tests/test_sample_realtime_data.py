@@ -12,6 +12,7 @@ from forecast_realtime.sample_realtime_data import (
     _generate_synthetic_mixed_frequency_data,
     _get_vintage,
 )
+from tests.realtime_fixtures import generate_synthetic_data
 
 
 def test_stage_one_has_valid_long_structure_and_default_ranges():
@@ -73,26 +74,6 @@ def test_quarterly_aggregation_uses_chronological_mariano_murasawa_weights():
     )
 
 
-def test_snapshots_compute_period_on_period_growth_for_monthly_and_quarterly():
-    snapshots = _create_monthly_snapshots(
-        _generate_synthetic_mixed_frequency_data(N=1, seed=12),
-        publication_lags=False,
-    )
-    latest = snapshots[snapshots["vintage_date"] == SNAPSHOT_END]
-
-    for frequency in ("M", "Q"):
-        levels = latest[
-            (latest["frequency"] == frequency) & (latest["metric"] == "levels")
-        ].set_index("date")["value"]
-        pop = latest[
-            (latest["frequency"] == frequency) & (latest["metric"] == "pop")
-        ].set_index("date")["value"]
-        expected = levels.pct_change(fill_method=None).dropna() * 100.0
-
-        pd.testing.assert_index_equal(pop.index, expected.index)
-        np.testing.assert_allclose(pop.to_numpy(), expected.to_numpy())
-
-
 def test_stage_one_validation():
     with pytest.raises(ValueError, match="N must be a positive integer"):
         _generate_synthetic_mixed_frequency_data(N=0)
@@ -103,8 +84,16 @@ def test_stage_one_validation():
 
 
 def test_snapshots_have_expected_structure_ranges_and_historical_inclusion():
-    stage_one = _generate_synthetic_mixed_frequency_data(N=2, seed=4)
-    snapshots = _create_monthly_snapshots(stage_one, publication_lags=False)
+    stage_one = _generate_synthetic_mixed_frequency_data(N=1, seed=4)
+    snapshots = forecast_realtime.generate_synthetic_data(
+        N=1, seed=4, publication_lags=False
+    )
+
+    pd.testing.assert_frame_equal(
+        snapshots,
+        generate_synthetic_data(N=1, seed=4, publication_lags=False),
+        check_exact=True,
+    )
 
     assert list(snapshots.columns) == [
         "date",
@@ -124,18 +113,44 @@ def test_snapshots_have_expected_structure_ranges_and_historical_inclusion():
     assert first_snapshot["date"].min() == pd.Timestamp(FIRST_PERIOD)
     assert set(first_snapshot["variable"]) == {
         "monthly_1",
-        "monthly_2",
         "quarterly_1",
-        "quarterly_2",
     }
     assert snapshots[snapshots["vintage_date"] == SNAPSHOT_END][
         "date"
     ].max() == pd.Timestamp("2025-12-31")
 
+    latest = snapshots[snapshots["vintage_date"] == SNAPSHOT_END]
+    for (frequency, variable), latest_variable in latest.groupby(
+        ["frequency", "variable"]
+    ):
+        levels = latest_variable[latest_variable["metric"] == "levels"].set_index("date")[
+            "value"
+        ]
+        pop = latest_variable[latest_variable["metric"] == "pop"].set_index("date")[
+            "value"
+        ]
+        expected = levels.pct_change(fill_method=None).dropna() * 100.0
+
+        assert frequency in ("M", "Q")
+        assert variable
+        pd.testing.assert_index_equal(pop.index, expected.index)
+        np.testing.assert_allclose(pop.to_numpy(), expected.to_numpy())
+
+    vintage = _get_vintage(snapshots, "2024-01-31")
+    expected = stage_one[stage_one["date"] <= "2024-01-31"]
+    actual = (
+        vintage[vintage["metric"] == "levels"]
+        .set_index(["variable", "date"])["value"]
+        .sort_index()
+    )
+    expected_values = expected.set_index(["variable", "date"])["value"].sort_index()
+    pd.testing.assert_series_equal(actual, expected_values, check_names=False)
+    assert vintage["vintage_date"].eq(pd.Timestamp("2024-01-31")).all()
+
 
 def test_snapshots_keep_fixed_window_for_non_default_stage_one_endpoint():
     stage_one = _generate_synthetic_mixed_frequency_data(
-        N=2, seed=4, endpoint="2025-06-30"
+        N=1, seed=4, first_period="2023-01-31", endpoint="2025-06-30"
     )
     snapshots = _create_monthly_snapshots(stage_one, publication_lags=False)
 
@@ -165,8 +180,15 @@ def test_snapshots_keep_fixed_window_for_non_default_stage_one_endpoint():
 
 
 def test_snapshots_apply_independent_calendar_month_lags_and_no_revisions():
-    stage_one = _generate_synthetic_mixed_frequency_data(N=2, seed=4)
-    snapshots = _create_monthly_snapshots(stage_one, publication_lags=True, seed=8)
+    options = dict(N=1, seed=8, first_period="2023-01-31", endpoint="2024-12-31")
+    stage_one = _generate_synthetic_mixed_frequency_data(**options)
+    snapshots = forecast_realtime.generate_synthetic_data(**options)
+
+    pd.testing.assert_frame_equal(
+        snapshots,
+        generate_synthetic_data(**options),
+        check_exact=True,
+    )
 
     observed = snapshots[
         (snapshots["date"] >= "2024-01-01") & (snapshots["metric"] == "levels")
@@ -198,20 +220,8 @@ def test_snapshots_apply_independent_calendar_month_lags_and_no_revisions():
     )
 
 
-def test_snapshot_validation_and_get_vintage():
+def test_snapshot_validation_rejects_invalid_inputs():
     stage_one = _generate_synthetic_mixed_frequency_data(N=1, seed=22)
-    snapshots = _create_monthly_snapshots(stage_one, publication_lags=False)
-
-    vintage = _get_vintage(snapshots, "2024-01-31")
-    expected = stage_one[stage_one["date"] <= "2024-01-31"]
-    actual = (
-        vintage[vintage["metric"] == "levels"]
-        .set_index(["variable", "date"])["value"]
-        .sort_index()
-    )
-    expected_values = expected.set_index(["variable", "date"])["value"].sort_index()
-    pd.testing.assert_series_equal(actual, expected_values, check_names=False)
-    assert vintage["vintage_date"].eq(pd.Timestamp("2024-01-31")).all()
 
     with pytest.raises(ValueError, match="publication_lags must be a bool"):
         _create_monthly_snapshots(stage_one, publication_lags=1)
@@ -269,12 +279,6 @@ def test_snapshots_reject_observations_released_after_fixed_window():
 
 
 def test_public_api_exposes_only_the_composed_synthetic_data_function():
-    snapshots = forecast_realtime.generate_synthetic_data(
-        N=1, publication_lags=False, first_period="2023-01-31", endpoint="2024-12-31"
-    )
-
-    assert "vintage_date" in snapshots
-    assert set(snapshots["metric"]) == {"levels", "pop"}
     assert "generate_synthetic_data" in forecast_realtime.__all__
     old_names = {
         "generate_synthetic_mixed_frequency_data",

@@ -4,8 +4,6 @@ Exercises the MA examples from adding_a_model.md to ensure they work
 end-to-end against the ForecastModel / RModel interface.
 """
 
-import shutil
-import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -204,60 +202,24 @@ class TestBareArrayForecast:
 _MA_R_SCRIPT = str(Path(__file__).parent / "r_scripts" / "ma_model.R")
 
 
-def _r_arrow_available() -> bool:
-    """Return ``True`` when ``Rscript`` and the R ``arrow`` package are available."""
-    if shutil.which("Rscript") is None:
-        return False
-    try:
-        result = subprocess.run(
-            ["Rscript", "-e", "cat(requireNamespace('arrow', quietly=TRUE))"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        return "TRUE" in result.stdout
-    except Exception:
-        return False
-
-
-@pytest.mark.skipif(
-    not _r_arrow_available(),
-    reason="Rscript not found on PATH or R 'arrow' package not installed",
-)
+@pytest.mark.usefixtures("r_arrow_available")
 class TestMovingAverageR:
     """Test the R MovingAverage model via RModel."""
 
-    def test_shape(self, quarterly_data):
-        model = RModel(_MA_R_SCRIPT, window_size=4)
-        model.fit(quarterly_data)
-        fc = model.forecast(steps=8)
-
-        assert isinstance(fc, pd.DataFrame)
-        assert fc.shape == (8, 1)
-
-    def test_values_equal_window_mean(self, quarterly_data):
-        model = RModel(_MA_R_SCRIPT, window_size=4)
-        model.fit(quarterly_data)
-        fc = model.forecast(steps=3)
-
+    def test_forecast_contract_matches_python(self, quarterly_data):
+        """R and Python MA forecasts satisfy the same 8-step contract."""
+        steps = 8
         expected = quarterly_data["gdp"].iloc[-4:].mean()
-        np.testing.assert_allclose(fc.values[:, 0], expected, rtol=1e-6)
-
-    def test_all_horizons_identical(self, quarterly_data):
-        model = RModel(_MA_R_SCRIPT, window_size=4)
-        model.fit(quarterly_data)
-        fc = model.forecast(steps=6)
-
-        np.testing.assert_array_almost_equal(fc.values[0], fc.values[-1])
-
-    def test_matches_python(self, quarterly_data):
-        """R and Python MA should produce identical forecasts."""
         py_model = MovingAverage(window_size=4)
         py_model.fit(quarterly_data)
-        py_fc = py_model.forecast(steps=4)
+        py_fc = py_model.forecast(steps=steps)
 
         r_model = RModel(_MA_R_SCRIPT, window_size=4)
         r_model.fit(quarterly_data)
-        r_fc = r_model.forecast(steps=4)
+        r_fc = r_model.forecast(steps=steps)
 
+        assert isinstance(r_fc, pd.DataFrame)
+        assert r_fc.shape == (steps, 1)
+        np.testing.assert_allclose(r_fc.values[:, 0], expected, rtol=1e-6)
+        np.testing.assert_array_equal(r_fc.values[0], r_fc.values[-1])
         np.testing.assert_allclose(r_fc.values, py_fc.values, rtol=1e-6)
