@@ -155,8 +155,16 @@ class ModelData:
         return cls._from_paths(paths)
 
     @staticmethod
-    def validate_frame(frame, role, *, allow_period=True, require_sorted=True):
-        """Validate the shared date-index contract at a mutable input boundary."""
+    def validate_frame(
+        frame,
+        role,
+        *,
+        allow_period=True,
+        require_sorted=True,
+        variables=None,
+        require_all=True,
+    ):
+        """Validate date indexes and optional column coverage at an input boundary."""
         if not isinstance(frame, pd.DataFrame):
             raise TypeError(f"{role} must be a pandas DataFrame")
         index_types = (
@@ -170,6 +178,15 @@ class ModelData:
             raise ValueError(f"{role} index must be sorted in increasing order.")
         if frame.columns.has_duplicates:
             raise ValueError(f"{role} must not contain duplicate columns.")
+        if variables is not None:
+            missing = [variable for variable in variables if variable not in frame]
+            if require_all and missing:
+                raise ValueError(f"{role} is missing columns for variables: {missing}.")
+            unknown = [column for column in frame if column not in variables]
+            if unknown:
+                raise ValueError(
+                    f"{role} has columns not in the configured variables: {unknown}."
+                )
 
     @classmethod
     def from_long(cls, data, *, semantics="trajectory", frequencies=None):
@@ -709,6 +726,8 @@ class ModelData:
 
     def resolve_frequencies(self, mapping, frequency=None, *, require_calendars=False):
         """Resolve necessary calendars once, leaving ordinary daily data valid."""
+        if mapping is not None and frequency is not None:
+            _validate_frequency(frequency)
         catalogue = list(self._catalogue)
         y_index = self.index("y")
         dates = y_index.to_timestamp() if isinstance(y_index, pd.PeriodIndex) else y_index
@@ -755,8 +774,8 @@ class ModelData:
                     if rule.startswith(("QE", "QS"))
                     else inferred
                 )
-        if mapping is not None and frequency is not None:
-            _validate_frequency(frequency)
+            if mapping is not None and frequency is not None:
+                _validate_frequency(frequency)
         return self._replace(catalogue=catalogue), frequency
 
     def trim_undefined_prefix(self):
@@ -1206,38 +1225,6 @@ def _resolve_frequency(frequency: pd.Series) -> str:
     return resolved
 
 
-def _periods_per_year(frequency: pd.Series) -> int:
-    """Resolve the year-on-year lag from a single-valued ``frequency`` column."""
-    return _PERIODS_PER_YEAR[_resolve_frequency(frequency)]
-
-
-def leading_nan_row_count(frame: pd.DataFrame, columns: list[str]) -> int:
-    """Rows to drop so every column in *columns* starts at its first defined value.
-
-    Measured from the actual transformed data rather than assumed from a
-    metric's nominal calendar lag: an early missing calendar period can push
-    a "diff"/"pop"/"yoy" column's genuine first defined observation later
-    than its nominal lag would suggest (or, conversely, may leave fewer
-    rows are undefined than the nominal lag). Only the *leading* (prefix) run
-    of undefined rows is measured per column, so interior missing
-    observations are never counted. Returns 0 for a column with no leading
-    ``NaN`` (e.g. "levels"/"logs").
-    """
-    counts = []
-    for column in columns:
-        values = frame[column]
-        first_valid = values.first_valid_index()
-        counts.append(
-            len(values) if first_valid is None else values.index.get_loc(first_valid)
-        )
-    return max(counts, default=0)
-
-
-def _ordered_items(mapping: dict[str, str] | None) -> tuple[tuple[str, str], ...]:
-    """Freeze a metric mapping in a deterministic order."""
-    return tuple(sorted((mapping or {}).items()))
-
-
 def _validate_frequency(frequency: str) -> None:
     if frequency not in _VALID_FREQUENCIES:
         raise ValueError(
@@ -1305,20 +1292,6 @@ def infer_frequency_from_dates(dates: pd.DatetimeIndex, context: str = "data") -
     )
 
 
-def infer_variable_frequencies(
-    frame: pd.DataFrame, variables: list[str], context: str
-) -> dict[str, str]:
-    """Infer one frequency per variable from its non-null raw observations."""
-    frequencies = {}
-    for variable in variables:
-        values = frame[variable].dropna()
-        if not values.empty:
-            frequencies[variable] = infer_frequency_from_dates(
-                values.index, f"{context} column '{variable}'"
-            )
-    return frequencies
-
-
 def infer_long_variable_frequencies(
     data: pd.DataFrame, variables: list[str], context: str
 ) -> dict[str, str]:
@@ -1333,82 +1306,15 @@ def infer_long_variable_frequencies(
     return frequencies
 
 
-def _validate_x_role(X: pd.DataFrame | None, X_variables: list[str] | None) -> None:
-    """X and X_variables must be given together, or not at all."""
-    if X is not None and not X_variables:
-        raise ValueError("X was given without X_variables.")
-    if X_variables and X is None:
-        raise ValueError("X_variables was given without X.")
-
-
-def combine_history_and_future(
-    history: pd.DataFrame, future: pd.DataFrame | None
-) -> pd.DataFrame:
-    """Overlay future/conditioning values on history one cell at a time.
-
-    A present future value overrides a historical value at the same date,
-    while missing or omitted future values retain the history. Future-only
-    missing values remain missing.
-    """
-    if future is None or future.empty:
-        return history
-    return _overlay_values(history, future)
-
-
-def _validate_wide_frame(
-    frame: pd.DataFrame,
-    variables: list[str],
-    role: str,
-    *,
-    require_all: bool,
-) -> None:
-    """Validate a raw wide input frame for *role* (e.g. ``"y"``, ``"X_future"``).
-
-    Args:
-        frame : pd.DataFrame
-            The candidate wide frame.
-        variables : list[str]
-            The variables allowed as columns of *frame*.
-        role : str
-            A label used in error messages (e.g. ``"y"``, ``"y_conditioning"``).
-        require_all : bool
-            Whether every entry of *variables* must be a column of *frame*.
-            ``False`` allows a conditioning/future frame to cover only a
-            subset of the variables.
-    """
-    if not isinstance(frame, pd.DataFrame):
-        raise ValueError(
-            f"{role} must be a pandas DataFrame; got {type(frame).__name__}."
-        )
-    if not isinstance(frame.index, pd.DatetimeIndex):
-        raise ValueError(f"{role} must be indexed by a DatetimeIndex.")
-    if frame.index.has_duplicates:
-        raise ValueError(f"{role} index must not contain duplicate dates.")
-
-    unknown = [c for c in frame.columns if c not in variables]
-
-    if require_all:
-        missing = [v for v in variables if v not in frame.columns]
-        if missing:
-            raise ValueError(f"{role} is missing columns for variables: {missing}.")
-
-    if unknown:
-        raise ValueError(
-            f"{role} has columns not in the configured variables: {unknown}."
-        )
-
-
 def _validate_mapping_coverage(
     data_transformation: dict[str, str],
     y_variables: list[str],
     X_variables: list[str] | None,
-    context: str | None = None,
 ) -> None:
     """*data_transformation* must map every y/X variable to a required metric."""
-    mapping_context = f" for {context}" if context is not None else ""
     if not set(y_variables).issubset(data_transformation.keys()):
         raise ValueError(
-            f"data_transformation{mapping_context} must contain all y_variables. "
+            "data_transformation must contain all y_variables. "
             f"Got {list(data_transformation.keys())},"
             f"but expected to include {y_variables}"
         )
@@ -1417,7 +1323,7 @@ def _validate_mapping_coverage(
         data_transformation.keys()
     ):
         raise ValueError(
-            f"data_transformation{mapping_context} must contain all X_variables. "
+            "data_transformation must contain all X_variables. "
             f"Got {list(data_transformation.keys())},"
             f"but expected to include {X_variables}"
         )
@@ -1527,29 +1433,6 @@ def _transform_trajectory(
     combined = _overlay_values(history, future)
 
     return _transform_metric(combined, metric, frequency)
-
-
-def _transform_variable(
-    history,
-    future,
-    metric,
-    input_metric="levels",
-    frequency=None,
-    *,
-    future_input_metric=None,
-):
-    """Adapt the complete trajectory to the historical two-path helper contract."""
-    transformed = _transform_trajectory(
-        history,
-        future,
-        metric,
-        input_metric,
-        frequency,
-        future_input_metric=future_input_metric,
-    )
-    return transformed.reindex(history.index), (
-        transformed.reindex(future.index) if future is not None else None
-    )
 
 
 def _ar1_t_impute(observed, shortage, rng):

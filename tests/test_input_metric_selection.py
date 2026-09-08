@@ -4,12 +4,10 @@ import pandas as pd
 import pytest
 from forecast_evaluation import ForecastData
 
+from forecast_realtime._model_data import _select_input_metrics
 from forecast_realtime._realtime_forecasting import ForecastRunResult
 from forecast_realtime.forecast_model import ForecastModel
-from forecast_realtime.real_time_model import (
-    RealTimeModel,
-    _select_input_metrics,
-)
+from forecast_realtime.real_time_model import RealTimeModel
 
 
 class _NoopModel(ForecastModel):

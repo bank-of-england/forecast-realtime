@@ -7,13 +7,16 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from forecast_realtime._model_data import ModelData, ModelInputRequirements
+from forecast_realtime._model_data import (
+    ModelData,
+    ModelInputRequirements,
+    _validate_mapping_coverage,
+    _validate_metric_mapping,
+)
 from forecast_realtime._utils import build_dummies, build_lagged_design
 from forecast_realtime.data_transformation import (
     DataTransformationPipeline,
     FittedDataTransformation,
-    _validate_mapping_coverage,
-    _validate_metric_mapping,
 )
 from forecast_realtime.formula import Formula
 
@@ -75,8 +78,6 @@ class _FitDesignState:
 
     y_history: pd.DataFrame
     X_history: pd.DataFrame | None
-    y_name: str
-    X_names: list[str] | None
     dummies: list | dict | None
     dummy_definitions: dict | None
     dummy_columns: list[str]
@@ -462,11 +463,7 @@ class ForecastModel(ABC):
         )
         mapping = pipeline.data_transformation if pipeline is not None else {}
         if getattr(self, "_formula", None) is not None:
-            y_variables = list(self._formula.y_cols)
-            if not self._formula.has_wildcard:
-                X_variables = [
-                    v for v in self._formula.X_cols if v in (X_variables or [])
-                ]
+            y_variables, X_variables = self._formula.input_columns(X_variables)
         return (
             ModelInputRequirements(
                 consumer=self.label,
@@ -510,13 +507,7 @@ class ForecastModel(ABC):
         if pipeline is not None and y_variables is not None:
             formula = getattr(self, "_formula", None)
             if formula is not None:
-                y_variables = list(formula.y_cols)
-                if not formula.has_wildcard:
-                    X_variables = [
-                        variable
-                        for variable in (X_variables or [])
-                        if variable in formula.X_cols
-                    ]
+                y_variables, X_variables = formula.input_columns(X_variables)
             _validate_mapping_coverage(
                 pipeline.data_transformation,
                 y_variables,
@@ -741,10 +732,6 @@ class ForecastModel(ABC):
         )
 
     @staticmethod
-    def _validate_datetime_frame(frame: pd.DataFrame, role: str) -> None:
-        ModelData.validate_frame(frame, role)
-
-    @staticmethod
     def _dummy_spec(dummies: list | dict, columns: list[str]) -> dict:
         if isinstance(dummies, dict):
             return dict(dummies)
@@ -832,7 +819,6 @@ class ForecastModel(ABC):
             start=forecast_origin,
         )
 
-        # TODO: Decide whether forecast dates should come from self.y_forecast.index.
         return pd.DataFrame(arr, index=dates, columns=expected_columns)
 
     def fit(
@@ -856,11 +842,12 @@ class ForecastModel(ABC):
         if X is not None:
             ModelData.validate_frame(X, "X")
         if getattr(self, "_formula", None) is not None:
-            y_input_metrics = _restrict_mapping(y_input_metrics, self._formula.y_cols)
-            if X is not None and not self._formula.has_wildcard:
-                X_input_metrics = _restrict_mapping(
-                    X_input_metrics, [v for v in self._formula.X_cols if v in X.columns]
-                )
+            y_columns, X_columns = self._formula.input_columns(
+                X.columns if X is not None else None
+            )
+            y_input_metrics = _restrict_mapping(y_input_metrics, y_columns)
+            if X_columns is not None and not self._formula.has_wildcard:
+                X_input_metrics = _restrict_mapping(X_input_metrics, X_columns)
         data = ModelData.from_wide(
             y,
             X,
@@ -926,11 +913,8 @@ class ForecastModel(ABC):
         y_columns = list(data.columns("y"))
         X_columns = list(data.columns("X")) if data.has_path("X") else None
         if getattr(self, "_formula", None) is not None:
-            y_columns = list(
-                self._formula.extract_y(pd.DataFrame(columns=y_columns)).columns
-            )
-            if X_columns is not None and not self._formula.has_wildcard:
-                X_columns = [v for v in self._formula.X_cols if v in X_columns]
+            self._formula._validate_y_columns(y_columns)
+            y_columns, X_columns = self._formula.input_columns(X_columns)
         if not self._supports_multivariate_y and len(y_columns) > 1:
             raise ValueError(
                 f"{type(self).__name__} cannot handle multiple left-hand-side "
@@ -1031,7 +1015,7 @@ class ForecastModel(ABC):
         dummies: list | dict | None,
         target_frequency: str | None,
     ) -> tuple[pd.DataFrame, pd.DataFrame | None, _FitDesignState]:
-        """Build the estimation design and fit the model."""
+        """Build the estimation design and capture its history and dummy metadata."""
         if prepared_y.empty or prepared_y.dropna(how="all").empty:
             raise NoUsableTransformedYError(
                 "No usable transformed y observations remain after model preparation."
@@ -1073,7 +1057,6 @@ class ForecastModel(ABC):
             )
 
         if getattr(self, "_formula", None):
-            y_fit = self._formula.extract_y(y_fit)
             X_design_df = self._formula.extract_X(X_design_df)
 
         if dummy_names and X_design_df is not None:
@@ -1089,12 +1072,6 @@ class ForecastModel(ABC):
                 y_estimation, X_estimation
             )
 
-        last_y_fit_date = (
-            y_estimation.index[-1]
-            if not self._handles_missing_values
-            or not y_estimation.index.equals(y_fit.index)
-            else y_fit.index[-1]
-        )
         self._dummy_definitions = dummy_definitions
         self._dummy_cols = dummy_columns
         return (
@@ -1103,12 +1080,10 @@ class ForecastModel(ABC):
             _FitDesignState(
                 y_history=y_fit,
                 X_history=X_design_df,
-                y_name=self.y_name,
-                X_names=self.X_names,
                 dummies=dummies,
                 dummy_definitions=dummy_definitions,
                 dummy_columns=dummy_columns,
-                last_y_fit_date=last_y_fit_date,
+                last_y_fit_date=y_estimation.index[-1],
             ),
         )
 
@@ -1231,7 +1206,7 @@ class ForecastModel(ABC):
         context: ForecastContext | None = None,
         **kwargs,
     ) -> ForecastResult:
-        """Forecast using the fitted history without changing model state."""
+        """Forecast using the fitted history and captured preprocessing policy."""
         if not getattr(self, "_is_fitted", False):
             raise AttributeError("Model has not been fitted yet; call fit() first.")
         if context is None:

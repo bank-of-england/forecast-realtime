@@ -1,5 +1,11 @@
 # Internal data refactor: verification
 
+> Follow-up cleanup: the measurements and compatibility inventory below describe
+> the original migration. The subsequent cleanup removes unused helper APIs,
+> consolidates pipeline preparation and formula selection, and makes tree
+> forecast validation use fitted policy. See the
+> [current API changes](docs/forecasting_strategy.md#transformation-helper-api-changes).
+
 All seven implementation stages are complete. Ordinary models, trees, realtime
 tasks and revision counterfactuals use one private `ModelData` implementation.
 Public calls, `ForecastContext` fields and package exports remain compatible;

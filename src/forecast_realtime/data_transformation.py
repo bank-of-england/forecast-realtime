@@ -1,102 +1,19 @@
 """Data-transformation utilities and pickleable pipeline classes."""
 
-from collections.abc import Callable
 from dataclasses import dataclass
 
 import pandas as pd
 
 from ._model_data import (
-    _CALENDAR_DEPENDENT_METRICS as _CALENDAR_DEPENDENT_METRICS,
+    ModelData,
+    _resolve_input_metric_mapping,
+    _validate_mapping_coverage,
+    _validate_metric_mapping,
 )
-from ._model_data import _PERIODS_PER_YEAR as _PERIODS_PER_YEAR
-from ._model_data import _VALID_FREQUENCIES as _VALID_FREQUENCIES
-from ._model_data import (
-    _VALID_METRICS as _VALID_METRICS,
-)
-from ._model_data import (
-    ModelData as ModelData,
-)
-from ._model_data import (
-    ModelInputRequirements as ModelInputRequirements,
-)
-from ._model_data import (
-    _calendar_align as _calendar_align,
-)
-from ._model_data import _difference_series as _difference_series
-from ._model_data import (
-    _growth_series as _growth_series,
-)
-from ._model_data import _logs_series as _logs_series
-from ._model_data import (
-    _ordered_items as _ordered_items,
-)
-from ._model_data import (
-    _ordered_trajectory as _ordered_trajectory,
-)
-from ._model_data import _periods_per_year as _periods_per_year
-from ._model_data import (
-    _reconstruct_additive as _reconstruct_additive,
-)
-from ._model_data import (
-    _reconstruct_logarithmic as _reconstruct_logarithmic,
-)
-from ._model_data import (
-    _resolve_frequency as _resolve_frequency,
-)
-from ._model_data import (
-    _resolve_input_metric_mapping as _resolve_input_metric_mapping,
-)
-from ._model_data import (
-    _transform_metric as _transform_metric,
-)
-from ._model_data import (
-    _transform_variable as _transform_variable,
-)
-from ._model_data import (
-    _validate_frequency as _validate_frequency,
-)
-from ._model_data import (
-    _validate_mapping_coverage as _validate_mapping_coverage,
-)
-from ._model_data import (
-    _validate_metric_mapping as _validate_metric_mapping,
-)
-from ._model_data import (
-    _validate_wide_frame as _validate_wide_frame,
-)
-from ._model_data import (
-    _validate_x_role as _validate_x_role,
-)
-from ._model_data import combine_history_and_future as combine_history_and_future
 from ._model_data import infer_frequency_from_dates as infer_frequency_from_dates
 from ._model_data import (
     infer_long_variable_frequencies as infer_long_variable_frequencies,
 )
-from ._model_data import infer_variable_frequencies as infer_variable_frequencies
-from ._model_data import leading_nan_row_count as leading_nan_row_count
-
-
-def _reconstruct_levels_by_vintage(
-    forecasts: pd.DataFrame,
-    levels_outturns: pd.DataFrame,
-    reconstruct: Callable[[float, pd.Series], pd.Series],
-) -> list[pd.DataFrame]:
-    """Adapt the legacy helper to the canonical level reconstruction."""
-    if forecasts.empty:
-        return []
-    variable = forecasts["variable"].iloc[0]
-    metric = "log diff" if reconstruct is _reconstruct_logarithmic else "diff"
-    reconstructed = (
-        ModelData.from_long(forecasts)
-        .reconstruct_levels(
-            ModelData.from_long(levels_outturns, semantics="archive"),
-            [variable],
-            {variable: metric},
-        )
-        .to_long()
-    )
-    levels = reconstructed.loc[reconstructed["metric"].eq("levels")]
-    return [group for _, group in levels.groupby("vintage_date", sort=False)]
 
 
 def difference_by_vintage(data: pd.DataFrame, logarithmic: bool = False) -> pd.DataFrame:
@@ -140,11 +57,6 @@ def apply_transformations(
         pd.DataFrame : Data with computed transformations added
     """
     return ModelData.from_long(data).derive(variables, data_transformation).to_long()
-
-
-def _transform_long_metric(data: pd.DataFrame, metric: str) -> pd.DataFrame:
-    """Apply the canonical trajectory converter to one long-form variable."""
-    return ModelData.from_long(data).convert_trajectories(metric).to_long()
 
 
 class DataTransformationPipeline:
@@ -249,9 +161,8 @@ class DataTransformationPipeline:
         forecasts: pd.DataFrame,
         outturns: pd.DataFrame,
         y_variables: list[str],
-        frequency: str | None = None,
     ) -> pd.DataFrame:
-        """Reconstruct levels from logs or log differences if levels data is available.
+        """Reconstruct levels from logs or differences using available level history.
 
         Args:
             forecasts : pd.DataFrame
@@ -260,8 +171,6 @@ class DataTransformationPipeline:
                 The outturns dataframe (already filtered)
             y_variables : list[str]
                 The y variables
-            frequency : str
-                The frequency of the data
 
         Returns:
             pd.DataFrame : Forecasts with additional level reconstructions
@@ -310,38 +219,30 @@ class DataTransformationPipeline:
                 The X variables; required (and only allowed) together with
                 *X*.
             frequency : str, optional
-                Legacy fallback data frequency (``"M"`` or ``"Q"``). The
-                transformation frequency is inferred from each raw column.
+                Forecast-step frequency (``"M"`` or ``"Q"``), independent of
+                each variable's transformation calendar.
+            frequencies : dict[str, str], optional
+                Source calendars by variable; omitted calendars are inferred
+                from each historical column's non-null observations.
+            y_input_metrics : dict[str, str], optional
+                Source metrics for y; omitted entries default to levels.
+            X_input_metrics : dict[str, str], optional
+                Source metrics for X; omitted entries default to levels.
         Returns:
             tuple : ``(y_out, X_out)``, new DataFrames in the configured
             metric space. *X_out* is ``None`` when *X* is ``None``.
         """
-        _validate_wide_frame(y, y_variables, "y", require_all=True)
-        _validate_x_role(X, X_variables)
-        if X is not None:
-            _validate_wide_frame(X, X_variables, "X", require_all=True)
-        _validate_mapping_coverage(self.data_transformation, y_variables, X_variables)
-        y_input_metrics = _resolve_input_metric_mapping(
-            y_input_metrics, y_variables, "y_input_metrics"
-        )
-        X_input_metrics = _resolve_input_metric_mapping(
-            X_input_metrics, X_variables or [], "X_input_metrics"
-        )
-        if frequency is not None:
-            _validate_frequency(frequency)
-
-        frequency_map = {
-            variable: (frequencies or {}).get(variable, frequency)
-            for variable in [*y_variables, *(X_variables or [])]
-        }
-        transformed = ModelData.from_wide(
-            y=y.loc[:, y_variables],
-            X=X.loc[:, X_variables] if X is not None else None,
-            frequencies=frequency_map,
+        y_out, _, X_out, _ = self.transform_forecast_inputs(
+            y_history=y,
+            X_history=X,
+            y_variables=y_variables,
+            X_variables=X_variables,
+            frequency=frequency,
+            frequencies=frequencies,
             y_input_metrics=y_input_metrics,
             X_input_metrics=X_input_metrics,
-        ).transform(self.data_transformation)
-        return transformed.to_wide("y"), transformed.to_wide("X")
+        )
+        return y_out, X_out
 
     def transform_forecast_inputs(
         self,
@@ -390,49 +291,56 @@ class DataTransformationPipeline:
                 The X variables; required (and only allowed) together with
                 *X_history*.
             frequency : str, optional
-                Legacy fallback data frequency (``"M"`` or ``"Q"``). The
-                transformation frequency is inferred from each raw column.
+                Forecast-step frequency (``"M"`` or ``"Q"``), independent of
+                each variable's transformation calendar.
+            frequencies : dict[str, str], optional
+                Source calendars by variable; omitted calendars are inferred
+                from each historical column's non-null observations.
+            y_input_metrics : dict[str, str], optional
+                Source metrics for y history; omitted entries default to levels.
+            X_input_metrics : dict[str, str], optional
+                Source metrics for X history; omitted entries default to levels.
+            y_conditioning_input_metrics : dict[str, str], optional
+                Source metrics for y conditioning; omitted entries default to levels.
+            X_conditioning_input_metrics : dict[str, str], optional
+                Source metrics for future X; omitted entries default to levels.
         Returns:
             tuple : ``(y_history_out, y_conditioning_out, X_history_out,
             X_future_out)``, new DataFrames in the configured metric space.
             Each conditioning/future output is ``None`` when its raw input
             was ``None``.
         """
-        _validate_wide_frame(y_history, y_variables, "y_history", require_all=True)
-        _validate_x_role(X_history, X_variables)
-        if X_history is not None:
-            _validate_wide_frame(X_history, X_variables, "X_history", require_all=True)
-        if y_conditioning is not None:
-            _validate_wide_frame(
-                y_conditioning, y_variables, "y_conditioning", require_all=False
-            )
-        if X_future is not None:
-            _validate_wide_frame(X_future, X_variables, "X_future", require_all=False)
+        if X_history is not None and not X_variables:
+            raise ValueError("X was given without X_variables.")
+        if X_variables and X_history is None:
+            raise ValueError("X_variables was given without X.")
+        for frame, variables, role, require_all in (
+            (y_history, y_variables, "y_history", True),
+            (X_history, X_variables or [], "X_history", True),
+            (y_conditioning, y_variables, "y_conditioning", False),
+            (X_future, X_variables or [], "X_future", False),
+        ):
+            if frame is not None or role == "y_history":
+                ModelData.validate_frame(
+                    frame,
+                    role,
+                    allow_period=False,
+                    require_sorted=False,
+                    variables=variables,
+                    require_all=require_all,
+                )
         _validate_mapping_coverage(self.data_transformation, y_variables, X_variables)
-        y_input_metrics = _resolve_input_metric_mapping(
-            y_input_metrics, y_variables, "y_input_metrics"
-        )
         y_conditioning_input_metrics = _resolve_input_metric_mapping(
             y_conditioning_input_metrics,
             y_variables,
             "y_conditioning_input_metrics",
-        )
-        X_input_metrics = _resolve_input_metric_mapping(
-            X_input_metrics, X_variables or [], "X_input_metrics"
         )
         X_conditioning_input_metrics = _resolve_input_metric_mapping(
             X_conditioning_input_metrics,
             X_variables or [],
             "X_conditioning_input_metrics",
         )
-        if frequency is not None:
-            _validate_frequency(frequency)
-
-        frequency_map = {
-            variable: (frequencies or {}).get(variable, frequency)
-            for variable in [*y_variables, *(X_variables or [])]
-        }
-        transformed = ModelData.from_wide(
+        data = ModelData.from_wide(
             y=y_history.loc[:, y_variables],
             X=X_history.loc[:, X_variables] if X_history is not None else None,
             y_conditioning=(
@@ -447,12 +355,14 @@ class DataTransformationPipeline:
                 if X_future is not None
                 else None
             ),
-            frequencies=frequency_map,
+            frequencies=frequencies,
             y_input_metrics=y_input_metrics,
             X_input_metrics=X_input_metrics,
             y_conditioning_input_metrics=y_conditioning_input_metrics,
             X_conditioning_input_metrics=X_conditioning_input_metrics,
-        ).transform(self.data_transformation)
+        )
+        data, _ = data.resolve_frequencies(self.data_transformation, frequency)
+        transformed = data.transform(self.data_transformation)
         return (
             transformed.to_wide("y", "history"),
             transformed.to_wide("y", "conditioning"),
@@ -485,7 +395,7 @@ class FittedDataTransformation:
     ) -> "FittedDataTransformation":
         return cls(
             data_transformation=(
-                _ordered_items(pipeline.data_transformation)
+                tuple(sorted(pipeline.data_transformation.items()))
                 if pipeline is not None
                 else None
             ),

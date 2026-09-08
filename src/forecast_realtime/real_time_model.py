@@ -10,17 +10,23 @@ import pandas as pd
 from forecast_evaluation import ForecastData
 from tqdm import tqdm
 
-from ._model_data import ModelData
-from ._model_data import _select_input_metrics as _select_input_metrics
+from ._model_data import ModelData, infer_long_variable_frequencies
 from ._realtime_forecasting import ForecastRunResult, ForecastTask
-from .data_transformation import (
-    DataTransformationPipeline,
-    infer_long_variable_frequencies,
-)
 from .forecast_model import (
     X_IMPUTATION_METHODS,
     ForecastModel,
     NoUsableTransformedYError,
+)
+
+_FORECAST_COLUMNS = (
+    "date",
+    "vintage_date",
+    "forecast_horizon",
+    "variable",
+    "value",
+    "metric",
+    "source",
+    "frequency",
 )
 
 
@@ -45,18 +51,7 @@ def _failed_forecast_task(task: ForecastTask, error: Exception) -> ForecastRunRe
         UserWarning,
     )
     return ForecastRunResult(
-        forecasts=pd.DataFrame(
-            columns=[
-                "date",
-                "vintage_date",
-                "forecast_horizon",
-                "variable",
-                "value",
-                "metric",
-                "source",
-                "frequency",
-            ]
-        ),
+        forecasts=pd.DataFrame(columns=_FORECAST_COLUMNS),
         decompositions=None,
         all_vintages_skipped=True,
     )
@@ -119,13 +114,9 @@ def _resolve_step_frequency(
     if step_frequency is not None:
         return step_frequency
 
-    frequencies = {variable: [input_frequencies[variable]] for variable in y_variables}
-    unique_frequencies = {
-        frequency for values in frequencies.values() for frequency in values
-    }
-    if len(unique_frequencies) != 1 or any(
-        len(values) != 1 for values in frequencies.values()
-    ):
+    frequencies = {variable: input_frequencies[variable] for variable in y_variables}
+    unique_frequencies = set(frequencies.values())
+    if len(unique_frequencies) != 1:
         raise ValueError(
             "step_frequency must be provided when y_variables have mixed or "
             f"ambiguous frequencies; found {frequencies}."
@@ -332,10 +323,10 @@ class RealTimeModel:
                 - ``"mean"``          : fill with the in-sample column mean
                 - ``"ar1_t"``         : simulate from an AR(1) fit with Student-t errors
             drop_transformation_nans : bool, optional
-                If True (default), drop the first row of ``y``/``X`` for any
-                variable using a "diff" or "log diff" ``data_transformation``,
-                since that transformation leaves the first observation NaN.
-                Set to False to keep it.
+                If True (default), drop the undefined prefix produced by
+                calendar-dependent transformations such as ``pop``, ``yoy``,
+                ``diff`` and ``log diff``. Interior missing observations are
+                preserved. Set to False to keep the undefined prefix.
             **kwargs : dict
                 Additional keyword arguments to pass.
         """
@@ -572,7 +563,6 @@ class RealTimeModel:
             outturns=outturns,
             y_variables=y_variables,
             X_variables=X_variables,
-            frequency=step_frequency,
             reconstruct_levels=reconstruct_levels,
             first_vintage=first_vintage,
             last_vintage=last_vintage,
@@ -665,7 +655,6 @@ class RealTimeModel:
         outturns,
         y_variables,
         X_variables,
-        frequency,
         reconstruct_levels,
         first_vintage,
         last_vintage,
@@ -695,9 +684,7 @@ class RealTimeModel:
         )
 
         if reconstruct_levels:
-            forecasts = _reconstruct_forecasts_from_metrics(
-                forecasts, outturns, frequency
-            )
+            forecasts = _reconstruct_forecasts_from_metrics(forecasts, outturns)
             native_forecasts = None
         else:
             native_forecasts = forecasts[
@@ -956,18 +943,7 @@ def _loop_through_vintages(
 
     if not forecasts_list:
         return (
-            pd.DataFrame(
-                columns=[
-                    "date",
-                    "vintage_date",
-                    "forecast_horizon",
-                    "variable",
-                    "value",
-                    "metric",
-                    "source",
-                    "frequency",
-                ]
-            ),
+            pd.DataFrame(columns=_FORECAST_COLUMNS),
             None,
             True,
         )
@@ -1027,20 +1003,18 @@ def _loop_through_vintages(
 
 
 def _reconstruct_forecasts_from_metrics(
-    forecasts: pd.DataFrame, outturns: pd.DataFrame, frequency: str | None
+    forecasts: pd.DataFrame, outturns: pd.DataFrame
 ) -> pd.DataFrame:
     """Reconstruct level forecasts independently for each model output mapping."""
+    history = ModelData.from_long(outturns, semantics="archive")
     reconstructed = []
     for source, source_forecasts in forecasts.groupby("source", sort=False):
         metrics = source_forecasts[["variable", "metric"]].drop_duplicates()
         output_mapping = dict(zip(metrics["variable"], metrics["metric"], strict=False))
         reconstructed.append(
-            DataTransformationPipeline(output_mapping).reconstruct_levels(
-                forecasts=source_forecasts,
-                outturns=outturns,
-                y_variables=list(output_mapping),
-                frequency=frequency,
-            )
+            ModelData.from_long(source_forecasts)
+            .reconstruct_levels(history, list(output_mapping), output_mapping)
+            .to_long()
         )
     return pd.concat(reconstructed, ignore_index=True) if reconstructed else forecasts
 
