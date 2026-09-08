@@ -1,5 +1,10 @@
 # Real-time Forecast Package
 
+[![PyPI](https://img.shields.io/pypi/v/forecast-realtime.svg)](https://pypi.org/project/forecast-realtime/)
+[![Package quality](https://github.com/bank-of-england/forecast-realtime/actions/workflows/package-quality.yml/badge.svg)](https://github.com/bank-of-england/forecast-realtime/actions/workflows/package-quality.yml)
+[![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-0969da)](https://bank-of-england.github.io/forecast-realtime/)
+[![Coverage](https://codecov.io/gh/bank-of-england/forecast-realtime/graph/badge.svg)](https://codecov.io/gh/bank-of-england/forecast-realtime)
+
 A Python package for real-time orchestration of forecasting models.
 
 ## Installation
