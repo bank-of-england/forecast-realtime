@@ -487,8 +487,10 @@ class ModelData:
         )
         return self._from_paths(paths)
 
-    def with_input_metadata(self, source):
-        """Keep provenance when a public fit override replaces projected values."""
+    def with_input_metadata(
+        self, source, *, fields=("source", "owner", "metric", "frequency")
+    ):
+        """Restore selected provenance fields after a DataFrame input hook."""
         catalogue = list(self._catalogue)
         for role, kind in self._layouts:
             if not source.has_path(role, kind):
@@ -503,7 +505,7 @@ class ModelData:
                     catalogue[stream] = entry | {
                         key: value
                         for key, value in labels[entry["variable"]].items()
-                        if key not in {"dtype", "kind"}
+                        if key in fields
                     }
         return self._replace(catalogue=catalogue)
 
@@ -724,7 +726,9 @@ class ModelData:
             paths[role, "conditioning"] = (index, columns, output)
         return self._from_paths(paths)
 
-    def resolve_frequencies(self, mapping, frequency=None, *, require_calendars=False):
+    def resolve_frequencies(
+        self, mapping, frequency=None, *, require_calendars=False, require_step=True
+    ):
         """Resolve necessary calendars once, leaving ordinary daily data valid."""
         if mapping is not None and frequency is not None:
             _validate_frequency(frequency)
@@ -739,7 +743,7 @@ class ModelData:
             for stream in ids:
                 entry = self._catalogue[stream]
                 needed = (
-                    frequency is not None
+                    (require_step and frequency is not None)
                     or (calendar_index and require_calendars)
                     or (
                         (mapping or {}).get(entry["variable"])
@@ -755,7 +759,11 @@ class ModelData:
                         observed.index, f"raw {role} column '{entry['variable']}'"
                     )
                     catalogue[stream] = entry | {"frequency": resolved}
-        if frequency is None:
+        if require_step and frequency is None:
+            target_calendars = set(self.frequencies("y").values()) - {None}
+            if len(target_calendars) == 1:
+                frequency = next(iter(target_calendars))
+        if require_step and frequency is None:
             inferred = (
                 y_index.freqstr
                 if isinstance(y_index, pd.PeriodIndex)
@@ -774,8 +782,8 @@ class ModelData:
                     if rule.startswith(("QE", "QS"))
                     else inferred
                 )
-            if mapping is not None and frequency is not None:
-                _validate_frequency(frequency)
+        if mapping is not None and frequency is not None:
+            _validate_frequency(frequency)
         return self._replace(catalogue=catalogue), frequency
 
     def trim_undefined_prefix(self):

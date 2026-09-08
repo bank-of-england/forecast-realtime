@@ -57,6 +57,29 @@ class _RealtimeRecordingModel(_RecordingModel):
         return super()._prepare_forecast_inputs(y, X)
 
 
+class _LogFitOverride(_RecordingModel):
+    fits = []
+
+    def __init__(self, *args, calendar="M", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.calendar = calendar
+
+    def fit(self, y, X=None, **kwargs):
+        if self.calendar == "Q":
+            y = y.resample("QE").last()
+            X = X.resample("QE").last()
+        kwargs.update(
+            input_frequencies=dict.fromkeys([*y.columns, *X.columns], self.calendar),
+            y_input_metrics=dict.fromkeys(y.columns, "logs"),
+            X_input_metrics=dict.fromkeys(X.columns, "logs"),
+        )
+        return super().fit(np.log(y), np.log(X), **kwargs)
+
+    def _fit(self, y, X=None, **kwargs):
+        type(self).fits.append((y.copy(), X.copy(), self._raw_data))
+        return super()._fit(y, X, **kwargs)
+
+
 class _ContextOverrideModel(_RecordingModel):
     def __init__(self, *args, replacement=False, **kwargs):
         super().__init__(*args, **kwargs)
@@ -204,6 +227,224 @@ def test_validation_hook_is_reached_once_through_realtime_and_tree_paths():
     )
     tree.fit(_monthly_y([100.0, 110.0, 121.0]))
     assert _BoundaryModel.validation_calls == 1
+
+
+@pytest.mark.parametrize("boundary", ["direct", "tree", "realtime"])
+@pytest.mark.parametrize("calendar", ["M", "Q"])
+def test_public_fit_override_preserves_changed_units_and_calendars(
+    boundary, calendar, monkeypatch
+):
+    y = _monthly_y([10.0, 20.0, 30.0, 40.0, 50.0, 60.0])
+    X = y.rename(columns={"target": "feature"}) * 2
+    monkeypatch.setattr(_LogFitOverride, "fits", [])
+    model = _LogFitOverride(
+        label="leaf",
+        calendar=calendar,
+        data_transformation={"target": "logs", "feature": "logs"},
+    )
+    if boundary == "realtime":
+        outturns = (
+            y.join(X)
+            .rename_axis("date")
+            .reset_index()
+            .melt(id_vars="date", var_name="variable")
+            .assign(vintage_date=y.index[-1], frequency="M", metric="levels")
+        )
+        data = ForecastData(
+            outturns_data=outturns, compute_levels=False, data_check=False
+        )
+        # ForecastData's public storage accepts fewer metrics than the raw archive.
+        data._raw_forecasts = pd.DataFrame(
+            {
+                "date": [pd.Timestamp("2020-07-31")],
+                "vintage_date": y.index[-1],
+                "variable": "feature",
+                "value": np.log(140.0),
+                "metric": "logs",
+                "frequency": "M",
+                "source": "native",
+                "forecast_horizon": 1,
+                "target_minus_vintage": 1,
+            }
+        )
+        rt.RealTimeModel(data=data, models=model).forecast(
+            y_variables=["target"],
+            X_variables=["feature"],
+            X_sources={"feature": "native"},
+            X_steps_ahead={"feature": 0},
+            steps=1,
+            first_forecast_horizon=1,
+            first_vintage="2020-06-30",
+            last_vintage="2020-06-30",
+            reconstruct_levels=False,
+        )
+    else:
+        consumer = (
+            ForecastTree(
+                TreeNode(
+                    transform=lambda components: components["leaf"],
+                    children=[model],
+                    name="root",
+                )
+            )
+            if boundary == "tree"
+            else model
+        )
+        consumer.fit(y, X, input_frequencies={"target": "M", "feature": "M"})
+
+    assert len(_LogFitOverride.fits) == 1
+    fit_y, fit_X, raw = _LogFitOverride.fits[0]
+    for role, fitted, source in (("y", fit_y, y), ("X", fit_X, X)):
+        expected = np.log(source.resample("QE").last() if calendar == "Q" else source)
+        pd.testing.assert_index_equal(
+            fitted.index.as_unit("ns"), expected.index.as_unit("ns"), check_names=False
+        )
+        np.testing.assert_allclose(fitted, expected)
+        assert raw.metrics(role) == dict.fromkeys(source.columns, "logs")
+        assert raw.frequencies(role) == dict.fromkeys(source.columns, calendar)
+    pd.testing.assert_frame_equal(y, _monthly_y([10.0, 20.0, 30.0, 40.0, 50.0, 60.0]))
+    pd.testing.assert_frame_equal(X, y.rename(columns={"target": "feature"}) * 2)
+
+
+def test_public_fit_and_validation_hooks_retain_component_provenance():
+    class HookModel(_RecordingModel):
+        def fit(self, y, X=None, **kwargs):
+            return super().fit(y, X, **kwargs)
+
+        def _validate_fit_inputs(self, y, X):
+            return super()._validate_fit_inputs(y, X)
+
+    history = _monthly_y([10.0, 20.0, 30.0])
+    components = np.log(history)
+    data = ModelData.from_components(
+        ModelData.from_wide(y=history, frequencies={"target": "M"}),
+        [("child", components, {"target": "logs"}, {"target": "M"})],
+    )
+
+    model = HookModel()._fit_from_data(data)
+
+    pd.testing.assert_frame_equal(model.X, components.rename(columns={"target": "child"}))
+    assert model._raw_data.metrics("X") == {"child": "logs"}
+    assert model._raw_data.frequencies("X") == {"child": "M"}
+    entry = next(e for e in model._raw_data._catalogue if e["variable"] == "child")
+    assert (entry["source"], entry["owner"]) == ("child", "component")
+
+
+@pytest.mark.parametrize("mapping", [None, {"target": "levels"}])
+@pytest.mark.parametrize("calendar", ["M", "Q"])
+@pytest.mark.parametrize(
+    "dates",
+    [
+        ["2020-03-31"],
+        ["2020-03-31", "2020-12-31"],
+        ["2020-03-31", "2020-06-30", "2020-09-30"],
+    ],
+    ids=["single", "sparse", "quarterly-sample"],
+)
+def test_direct_fit_resolves_step_from_supplied_target_calendar(mapping, calendar, dates):
+    y = pd.DataFrame(
+        {"target": np.arange(len(dates), dtype=float)}, index=pd.to_datetime(dates)
+    )
+    model = _RecordingModel(data_transformation=mapping)
+
+    model.fit(y, input_frequencies={"target": calendar})
+    result = model.forecast(steps=1)
+
+    assert model._fitted_model_configuration.data_transformation.frequency == calendar
+    pd.testing.assert_frame_equal(model.fitted_values_.dropna(), y, check_freq=False)
+    expected_date = (pd.Period(y.index[-1], freq=calendar) + 1).end_time.normalize()
+    assert result.index[0] == expected_date
+
+
+def test_inferred_series_calendar_does_not_replace_the_forecast_step():
+    history = _monthly_y(
+        [1.0, np.nan, np.nan, 2.0, np.nan, np.nan, 3.0], start="2020-03-31"
+    )
+    model = _RecordingModel(data_transformation={"target": "diff"}).fit(history)
+
+    assert model._raw_data.frequencies("y") == {"target": "Q"}
+    assert model._fitted_model_configuration.data_transformation.frequency == "M"
+
+
+@pytest.mark.parametrize("boundary", ["forecast", "predict", "internal"])
+@pytest.mark.parametrize("replace_context", [False, True])
+def test_tree_forecast_hook_preserves_context_and_conditioning(boundary, replace_context):
+    class ContextTree(ForecastTree):
+        def _forecast(
+            self, context, steps=1, X=None, y=None, forecast_origin=None, **kwargs
+        ):
+            assert isinstance(context, ForecastContext)
+            assert X is context.X_conditioning
+            assert y is context.y_conditioning
+            assert forecast_origin == context.forecast_origin
+            assert kwargs.pop("marker") == "forwarded"
+            self.hook_calls = getattr(self, "hook_calls", 0) + 1
+            if replace_context:
+                context = replace(
+                    context,
+                    y_conditioning=y.assign(target=777.0),
+                    X_conditioning=X.assign(feature=888.0),
+                )
+            else:
+                y.loc[:, "target"] = 777.0
+                X.loc[:, "feature"] = 888.0
+            return super()._forecast(
+                context, steps=steps, X=X, y=y, forecast_origin=forecast_origin, **kwargs
+            )
+
+        def _forecast_decomp(self, steps=1, X=None, y=None, **kwargs):
+            assert self.hook_calls == 1
+            if not replace_context:
+                assert y["target"].eq(777.0).all()
+                assert X["feature"].eq(888.0).all()
+            return None
+
+    history = _monthly_y([100.0, 110.0, 121.0])
+    X_history = history.rename(columns={"target": "feature"})
+    conditioning = _monthly_y([130.0, 140.0], start="2020-04-30")
+    X_conditioning = conditioning.rename(columns={"target": "feature"})
+    leaf = _RecordingModel(label="leaf")
+    tree = ContextTree(
+        TreeNode(transform=lambda components: components["leaf"], children=[leaf])
+    ).fit(history, X_history)
+    context = ForecastContext(
+        y_history=history,
+        X_history=X_history,
+        y_conditioning=conditioning,
+        X_conditioning=X_conditioning,
+        forecast_origin=history.index[-1],
+    )
+    if boundary == "forecast":
+        result = tree.forecast(
+            steps=2, y=conditioning, X=X_conditioning, decomp=True, marker="forwarded"
+        )
+    elif boundary == "predict":
+        result = tree.predict(context, steps=2, decomp=True, marker="forwarded")
+    else:
+        result = tree._predict_from_data(
+            ModelData.from_context(context, tree._raw_data),
+            forecast_origin=context.forecast_origin,
+            steps=2,
+            decomp=True,
+            marker="forwarded",
+        )
+
+    assert tree.hook_calls == 1
+    assert result.index.equals(conditioning.index)
+    pd.testing.assert_frame_equal(
+        leaf.received_forecast_y.loc[conditioning.index],
+        conditioning.assign(target=777.0),
+    )
+    pd.testing.assert_frame_equal(
+        leaf.received_forecast_X.loc[conditioning.index],
+        X_conditioning.assign(feature=888.0),
+    )
+    pd.testing.assert_frame_equal(
+        conditioning, _monthly_y([130.0, 140.0], start="2020-04-30")
+    )
+    pd.testing.assert_frame_equal(
+        X_conditioning, conditioning.rename(columns={"target": "feature"})
+    )
 
 
 @pytest.mark.parametrize("positional_context", [False, True])

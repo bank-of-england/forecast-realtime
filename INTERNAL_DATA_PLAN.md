@@ -1,9 +1,16 @@
 # Internal data refactor
 
-Status: all seven stages implemented and verified. The executed baseline,
-compatibility decisions, final checks and performance comparison are recorded in
-[INTERNAL_DATA_RESULTS.md](INTERNAL_DATA_RESULTS.md). Parallel revision
-decomposition remains explicitly deferred; its existing guard is retained.
+Status: all seven stages implemented. The corrective follow-up restores the
+public fit-annotation, known-calendar and tree context-hook contracts. Validation
+passes: 875 tests, 11 skips, three snapshots, lint, formatting, docstrings and
+documentation checks. The executed baseline, compatibility decisions and
+historical performance comparison are recorded in
+[INTERNAL_DATA_RESULTS.md](INTERNAL_DATA_RESULTS.md#corrective-follow-up).
+The implementation accepts the recorded 20.6% / 34 ms tree overhead as a trade-off,
+not a speed improvement; the follow-up does not rerun those benchmarks. Removed
+helper APIs have an explicit
+[migration note](docs/forecasting_strategy.md#transformation-helper-api-changes).
+Parallel revision decomposition remains deferred; its existing guard is retained.
 
 ## Objective
 

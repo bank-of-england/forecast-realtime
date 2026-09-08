@@ -629,20 +629,31 @@ class ForecastTree(ForecastModel):
         forecast_origin = (
             forecast_origin if forecast_origin is not None else data.index("y")[-1]
         )
-        forecast = self._forecast(
-            data=data,
-            steps=steps,
-            forecast_origin=forecast_origin,
-            **kwargs,
-        )
+        if type(self)._forecast is ForecastTree._forecast:
+            forecast = self._forecast_data(
+                data, steps=steps, forecast_origin=forecast_origin, **kwargs
+            )
+            conditioning = {
+                "X": data.to_wide("X", "conditioning"),
+                "y": data.to_wide("y", "conditioning"),
+            }
+        else:
+            context = ForecastContext._from_data(data, forecast_origin)
+            conditioning = {"X": context.X_conditioning, "y": context.y_conditioning}
+            forecast = self._forecast(
+                context=context,
+                steps=steps,
+                **conditioning,
+                forecast_origin=forecast_origin,
+                **kwargs,
+            )
         return self._finalise_forecast(
             forecast,
             steps=steps,
             forecast_origin=forecast_origin,
             decomp=decomp,
             decomp_kwargs={
-                "X": data.to_wide("X", "conditioning"),
-                "y": data.to_wide("y", "conditioning"),
+                **conditioning,
                 "forecast_origin": forecast_origin,
                 **kwargs,
             },
@@ -702,10 +713,25 @@ class ForecastTree(ForecastModel):
 
     def _forecast(
         self,
-        data: ModelData,
+        context: ForecastContext,
         steps: int = 1,
         X: pd.DataFrame | None = None,
         y: pd.DataFrame | None = None,
+        forecast_origin=None,
+        **kwargs,
+    ) -> pd.DataFrame:
+        """Adapt the established context hook to the shared tree traversal."""
+        return self._forecast_data(
+            ModelData.from_context(context, self._raw_data),
+            steps=steps,
+            forecast_origin=forecast_origin,
+            **kwargs,
+        )
+
+    def _forecast_data(
+        self,
+        data: ModelData,
+        steps: int = 1,
         forecast_origin=None,
         **kwargs,
     ) -> pd.DataFrame:

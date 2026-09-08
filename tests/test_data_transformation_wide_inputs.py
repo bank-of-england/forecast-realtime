@@ -85,6 +85,86 @@ def test_transform_fit_inputs_identity_applies_to_y_and_X_source_metrics():
 
 
 @pytest.mark.parametrize(
+    ("history_dates", "values", "future_date"),
+    [
+        (_dates(), [], "2020-01-31"),
+        (_dates("2020-01-31"), [100.0], "2020-02-29"),
+        (_dates("2020-01-31", "2020-03-31"), [100.0, 110.0], "2020-04-30"),
+        (
+            _dates("2020-01-31", "2020-03-31"),
+            [np.nan, np.nan],
+            "2020-04-30",
+        ),
+    ],
+    ids=["empty", "one-observation", "sparse-two-observations", "all-missing"],
+)
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        {"gdp": "levels", "unemp": "levels"},
+        {"gdp": "diff", "unemp": "logs"},
+    ],
+    ids=["levels", "native-metrics"],
+)
+@pytest.mark.parametrize(
+    "frequencies",
+    [None, {"gdp": "M", "unemp": "M"}],
+    ids=["without-frequencies", "explicit-frequencies"],
+)
+@pytest.mark.parametrize("boundary", ["fit", "forecast"])
+@pytest.mark.parametrize("frequency", [None, "M"])
+def test_transform_inputs_identity_preserves_degenerate_wide_frames(
+    history_dates, values, future_date, mapping, frequencies, boundary, frequency
+):
+    y_history = pd.DataFrame({"gdp": values}, index=history_dates)
+    X_history = pd.DataFrame(
+        {"unemp": [value / 25 for value in values]}, index=history_dates
+    )
+    future_index = _dates(future_date)
+    y_conditioning = pd.DataFrame({"gdp": [125.0]}, index=future_index)
+    X_future = pd.DataFrame({"unemp": [5.0]}, index=future_index)
+    pipeline = DataTransformationPipeline(mapping)
+
+    if boundary == "fit":
+        y_history_out, X_history_out = pipeline.transform_fit_inputs(
+            y_history,
+            X_history,
+            y_variables=["gdp"],
+            X_variables=["unemp"],
+            frequency=frequency,
+            frequencies=frequencies,
+            y_input_metrics={"gdp": mapping["gdp"]},
+            X_input_metrics={"unemp": mapping["unemp"]},
+        )
+    else:
+        (
+            y_history_out,
+            y_conditioning_out,
+            X_history_out,
+            X_future_out,
+        ) = pipeline.transform_forecast_inputs(
+            y_history,
+            y_conditioning=y_conditioning,
+            X_history=X_history,
+            X_future=X_future,
+            y_variables=["gdp"],
+            X_variables=["unemp"],
+            frequency=frequency,
+            frequencies=frequencies,
+            y_input_metrics={"gdp": mapping["gdp"]},
+            X_input_metrics={"unemp": mapping["unemp"]},
+            y_conditioning_input_metrics={"gdp": mapping["gdp"]},
+            X_conditioning_input_metrics={"unemp": mapping["unemp"]},
+        )
+
+    pd.testing.assert_frame_equal(y_history_out, y_history)
+    pd.testing.assert_frame_equal(X_history_out, X_history)
+    if boundary == "forecast":
+        pd.testing.assert_frame_equal(y_conditioning_out, y_conditioning)
+        pd.testing.assert_frame_equal(X_future_out, X_future)
+
+
+@pytest.mark.parametrize(
     ("metric", "expected"),
     [
         ("logs", np.log([100.0, 110.0, 125.0])),

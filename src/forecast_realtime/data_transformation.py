@@ -361,7 +361,9 @@ class DataTransformationPipeline:
             y_conditioning_input_metrics=y_conditioning_input_metrics,
             X_conditioning_input_metrics=X_conditioning_input_metrics,
         )
-        data, _ = data.resolve_frequencies(self.data_transformation, frequency)
+        data, _ = data.resolve_frequencies(
+            self.data_transformation, frequency, require_step=False
+        )
         transformed = data.transform(self.data_transformation)
         return (
             transformed.to_wide("y", "history"),

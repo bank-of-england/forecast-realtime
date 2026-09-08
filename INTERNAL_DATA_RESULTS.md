@@ -1,21 +1,63 @@
 # Internal data refactor: verification
 
-> Follow-up cleanup: the measurements and compatibility inventory below describe
-> the original migration. The subsequent cleanup removes unused helper APIs,
-> consolidates pipeline preparation and formula selection, and makes tree
-> forecast validation use fitted policy. See the
-> [current API changes](docs/forecasting_strategy.md#transformation-helper-api-changes).
+> The measurements below describe the original migration, not a new benchmark
+> run. The cleanup removed helper APIs; the corrective follow-up restores three
+> boundary contracts. See the [follow-up](#corrective-follow-up) and the
+> [migration note](docs/forecasting_strategy.md#transformation-helper-api-changes).
 
-All seven implementation stages are complete. Ordinary models, trees, realtime
+All seven implementation stages are implemented. Ordinary models, trees, realtime
 tasks and revision counterfactuals use one private `ModelData` implementation.
-Public calls, `ForecastContext` fields and package exports remain compatible;
-the tree signature details are recorded below. No runtime dependency or
-persistent cache was added.
+The follow-up preserves the base model signatures, `ForecastContext` fields and
+package exports. Source-level helper removals require the migration described
+above. No runtime dependency or persistent cache was added.
 
-Final result: **762 passed, 11 skipped, 105 warnings and three passing
+Original migration result: **762 passed, 11 skipped, 105 warnings and three passing
 snapshots in 181.40 seconds**. All five semantic regressions pass. Ruff lint and
 formatting, docstring checks, API documentation consistency, notebook freshness
 and the strict documentation build pass.
+
+## Corrective follow-up
+
+Review of `a43814e` and `60d43dd` against `1479bd5` found three compatibility
+regressions despite the cleanup's passing suite (785 passed, 11 skipped, three
+snapshots). The follow-up keeps the architecture and corrects its adapters:
+
+- Public `fit()` overrides retain their explicit y/X source metrics and calendars.
+  The adapter restores only source and component ownership. Validation hooks,
+  which cannot return annotations, retain the full incoming provenance.
+- Forecast-step resolution uses carried target calendars before index inference.
+  Newly inferred per-series calendars remain separate from the forecast step.
+  Standalone identity transformations do not require calendar or step inference.
+- `ForecastTree._forecast(context, ...)` again receives the context and the y/X
+  conditioning DataFrames. Its adapter delegates to the sole data-based traversal;
+  ordinary trees avoid the context round-trip. Hook edits remain authoritative.
+
+Boundary tests cover direct/tree/realtime unit and calendar changes, component
+provenance through public and validation hooks, supplied calendars with short or
+sparse history, and context-hook delegation and conditioning edits. Pipeline
+tests cover empty, single, sparse and all-missing inputs, both identity levels and
+native transformed units, with and without supplied calendars and forecast steps.
+See [tests/test_model_data_boundary_hooks.py](tests/test_model_data_boundary_hooks.py)
+and [tests/test_data_transformation_wide_inputs.py](tests/test_data_transformation_wide_inputs.py).
+
+Follow-up validation: **875 passed, 11 skipped, 107 warnings and three passing
+snapshots in 165.62 seconds**, using `pytest -n auto` in the `forecast-realtime`
+conda environment. This adds 90 passing cases to the cleanup baseline; no
+snapshot changed. Ruff lint and formatting, docstring checks, API documentation
+consistency, notebook freshness, the clean strict documentation build, diff
+whitespace and editor diagnostics pass. The docs build retains the existing
+Griffe parameter-parsing notices. No paired benchmarks have been rerun.
+
+The follow-up adds 35 net production lines to the cleanup, leaving a net reduction
+of **249 production lines against `1479bd5`**, including the private data module.
+No removed helper, parallel preparation pipeline or duplicate tree traversal was
+restored. The compatibility hook delegates; all data operations remain shared.
+
+**Performance decision:** retain the canonical-data architecture and accept the
+recorded tree overhead of **20.6% / 34 ms** for this implementation. This is an
+explicit trade-off for provenance and isolation, not a runtime improvement or a
+claim of separate maintainer sign-off. The measurements below remain historical;
+they do not establish the runtime of this corrective follow-up.
 
 ## Baseline
 
@@ -348,7 +390,7 @@ Its 189 decomposition rows have the same checksum and coverage as the complete
 sequential request. Native worker output and the public stored forecast table
 have different schemas, so their forecast checksums are intentionally distinct.
 
-## Structural result
+## Structural result: original migration
 
 Counts include docstrings, comments and blank lines, including the entire new
 private module. Tests, documentation and the benchmark script are excluded from
@@ -374,9 +416,10 @@ frames and provenance dictionaries through tasks or counterfactuals.
 
 The deliberate private removals are `RawInputBundle`, `InputMetricMapping`,
 `PreparedModelInputs`, `ResolvedTransformationPlan`, the old task fields and
-operation wrappers on `FittedDataTransformation`. Existing public
-`DataTransformationPipeline` and helper import paths delegate to the shared core.
-No tree-data subclass or competing legacy preparation pipeline remains.
+operation wrappers on `FittedDataTransformation`. The surviving
+`DataTransformationPipeline` operations and helper imports delegate to the shared
+core; the cleanup's removed names are listed in the migration note above. No
+tree-data subclass or competing legacy preparation pipeline remains.
 
 The existing rejection of parallel revision decomposition remains in force.
 Sequential runs preserve the previous successful vintage in one complete batch;

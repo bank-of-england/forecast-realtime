@@ -857,7 +857,7 @@ class ForecastModel(ABC):
         )
         source_data = kwargs.pop("_model_data", None)
         if source_data is not None:
-            data = data.with_input_metadata(source_data)
+            data = data.with_input_metadata(source_data, fields=("source", "owner"))
         return self._fit_data(
             data,
             y_lags=y_lags,
@@ -958,7 +958,6 @@ class ForecastModel(ABC):
         y_frequency = (
             next(iter(y_frequency_values)) if len(y_frequency_values) == 1 else None
         )
-        target_frequency = frequency or y_frequency
         if X_columns is not None and not self._handles_mixed_frequencies:
             X_frequency_values = set(X_frequency_map.values())
             if (
@@ -974,7 +973,7 @@ class ForecastModel(ABC):
             pipeline,
             y_variables=y_columns,
             X_variables=X_columns,
-            frequency=target_frequency,
+            frequency=frequency,
             X_imputation=X_imputation,
             pipeline_source=(
                 "model"
