@@ -1156,10 +1156,7 @@ def test_revision_counterfactual_does_not_mutate_fitted_model():
 
     _level_contributions(
         model,
-        y_history=y,
-        X_history=None,
-        y_conditioning=None,
-        X_conditioning=None,
+        data=model._raw_data,
         forecast_origin=model.last_y_fit_date,
         steps=2,
         dates=forecast.index,
@@ -1896,7 +1893,7 @@ def test_ar1_t_uses_finite_ols_fallback_for_invalid_optimiser(
     monkeypatch, optimiser_result
 ):
     monkeypatch.setattr(
-        "forecast_realtime._utils.minimize", lambda *args, **kwargs: optimiser_result
+        "forecast_realtime._model_data.minimize", lambda *args, **kwargs: optimiser_result
     )
     observed = pd.Series(np.arange(1.0, 9.0))
 

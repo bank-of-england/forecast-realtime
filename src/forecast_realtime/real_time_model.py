@@ -10,6 +10,8 @@ import pandas as pd
 from forecast_evaluation import ForecastData
 from tqdm import tqdm
 
+from ._model_data import ModelData
+from ._model_data import _select_input_metrics as _select_input_metrics
 from ._realtime_forecasting import ForecastRunResult, ForecastTask
 from .data_transformation import (
     DataTransformationPipeline,
@@ -17,107 +19,20 @@ from .data_transformation import (
 )
 from .forecast_model import (
     X_IMPUTATION_METHODS,
-    ForecastContext,
     ForecastModel,
     NoUsableTransformedYError,
 )
-
-_DERIVABLE_FROM_LEVELS = frozenset({"levels", "logs", "log diff", "diff", "pop", "yoy"})
-
-
-def _select_input_metrics(
-    data: pd.DataFrame,
-    variables: list[str],
-    requested_metrics: dict[str, str] | None = None,
-) -> tuple[pd.DataFrame, dict[str, str]]:
-    """Select one deterministic input metric for each requested variable."""
-    if "metric" not in data.columns:
-        return data.copy(), {variable: "levels" for variable in variables}
-
-    requested_metrics = requested_metrics or {}
-    selected_metrics = {}
-    available_variables = set(data["variable"])
-
-    for variable in variables:
-        if variable not in available_variables:
-            continue
-
-        available = sorted(data.loc[data["variable"] == variable, "metric"].unique())
-        requested = requested_metrics.get(variable)
-        if requested is not None:
-            if requested in available:
-                selected = requested
-            elif "levels" in available and requested in _DERIVABLE_FROM_LEVELS:
-                selected = "levels"
-            else:
-                raise ValueError(
-                    f"Cannot select input metric for variable '{variable}': "
-                    f"requested metric '{requested}' is unavailable; available "
-                    f"metrics: {available}."
-                )
-        elif len(available) == 1:
-            selected = available[0]
-        else:
-            raise ValueError(
-                f"Input metrics for variable '{variable}' are ambiguous; "
-                f"available metrics: {available}."
-            )
-        selected_metrics[variable] = selected
-
-    metric_by_variable = data["variable"].map(selected_metrics)
-    selected_rows = data.loc[
-        data["variable"].isin(selected_metrics) & data["metric"].eq(metric_by_variable)
-    ].copy()
-    return selected_rows, selected_metrics
-
-
-def _select_tree_input_metrics(
-    data: pd.DataFrame,
-    variables: list[str],
-    requirements: dict[str, tuple[str, ...]],
-) -> tuple[pd.DataFrame, dict[str, str]]:
-    """Select a source that can be dispatched to heterogeneous tree leaves."""
-    selected_variables = [
-        variable for variable in variables if requirements.get(variable)
-    ]
-    requested = {}
-    for variable in selected_variables:
-        options = requirements.get(variable, ())
-        if len(options) <= 1:
-            if options:
-                requested[variable] = options[0]
-            continue
-
-        available = set(data.loc[data["variable"] == variable, "metric"])
-        if "levels" in available:
-            requested[variable] = "levels"
-            continue
-
-        native = sorted(available.intersection(options))
-        if len(native) == 1:
-            requested[variable] = native[0]
-            continue
-        raise ValueError(
-            f"Cannot select a common raw metric for tree variable '{variable}': "
-            f"leaves require {list(options)}, available metrics are "
-            f"{sorted(available)}. Retain levels or provide one native source."
-        )
-
-    return _select_input_metrics(data, selected_variables, requested)
 
 
 def _run_forecast_task(task: ForecastTask) -> ForecastRunResult:
     """Run one pickleable task in either sequential or spawned execution."""
     result = _loop_through_vintages(
+        data=task.data,
         model=task.model,
         data_transformation=task.data_transformation,
-        input_metrics=task.input_metrics,
-        y_input_metrics=task.y_input_metrics,
-        X_input_metrics=task.X_input_metrics,
-        y_conditioning_input_metrics=task.y_conditioning_input_metrics,
-        X_conditioning_input_metrics=task.X_conditioning_input_metrics,
         vintages=task.vintages,
-        **task.common,
+        model_kwargs=task.model_kwargs,
+        **task.options,
     )
     return ForecastRunResult(*result)
 
@@ -193,43 +108,6 @@ def _validate_conditioning(role, selected_variables, horizons, sources, steps):
             f"{source_name} is provided but {horizon_name} is None. "
             f"Please provide {horizon_name} to use {source_name}."
         )
-
-
-def _expected_conditioning_dates(first_forecast_date, steps, frequency):
-    first_period = pd.Period(first_forecast_date, freq=frequency)
-    return (
-        pd.period_range(first_period, periods=steps, freq=frequency)
-        .to_timestamp(how="end")
-        .normalize()
-    )
-
-
-def _conditioning_dates_by_variable(
-    first_forecast_date,
-    steps,
-    target_frequency,
-    variables,
-    frequency_map,
-):
-    """Build target-horizon date groups at each conditioned variable's frequency."""
-    target_period = pd.Period(first_forecast_date, freq=target_frequency)
-    target_periods = pd.period_range(target_period, periods=steps, freq=target_frequency)
-    dates_by_variable = {}
-    for variable in variables:
-        variable_frequency = frequency_map[variable]
-        dates_by_variable[variable] = [
-            pd.period_range(
-                target_period.asfreq(variable_frequency, how="start")
-                if target_periods.empty
-                else period.asfreq(variable_frequency, how="start"),
-                period.asfreq(variable_frequency, how="end"),
-                freq=variable_frequency,
-            )
-            .to_timestamp(how="end")
-            .normalize()
-            for period in target_periods
-        ]
-    return dates_by_variable
 
 
 def _resolve_step_frequency(
@@ -499,15 +377,9 @@ class RealTimeModel:
                     "Additional model options must be pickleable when parallel=True."
                 ) from error
 
-        # outturns = self.data.outturns.copy()
-        # forecasts = self.data.forecasts.copy()
-        # TODO: remove this raw-table workaround once forecast-evaluation fixes
-        # duplicate derived/native outturn metrics and the fixed version is
-        # required by this project.
-        # ForecastData prepares derived metrics on its public tables. Real-time
-        # input selection must use the source rows supplied by the caller so a
-        # levels-only panel is transformed by the model pipeline, rather than
-        # selecting ForecastData's evaluation-derived metric as native input.
+        # Keep model input selection on source rows supplied by the caller.
+        # ForecastData's public tables may contain derived metrics, which must
+        # not replace native inputs before each model's pipeline runs.
         outturns = getattr(self.data, "_raw_outturns", self.data.outturns).copy()
         forecasts = getattr(self.data, "_raw_forecasts", self.data.forecasts).copy()
 
@@ -610,24 +482,13 @@ class RealTimeModel:
             outturns["variable"].isin(y_variables + (X_variables if X_variables else []))
         ]
 
-        # filter forecasts based on conditioning/regressor sources
-        all_forecast_sources = {}
-        if y_sources is not None:
-            all_forecast_sources.update(y_sources)
-        if X_sources is not None:
-            all_forecast_sources.update(X_sources)
+        archive = ModelData.from_archive(
+            outturns, forecasts, frequencies=input_frequencies
+        )
 
-        if all_forecast_sources and not forecasts.empty:
-            mask = forecasts["variable"].isin(all_forecast_sources) & (
-                forecasts["source"] == forecasts["variable"].map(all_forecast_sources)
-            )
-            forecasts = forecasts[mask]
-
-        # Vintage range shared by every model: outturns/forecasts stay raw
-        # (untransformed) until each model's own public fit()/forecast() call,
-        # so there is no model-specific transformation left to shrink this
-        # range up front; any vintage a model cannot usably fit is skipped
-        # inside _loop_through_vintages instead.
+        # The vintage range is shared by every model. Each task carries its
+        # selected data and transformation policy; unusable vintages are
+        # skipped inside _loop_through_vintages.
         vintages = outturns["vintage_date"].unique()
         vintages = np.sort(
             vintages[(vintages >= first_vintage) & (vintages <= last_vintage)]
@@ -635,101 +496,20 @@ class RealTimeModel:
 
         # Resolve and select input metrics independently for each model before
         # any realtime vintage deduplication or long-to-wide pivoting.
-        all_variables = y_variables + (X_variables or [])
         resolved_model_data = []
         for model in self.models:
-            y_conditioning_input_metrics = {}
-            X_conditioning_input_metrics = {}
             try:
                 pipeline = model.resolve_input_data_transformation(
                     data_transformation,
                     y_variables=y_variables,
                     X_variables=X_variables,
                 )
-                formula = getattr(model, "_formula", None)
-                model_y_variables = model.resolve_target_variables(y_variables)
-                model_X_variables = (
-                    (
-                        [
-                            variable
-                            for variable in (X_variables or [])
-                            if variable in formula.X_cols
-                        ]
-                        if not formula.has_wildcard
-                        else X_variables or []
-                    )
-                    if formula is not None
-                    else X_variables or []
+                requirements = model.input_requirements(
+                    y_variables, X_variables, data_transformation
                 )
-                tree_requirements = getattr(model, "input_metric_requirements", None)
-                if tree_requirements is not None:
-                    requirements = tree_requirements(
-                        y_variables,
-                        X_variables,
-                        data_transformation=data_transformation,
-                    )
-                    selected_outturns, input_metrics = _select_tree_input_metrics(
-                        outturns, all_variables, requirements
-                    )
-                else:
-                    requested_metrics = (
-                        pipeline.data_transformation if pipeline is not None else None
-                    )
-                    if not requested_metrics and data_transformation is None:
-                        available_variables = set(outturns["variable"])
-                        level_defaults = {
-                            variable: "levels"
-                            for variable in [
-                                *model_y_variables,
-                                *model_X_variables,
-                            ]
-                            if variable in available_variables
-                            and "levels"
-                            in set(
-                                outturns.loc[outturns["variable"] == variable, "metric"]
-                            )
-                        }
-                        requested_metrics = level_defaults or None
-                    selected_outturns, input_metrics = _select_input_metrics(
-                        outturns,
-                        [*model_y_variables, *model_X_variables],
-                        requested_metrics,
-                    )
-                forecast_variables = []
-                if "variable" in forecasts.columns:
-                    conditioning_variables = set(
-                        (y_steps_ahead or {}) | (X_steps_ahead or {})
-                    )
-                    forecast_variables = [
-                        variable
-                        for variable in [*model_y_variables, *model_X_variables]
-                        if variable in conditioning_variables
-                        and variable in set(forecasts["variable"])
-                    ]
-                if tree_requirements is not None:
-                    selected_forecasts, conditioning_input_metrics = (
-                        _select_tree_input_metrics(
-                            forecasts,
-                            forecast_variables,
-                            requirements,
-                        )
-                    )
-                else:
-                    selected_forecasts, conditioning_input_metrics = (
-                        _select_input_metrics(
-                            forecasts, forecast_variables, requested_metrics
-                        )
-                    )
-                y_conditioning_input_metrics = {
-                    variable: metric
-                    for variable, metric in conditioning_input_metrics.items()
-                    if variable in y_variables
-                }
-                X_conditioning_input_metrics = {
-                    variable: metric
-                    for variable, metric in conditioning_input_metrics.items()
-                    if variable in (X_variables or [])
-                }
+                selected = archive.select(
+                    requirements, y_sources=y_sources, X_sources=X_sources
+                )
             except ValueError as error:
                 raise ValueError(f"Model '{model.label}': {error}") from error
             effective_transformation = (
@@ -739,11 +519,7 @@ class RealTimeModel:
                 (
                     model,
                     effective_transformation,
-                    selected_outturns,
-                    selected_forecasts,
-                    input_metrics,
-                    y_conditioning_input_metrics,
-                    X_conditioning_input_metrics,
+                    selected,
                 )
             )
 
@@ -759,14 +535,10 @@ class RealTimeModel:
         ):
             raise ValueError("X_lags dict values must be non-negative integers")
 
-        # Shared forecast arguments contain raw outturns and conditioning forecasts.
-        # The realtime loop selects vintage-specific paths; ForecastModel owns
-        # transformation, lag construction, formula selection, and design matrices.
+        # Shared options contain run controls. Each task carries model-specific
+        # selected data and transformation policy; the realtime loop applies
+        # vintage selection and conditioning before prediction.
         common = dict(
-            outturns=outturns,
-            forecasts=forecasts,
-            y_variables=y_variables,
-            X_variables=X_variables,
             y_steps_ahead=y_steps_ahead,
             X_steps_ahead=X_steps_ahead,
             steps=steps,
@@ -778,9 +550,7 @@ class RealTimeModel:
             dummies=dummies,
             decomp=decomp,
             X_imputation=X_imputation,
-            input_frequencies=input_frequencies,
             drop_transformation_nans=drop_transformation_nans,
-            **kwargs,
         )
 
         tasks = self._build_forecast_tasks(
@@ -790,6 +560,7 @@ class RealTimeModel:
             batch_size=batch_size,
             parallel=parallel,
             max_workers=max_workers,
+            model_kwargs=kwargs,
         )
         task_results = self._execute_forecast_tasks(
             tasks,
@@ -830,6 +601,7 @@ class RealTimeModel:
         batch_size,
         parallel,
         max_workers,
+        model_kwargs,
     ):
         """Build the same worker tasks for sequential and parallel runs."""
         if parallel:
@@ -845,41 +617,15 @@ class RealTimeModel:
             for start in range(0, len(vintages), batch_size)
         ] or [vintages]
         tasks = []
-        y_variables = common["y_variables"]
-        X_variables = common["X_variables"]
-        for (
-            model,
-            data_transformation,
-            model_outturns,
-            model_forecasts,
-            input_metrics,
-            y_conditioning_input_metrics,
-            X_conditioning_input_metrics,
-        ) in resolved_model_data:
-            model_common = copy.deepcopy(common)
-            model_common.update(
-                outturns=model_outturns,
-                forecasts=model_forecasts,
-            )
+        for model, data_transformation, data in resolved_model_data:
             tasks.extend(
                 ForecastTask(
                     model=model,
+                    data=data,
                     data_transformation=data_transformation,
                     vintages=batch,
-                    common=copy.deepcopy(model_common),
-                    input_metrics=input_metrics,
-                    y_input_metrics={
-                        variable: metric
-                        for variable, metric in input_metrics.items()
-                        if variable in y_variables
-                    },
-                    X_input_metrics={
-                        variable: metric
-                        for variable, metric in input_metrics.items()
-                        if variable in (X_variables or [])
-                    },
-                    y_conditioning_input_metrics=y_conditioning_input_metrics,
-                    X_conditioning_input_metrics=X_conditioning_input_metrics,
+                    options=copy.deepcopy(common),
+                    model_kwargs=copy.deepcopy(model_kwargs),
                 )
                 for batch in batches
             )
@@ -971,11 +717,8 @@ class RealTimeModel:
 
 
 def _loop_through_vintages(
-    outturns,
-    forecasts,
+    data,
     model,
-    y_variables,
-    X_variables,
     y_steps_ahead,
     X_steps_ahead,
     steps,
@@ -985,71 +728,26 @@ def _loop_through_vintages(
     frequency,
     data_transformation,
     X_imputation,
-    input_frequencies,
     y_lags=0,
     X_lags=0,
     dummies=None,
     decomp=False,
     drop_transformation_nans=True,
-    input_metrics=None,
-    y_input_metrics=None,
-    X_input_metrics=None,
-    y_conditioning_input_metrics=None,
-    X_conditioning_input_metrics=None,
-    **kwargs,
+    model_kwargs=None,
 ):
-    """Loop through vintages and produce forecasts.
+    """Loop through selected model data by vintage and produce forecasts.
 
-    The loop selects raw outturns and conditioning forecasts and constructs
-    vintage-specific paths. Each model's public ``fit()``/``forecast()`` owns
-    transformation, lag construction, formula selection, and design matrices.
+    The loop selects vintage-specific history and conditioning paths from
+    ``ModelData``. Each model's ``predict()`` owns transformation, lag
+    construction, formula selection, and design matrices.
 
     Returns:
         tuple: (forecasts_df, decomp_df_or_None, all_vintages_skipped)
     """
-    if y_input_metrics is None and input_metrics is not None:
-        y_input_metrics = {
-            variable: metric
-            for variable, metric in input_metrics.items()
-            if variable in y_variables
-        }
-    if X_input_metrics is None and input_metrics is not None:
-        X_input_metrics = {
-            variable: metric
-            for variable, metric in input_metrics.items()
-            if variable in (X_variables or [])
-        }
-
-    # Get the target vintages.
-    y_all_vintages = outturns.copy()
-    y_all_vintages = y_all_vintages[y_all_vintages["variable"].isin(y_variables)]
-
-    # Get regressor vintages for fitting.
-    if X_variables is not None:
-        X_fit_all_vintages = outturns.copy()
-        X_fit_all_vintages = X_fit_all_vintages[
-            X_fit_all_vintages["variable"].isin(X_variables)
-        ]
-
-    # Get conditioning forecasts for target variables.
-    if y_steps_ahead is not None and forecasts is not None:
-        y_cond_variables = list(y_steps_ahead.keys())
-        y_cond_all_vintages = forecasts.copy()
-        y_cond_all_vintages = y_cond_all_vintages[
-            y_cond_all_vintages["variable"].isin(y_cond_variables)
-        ]
-    else:
-        y_cond_all_vintages = None
-
-    # Get regressor forecasts for models that support them.
-    if X_steps_ahead is not None and forecasts is not None:
-        X_cond_variables = list(X_steps_ahead.keys())
-        X_cond_all_vintages = forecasts.copy()
-        X_cond_all_vintages = X_cond_all_vintages[
-            X_cond_all_vintages["variable"].isin(X_cond_variables)
-        ]
-    else:
-        X_cond_all_vintages = None
+    kwargs = model_kwargs or {}
+    y_variables = list(data.columns("y"))
+    X_variables = list(data.columns("X")) if data.has_path("X") else None
+    input_frequencies = {**data.frequencies("y"), **data.frequencies("X")}
 
     min_ffh = min(first_forecast_horizon.values()) if first_forecast_horizon else 0
 
@@ -1059,12 +757,8 @@ def _loop_through_vintages(
     prev_vintage_state = {}  # Track previous vintage's model state and decomp
 
     for vintage in tqdm(vintages, desc=f"Running {model.label}"):
-        # target variable: select closest vintage <= current vintage
-        y_vintage = y_all_vintages[y_all_vintages["vintage_date"] <= vintage].copy()
-        y_vintage = y_vintage.sort_values(
-            "vintage_date", ascending=False
-        ).drop_duplicates(subset=["date", "variable"], keep="first")
-        y_vintage = y_vintage.pivot(index="date", columns="variable", values="value")
+        vintage_data = data.as_of(vintage)
+        y_vintage = vintage_data.to_wide("y")
         vintage_period = pd.Period(vintage, freq=frequency)
 
         model_formula = getattr(model, "_formula", None)
@@ -1090,10 +784,6 @@ def _loop_through_vintages(
             (vintage_period + min_ffh_vintage).to_timestamp(how="end").normalize()
         )
         y_fit = y_vintage[y_vintage.index <= last_observed_date]
-        expected_y_dates = _expected_conditioning_dates(
-            first_forecast_date, steps, frequency
-        )
-        y_forecasts = y_vintage.reindex(expected_y_dates)
 
         if y_fit.empty:
             warnings.warn(
@@ -1115,35 +805,14 @@ def _loop_through_vintages(
                 )
                 continue
 
-        # regressor: select closest vintage <= current vintage
-        if X_variables is not None:
-            X_fit_vintage = X_fit_all_vintages[
-                X_fit_all_vintages["vintage_date"] <= vintage
-            ].copy()
-            X_fit_vintage = X_fit_vintage.sort_values(
-                "vintage_date", ascending=False
-            ).drop_duplicates(subset=["date", "variable"], keep="first")
-            X_fit = X_fit_vintage.pivot(index="date", columns="variable", values="value")
-            if X_fit.empty:
-                warnings.warn(
-                    f"No X data available for variables {X_variables} "
-                    f"at vintage {vintage}. Skipping this vintage.",
-                    UserWarning,
-                )
-                continue
-
-            # Raw dates, rather than ForecastData metadata, determine each
-            # column's frequency during model input preparation.
-        else:
-            X_fit = None
-
-        y_model = y_fit
-        X_model = X_fit
-        X_frequency_map = {
-            variable: input_frequencies[variable]
-            for variable in (X_steps_ahead or {})
-            if variable in input_frequencies
-        }
+        fit_data = vintage_data.history().with_dates("y", y_fit.index)
+        if X_variables is not None and not len(fit_data.index("X")):
+            warnings.warn(
+                f"No X data available for variables {X_variables} "
+                f"at vintage {vintage}. Skipping this vintage.",
+                UserWarning,
+            )
+            continue
 
         # Create a copy of the forecast model for this vintage to avoid
         # state modification carrying over to the next iteration
@@ -1154,18 +823,14 @@ def _loop_through_vintages(
         # =======================
         # Estimate the model with target-only y and the selected regressors.
         try:
-            model_vintage.fit(
-                y=y_model,
-                X=X_model,
+            model_vintage._fit_from_data(
+                fit_data,
                 y_lags=y_lags,
                 X_lags=X_lags,
                 dummies=dummies,
                 data_transformation=data_transformation,
                 frequency=frequency,
                 X_imputation=X_imputation,
-                input_frequencies=input_frequencies,
-                y_input_metrics=y_input_metrics,
-                X_input_metrics=X_input_metrics,
                 drop_transformation_nans=drop_transformation_nans,
                 **kwargs,
             )
@@ -1180,141 +845,17 @@ def _loop_through_vintages(
         forecast_metrics = model_vintage.native_metric_mapping(
             target_variables=model_target_variables
         )
-        y_forecast_base = y_model
-        if not model_vintage._handles_missing_values:
-            y_forecast_base = y_model.loc[y_model.index <= model_vintage.last_y_fit_date]
-
-        # Forecasts
-        # =======================
-        # Conditioning on Y
-        # =======================
-
-        # Build the conditioning paths if provided
-        if y_cond_all_vintages is not None:
-            y_cond_vintage = y_cond_all_vintages[
-                y_cond_all_vintages["vintage_date"] <= vintage
-            ].copy()
-            y_cond_vintage = y_cond_vintage.sort_values(
-                "vintage_date", ascending=False
-            ).drop_duplicates(subset=["date", "variable"], keep="first")
-            y_cond_vintage = y_cond_vintage.pivot(
-                index="date", columns="variable", values="value"
-            )
-            y_cond_vintage.index = pd.to_datetime(y_cond_vintage.index).normalize()
-            # filter out variables which have been selected but not
-            # available in this vintage
-            y_cond_available = y_cond_vintage.columns.tolist()
-            y_steps_ahead_available = {
-                var: steps_ahead
-                for var, steps_ahead in y_steps_ahead.items()
-                if var in y_cond_available
-            }
-            y_cond = y_cond_vintage.reindex(expected_y_dates)
-            y_forecasts = y_forecasts.reindex(columns=y_forecast_base.columns)
-
-            # Explicit conditioning forecasts take precedence over published values.
-            for var, steps_ahead in y_steps_ahead_available.items():
-                if steps_ahead is not None and var in y_forecasts.columns:
-                    conditioned_dates = expected_y_dates[: steps_ahead + 1]
-                    published = y_forecasts.loc[conditioned_dates, var]
-                    y_forecasts.loc[conditioned_dates, var] = y_cond.loc[
-                        conditioned_dates, var
-                    ].combine_first(published)
-
-        if y_forecasts.isna().all().all():
-            y_forecasts = None
-        y_forecast_input_metrics = (
-            {
-                **(y_input_metrics or {}),
-                **(y_conditioning_input_metrics or {}),
-            }
-            if y_forecasts is not None
-            else None
+        future = vintage_data.condition(
+            first_forecast_date,
+            steps,
+            frequency,
+            y_steps_ahead=y_steps_ahead,
+            X_steps_ahead=X_steps_ahead,
         )
-
-        # =======================
-        # Conditioning on X
-        # =======================
-
-        # Build the X regressor forecasts if provided (OLS/MIDAS)
-        # TODO: This is not tested
-        if X_cond_all_vintages is not None:
-            X_fcst_vintage = X_cond_all_vintages[
-                X_cond_all_vintages["vintage_date"] <= vintage
-            ].copy()
-            X_fcst_vintage = X_fcst_vintage.sort_values(
-                "vintage_date", ascending=False
-            ).drop_duplicates(subset=["date", "variable"], keep="first")
-            X_fcst_vintage = X_fcst_vintage.pivot(
-                index="date", columns="variable", values="value"
-            )
-            X_fcst_vintage.index = pd.to_datetime(X_fcst_vintage.index).normalize()
-            conditioning_dates = _conditioning_dates_by_variable(
-                first_forecast_date,
-                steps,
-                frequency,
-                list(X_steps_ahead),
-                X_frequency_map,
-            )
-            expected_dates = pd.DatetimeIndex(
-                sorted(
-                    {
-                        date
-                        for dates in conditioning_dates.values()
-                        for horizon_dates in dates
-                        for date in horizon_dates
-                    }
-                )
-            )
-
-            # filter out variables which have been selected but not
-            # available in this vintage
-            X_fcst_available = X_fcst_vintage.columns.tolist()
-            X_steps_ahead_available = {
-                var: sa for var, sa in X_steps_ahead.items() if var in X_fcst_available
-            }
-            X_fcst = X_fcst_vintage.reindex(expected_dates)
-
-            # Create regressor forecast DataFrame with the complete expected date grid
-            # matching X_fit column order
-            X_columns = list(X_model.columns)
-            X_forecast = pd.DataFrame(np.nan, index=expected_dates, columns=X_columns)
-
-            # Fill in the forecasts using X_steps_ahead
-            for var, sa in X_steps_ahead_available.items():
-                if sa is not None and var in X_columns:
-                    conditioned_dates = pd.DatetimeIndex(
-                        [
-                            date
-                            for horizon_dates in conditioning_dates[var][: sa + 1]
-                            for date in horizon_dates
-                        ]
-                    )
-                    X_forecast.loc[conditioned_dates, var] = X_fcst.loc[
-                        conditioned_dates, var
-                    ]
-        else:
-            X_forecast = X_model
-
-        # =======================
-        # Forecasting
-        # =======================
-
-        # Forecast dates come from the model and may reflect publication lags.
-        model_result = model_vintage.predict(
-            ForecastContext(
-                y_history=model_vintage._raw_y_history,
-                X_history=model_vintage._raw_X_history,
-                y_conditioning=y_forecasts,
-                X_conditioning=X_forecast,
-                forecast_origin=model_vintage.last_y_fit_date,
-                y_conditioning_input_metrics=y_forecast_input_metrics,
-                X_conditioning_input_metrics=(
-                    X_conditioning_input_metrics
-                    if X_cond_all_vintages is not None
-                    else X_input_metrics
-                ),
-            ),
+        forecast_data = model_vintage._raw_data.with_conditioning(future)
+        model_result = model_vintage._predict_from_data(
+            forecast_data,
+            forecast_origin=model_vintage.last_y_fit_date,
             steps=steps,
             decomp=decomp,
             data_transformation=data_transformation,
@@ -1352,16 +893,7 @@ def _loop_through_vintages(
                     current_decomp=row_decomp,
                     current_model=model_vintage,
                     current_state={
-                        "y_history": model_vintage._raw_y_history,
-                        "X_history": model_vintage._raw_X_history,
-                        "y_conditioning": y_forecasts,
-                        "X_conditioning": X_forecast,
-                        "y_conditioning_input_metrics": y_forecast_input_metrics,
-                        "X_conditioning_input_metrics": (
-                            X_conditioning_input_metrics
-                            if X_cond_all_vintages is not None
-                            else X_input_metrics
-                        ),
+                        "data": forecast_data,
                         "forecast_origin": model_vintage.last_y_fit_date,
                     },
                     current_dates=model_forecast.index,
@@ -1379,22 +911,7 @@ def _loop_through_vintages(
             prev_vintage_state = {
                 "vintage_date": vintage,
                 "model": model_vintage,
-                "y_history": model_vintage._raw_y_history.copy(),
-                "X_history": (
-                    model_vintage._raw_X_history.copy()
-                    if model_vintage._raw_X_history is not None
-                    else None
-                ),
-                "y_conditioning": (
-                    y_forecasts.copy() if y_forecasts is not None else None
-                ),
-                "X_conditioning": (X_forecast.copy() if X_forecast is not None else None),
-                "y_conditioning_input_metrics": copy.deepcopy(y_forecast_input_metrics),
-                "X_conditioning_input_metrics": copy.deepcopy(
-                    X_conditioning_input_metrics
-                    if X_cond_all_vintages is not None
-                    else X_input_metrics
-                ),
+                "data": forecast_data,
                 "forecast_origin": model_vintage.last_y_fit_date,
                 "forecast_index": model_forecast.index,
                 "decomp": row_decomp,
@@ -1602,10 +1119,7 @@ def _augment_level_decomp(
 
 def _level_contributions(
     model,
-    y_history,
-    X_history,
-    y_conditioning,
-    X_conditioning,
+    data,
     forecast_origin,
     steps,
     dates,
@@ -1613,8 +1127,6 @@ def _level_contributions(
     frequency,
     X_imputation,
     y_variables,
-    y_conditioning_input_metrics=None,
-    X_conditioning_input_metrics=None,
     **kwargs,
 ):
     """Counterfactual level decomposition for an already-fitted ``model``.
@@ -1638,20 +1150,9 @@ def _level_contributions(
     # the vintage loop. Some model implementations cache forecast state even
     # when their public hook appears read-only.
     counterfactual_model = copy.deepcopy(model)
-    result = counterfactual_model.predict(
-        ForecastContext(
-            y_history=y_history.copy(),
-            X_history=X_history.copy() if X_history is not None else None,
-            y_conditioning=(
-                y_conditioning.copy() if y_conditioning is not None else None
-            ),
-            X_conditioning=(
-                X_conditioning.copy() if X_conditioning is not None else None
-            ),
-            forecast_origin=forecast_origin,
-            y_conditioning_input_metrics=copy.deepcopy(y_conditioning_input_metrics),
-            X_conditioning_input_metrics=copy.deepcopy(X_conditioning_input_metrics),
-        ),
+    result = counterfactual_model._predict_from_data(
+        data,
+        forecast_origin=forecast_origin,
         steps=steps,
         decomp=True,
         data_transformation=data_transformation,
@@ -1721,12 +1222,6 @@ def _compute_revision_decompositions(
     """
     prev_decomp = prev_state["decomp"]
     prev_model = prev_state["model"]
-    prev_y_history = prev_state["y_history"]
-    prev_X_history = prev_state["X_history"]
-    prev_y_conditioning = prev_state["y_conditioning"]
-    prev_X_conditioning = prev_state["X_conditioning"]
-    prev_y_conditioning_input_metrics = prev_state["y_conditioning_input_metrics"]
-    prev_X_conditioning_input_metrics = prev_state["X_conditioning_input_metrics"]
     prev_origin = prev_state["forecast_origin"]
     prev_dates = prev_state["forecast_index"]
     prev_vintage_date = prev_state["vintage_date"]
@@ -1751,10 +1246,7 @@ def _compute_revision_decompositions(
     # Level 2: counterfactual level decomps from the two fitted models.
     C = _level_contributions(
         prev_model,
-        current_state["y_history"],
-        current_state["X_history"],
-        current_state["y_conditioning"],
-        current_state["X_conditioning"],
+        current_state["data"],
         current_state["forecast_origin"],
         steps,
         current_dates,
@@ -1762,16 +1254,11 @@ def _compute_revision_decompositions(
         frequency,
         X_imputation,
         y_variables,
-        y_conditioning_input_metrics=current_state["y_conditioning_input_metrics"],
-        X_conditioning_input_metrics=current_state["X_conditioning_input_metrics"],
         **kwargs,
     )
     E = _level_contributions(
         current_model,
-        prev_y_history,
-        prev_X_history,
-        prev_y_conditioning,
-        prev_X_conditioning,
+        prev_state["data"],
         prev_origin,
         steps,
         prev_dates,
@@ -1779,8 +1266,6 @@ def _compute_revision_decompositions(
         frequency,
         X_imputation,
         y_variables,
-        y_conditioning_input_metrics=prev_y_conditioning_input_metrics,
-        X_conditioning_input_metrics=prev_X_conditioning_input_metrics,
         **kwargs,
     )
 

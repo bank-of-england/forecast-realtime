@@ -1016,16 +1016,16 @@ def test_wide_methods_do_not_depend_on_long_form_wide_conversion_helpers():
 def test_transform_fit_inputs_diff_uses_shared_arithmetic_core(monkeypatch):
     """The direct wide path and the legacy long-form ``difference_by_vintage``
     share a single ``_difference_series`` implementation for "diff"."""
-    import forecast_realtime.data_transformation as data_transformation
+    import forecast_realtime._model_data as model_data
 
     calls = []
-    original = data_transformation._difference_series
+    original = model_data._difference_series
 
     def spy(values, logarithmic=False):
         calls.append(logarithmic)
         return original(values, logarithmic=logarithmic)
 
-    monkeypatch.setattr(data_transformation, "_difference_series", spy)
+    monkeypatch.setattr(model_data, "_difference_series", spy)
 
     y = pd.DataFrame(
         {"gdp": [100.0, 110.0, 125.0]},
@@ -1044,16 +1044,16 @@ def test_transform_fit_inputs_diff_uses_shared_arithmetic_core(monkeypatch):
 def test_transform_fit_inputs_yoy_uses_shared_growth_core(monkeypatch):
     """The direct wide path and the legacy long-form ``growth_by_vintage``
     share a single ``_growth_series`` implementation for "yoy"/"pop"."""
-    import forecast_realtime.data_transformation as data_transformation
+    import forecast_realtime._model_data as model_data
 
     calls = []
-    original = data_transformation._growth_series
+    original = model_data._growth_series
 
     def spy(values, periods):
         calls.append(periods)
         return original(values, periods=periods)
 
-    monkeypatch.setattr(data_transformation, "_growth_series", spy)
+    monkeypatch.setattr(model_data, "_growth_series", spy)
 
     values = [100.0, 102.0, 104.0, 106.0, 110.0]
     y = pd.DataFrame(
@@ -1074,16 +1074,16 @@ def test_transform_fit_inputs_yoy_uses_shared_growth_core(monkeypatch):
 def test_logs_uses_shared_arithmetic_core(monkeypatch):
     """The long-form ``apply()`` path and the direct wide path share a single
     ``_logs_series`` implementation for "logs"."""
-    import forecast_realtime.data_transformation as data_transformation
+    import forecast_realtime._model_data as model_data
 
     calls = []
-    original = data_transformation._logs_series
+    original = model_data._logs_series
 
     def spy(values):
         calls.append(True)
         return original(values)
 
-    monkeypatch.setattr(data_transformation, "_logs_series", spy)
+    monkeypatch.setattr(model_data, "_logs_series", spy)
 
     values = [100.0, 110.0, 125.0]
     pipeline = DataTransformationPipeline({"gdp": "logs"})

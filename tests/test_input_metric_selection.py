@@ -147,5 +147,6 @@ def test_realtime_selects_metrics_using_model_owned_mapping(monkeypatch):
 
     task = captured_tasks[0]
     assert task.data_transformation == {"gdp": "pop"}
-    assert task.input_metrics == {"gdp": "pop"}
-    assert task.common["outturns"]["metric"].unique().tolist() == ["pop"]
+    assert task.data.metrics("y") == {"gdp": "pop"}
+    selected = task.data.as_of(vintage).to_wide("y")
+    assert selected["gdp"].tolist() == [1.0, 2.0]

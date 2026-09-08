@@ -7,21 +7,13 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from forecast_realtime._utils import (
-    build_dummies,
-    build_lagged_design,
-    impute_X,
-    regularise_missing_rows,
-)
+from forecast_realtime._model_data import ModelData, ModelInputRequirements
+from forecast_realtime._utils import build_dummies, build_lagged_design
 from forecast_realtime.data_transformation import (
     DataTransformationPipeline,
     FittedDataTransformation,
     _validate_mapping_coverage,
     _validate_metric_mapping,
-    combine_history_and_future,
-    infer_frequency_from_dates,
-    infer_variable_frequencies,
-    leading_nan_row_count,
 )
 from forecast_realtime.formula import Formula
 
@@ -45,6 +37,20 @@ class ForecastContext:
     forecast_origin: pd.Timestamp | None = None
     y_conditioning_input_metrics: dict[str, str] | None = None
     X_conditioning_input_metrics: dict[str, str] | None = None
+
+    @classmethod
+    def _from_data(cls, data, forecast_origin):
+        """Materialise raw frames only for a supported public-method override."""
+        data = data.for_context()
+        return cls(
+            data.to_wide("y"),
+            data.to_wide("X"),
+            data.to_wide("y", "conditioning"),
+            data.to_wide("X", "conditioning"),
+            forecast_origin,
+            data.metrics("y", "conditioning"),
+            data.metrics("X", "conditioning"),
+        )
 
 
 @dataclass(frozen=True)
@@ -440,9 +446,44 @@ class ForecastModel(ABC):
 
     def resolve_target_variables(self, y_variables: list[str]) -> list[str]:
         """Return the requested variables this model treats as targets."""
-        if self._formula is not None:
+        if getattr(self, "_formula", None) is not None:
             return list(self._formula.y_cols)
         return list(y_variables)
+
+    def input_requirements(
+        self,
+        y_variables,
+        X_variables=None,
+        data_transformation=None,
+    ) -> tuple[ModelInputRequirements, ...]:
+        """Report every formula-selected input, including implicit levels requests."""
+        pipeline = self.resolve_input_data_transformation(
+            data_transformation, y_variables=y_variables, X_variables=X_variables
+        )
+        mapping = pipeline.data_transformation if pipeline is not None else {}
+        if getattr(self, "_formula", None) is not None:
+            y_variables = list(self._formula.y_cols)
+            if not self._formula.has_wildcard:
+                X_variables = [
+                    v for v in self._formula.X_cols if v in (X_variables or [])
+                ]
+        return (
+            ModelInputRequirements(
+                consumer=self.label,
+                y=tuple((v, mapping.get(v, "levels")) for v in y_variables),
+                X=tuple((v, mapping.get(v, "levels")) for v in (X_variables or [])),
+                explicit=pipeline is not None,
+            ),
+        )
+
+    @property
+    def _raw_y_history(self):
+        """Retain the established inspection path as an isolated projection."""
+        return self._raw_data.to_wide("y")
+
+    @property
+    def _raw_X_history(self):
+        return self._raw_data.to_wide("X")
 
     def resolve_input_data_transformation(
         self,
@@ -701,12 +742,7 @@ class ForecastModel(ABC):
 
     @staticmethod
     def _validate_datetime_frame(frame: pd.DataFrame, role: str) -> None:
-        if not isinstance(frame.index, (pd.DatetimeIndex, pd.PeriodIndex)):
-            raise TypeError(f"{role} must be indexed by a DatetimeIndex.")
-        if frame.index.has_duplicates:
-            raise ValueError(f"{role} index must not contain duplicate dates.")
-        if not frame.index.is_monotonic_increasing:
-            raise ValueError(f"{role} index must be sorted in increasing order.")
+        ModelData.validate_frame(frame, role)
 
     @staticmethod
     def _dummy_spec(dummies: list | dict, columns: list[str]) -> dict:
@@ -816,104 +852,131 @@ class ForecastModel(ABC):
         **kwargs,
     ):
         """Fit the model and return ``self`` after successful estimation."""
-        candidate = copy.deepcopy(self)
-        candidate._fit_impl(
-            y=y,
-            X=X,
+        ModelData.validate_frame(y, "y")
+        if X is not None:
+            ModelData.validate_frame(X, "X")
+        if getattr(self, "_formula", None) is not None:
+            y_input_metrics = _restrict_mapping(y_input_metrics, self._formula.y_cols)
+            if X is not None and not self._formula.has_wildcard:
+                X_input_metrics = _restrict_mapping(
+                    X_input_metrics, [v for v in self._formula.X_cols if v in X.columns]
+                )
+        data = ModelData.from_wide(
+            y,
+            X,
+            frequencies=input_frequencies,
+            y_input_metrics=y_input_metrics,
+            X_input_metrics=X_input_metrics,
+        )
+        source_data = kwargs.pop("_model_data", None)
+        if source_data is not None:
+            data = data.with_input_metadata(source_data)
+        return self._fit_data(
+            data,
             y_lags=y_lags,
             X_lags=X_lags,
             dummies=dummies,
             data_transformation=data_transformation,
             frequency=frequency,
             X_imputation=X_imputation,
-            input_frequencies=input_frequencies,
-            y_input_metrics=y_input_metrics,
-            X_input_metrics=X_input_metrics,
             drop_transformation_nans=drop_transformation_nans,
             **kwargs,
         )
+
+    def _fit_data(self, data: ModelData, **kwargs):
+        """Fit a candidate through the single data-based implementation."""
+        candidate = copy.deepcopy(self)
+        if type(candidate)._validate_fit_inputs is not ForecastModel._validate_fit_inputs:
+            y, X = candidate._validate_fit_inputs(data.to_wide("y"), data.to_wide("X"))
+            data = ModelData.from_wide(y, X).with_input_metadata(data)
+        else:
+            data = candidate._select_fit_data(data)
+        candidate._fit_data_impl(data, **kwargs)
         self._commit_fit(candidate)
         return self
+
+    def _fit_from_data(self, data: ModelData, **kwargs):
+        """Retain public fit overrides without making frames the internal payload."""
+        if type(self).fit is not ForecastModel.fit:
+            return self.fit(
+                data.to_wide("y"),
+                data.to_wide("X"),
+                input_frequencies={**data.frequencies("y"), **data.frequencies("X")},
+                y_input_metrics=data.metrics("y"),
+                X_input_metrics=data.metrics("X"),
+                _model_data=data,
+                **kwargs,
+            )
+        return self._fit_data(data, **kwargs)
 
     def _commit_fit(self, candidate: "ForecastModel") -> None:
         """Publish a successfully fitted candidate on this model instance."""
         self.__dict__.clear()
         self.__dict__.update(candidate.__dict__)
 
+    def _select_fit_data(self, data):
+        """Validate fitting capabilities and select raw formula inputs once."""
+        for role in ("y", "X"):
+            if data.has_path(role) and (
+                not len(data.index(role)) or not len(data.columns(role))
+            ):
+                raise ValueError(
+                    f"{role} must not be empty" + (" if provided" if role == "X" else "")
+                )
+        y_columns = list(data.columns("y"))
+        X_columns = list(data.columns("X")) if data.has_path("X") else None
+        if getattr(self, "_formula", None) is not None:
+            y_columns = list(
+                self._formula.extract_y(pd.DataFrame(columns=y_columns)).columns
+            )
+            if X_columns is not None and not self._formula.has_wildcard:
+                X_columns = [v for v in self._formula.X_cols if v in X_columns]
+        if not self._supports_multivariate_y and len(y_columns) > 1:
+            raise ValueError(
+                f"{type(self).__name__} cannot handle multiple left-hand-side "
+                f"variables; select one variable in `forecast(y_variables=)` or use "
+                f"the formula argument of {type(self).__name__}"
+            )
+        return data.history().subset(y_columns, X_columns)
+
     def _validate_fit_inputs(
         self, y: pd.DataFrame, X: pd.DataFrame | None
     ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
-        """Validate, formula-select, and copy the raw frames used by fitting."""
-        if not isinstance(y, pd.DataFrame):
-            raise TypeError("y must be a pandas DataFrame")
-        if y.empty:
-            raise ValueError("y must not be empty")
-        self._validate_datetime_frame(y, "y")
-
+        """Retain the DataFrame validation hook as an isolated data adapter."""
+        ModelData.validate_frame(y, "y")
         if X is not None:
-            if not isinstance(X, pd.DataFrame):
-                raise TypeError("X must be a pandas DataFrame or None")
-            if X.empty:
-                raise ValueError("X must not be empty if provided")
-            self._validate_datetime_frame(X, "X")
-
-        if getattr(self, "_formula", None):
-            y, X = self._formula.extract_available_inputs(y, X)
-
-        if not self._supports_multivariate_y and y.shape[1] > 1:
-            raise ValueError(
-                f"{self.__class__.__name__} cannot handle multiple left-hand-side "
-                f"variables; select one variable in `forecast(y_variables=)` or use "
-                f"the formula argument of {self.__class__.__name__}"
-            )
-
-        return y.copy(), X.copy() if X is not None else None
+            ModelData.validate_frame(X, "X")
+        selected = self._select_fit_data(ModelData.from_wide(y, X))
+        return selected.to_wide("y"), selected.to_wide("X")
 
     def _resolve_fit_transformation(
         self,
-        raw_y: pd.DataFrame,
-        raw_X: pd.DataFrame | None,
+        data: ModelData,
         data_transformation: dict[str, str] | None,
         frequency: str | None,
         X_imputation: str | None,
-        input_frequencies: dict[str, str] | None,
-        y_input_metrics: dict[str, str] | None,
-        X_input_metrics: dict[str, str] | None,
     ) -> FittedDataTransformation:
         """Resolve the transformation and its fit-time frequency metadata."""
+        y_columns = list(data.columns("y"))
+        X_columns = list(data.columns("X")) if data.has_path("X") else None
         pipeline = self.resolve_input_data_transformation(
             data_transformation,
-            y_variables=list(raw_y.columns),
-            X_variables=list(raw_X.columns) if raw_X is not None else None,
+            y_variables=y_columns,
+            X_variables=X_columns,
         )
-        y_frequency_map = {
-            variable: input_frequencies[variable] for variable in raw_y.columns
-        }
-        X_frequency_map = (
-            {variable: input_frequencies[variable] for variable in raw_X.columns}
-            if raw_X is not None
-            else {}
-        )
+        y_frequency_map = data.frequencies("y")
+        X_frequency_map = data.frequencies("X")
         y_frequency_values = {
             y_frequency_map[variable]
-            for variable in raw_y.columns
+            for variable in y_columns
             if y_frequency_map[variable] is not None
         }
         y_frequency = (
             next(iter(y_frequency_values)) if len(y_frequency_values) == 1 else None
         )
         target_frequency = frequency or y_frequency
-        if raw_X is not None and not self._handles_mixed_frequencies:
-            X_frequency_variables = list(raw_X.columns)
-            if getattr(self, "_formula", None) and not self._formula.has_wildcard:
-                X_frequency_variables = [
-                    variable
-                    for variable in self._formula.X_cols
-                    if variable in raw_X.columns
-                ]
-            X_frequency_values = {
-                X_frequency_map[variable] for variable in X_frequency_variables
-            }
+        if X_columns is not None and not self._handles_mixed_frequencies:
+            X_frequency_values = set(X_frequency_map.values())
             if (
                 y_frequency is not None
                 and X_frequency_values
@@ -925,12 +988,8 @@ class ForecastModel(ABC):
                 )
         return FittedDataTransformation.from_fit(
             pipeline,
-            y_variables=list(raw_y.columns),
-            X_variables=list(raw_X.columns) if raw_X is not None else None,
-            y_input_metrics=y_input_metrics,
-            X_input_metrics=X_input_metrics,
-            y_frequencies=y_frequency_map,
-            X_frequencies=X_frequency_map,
+            y_variables=y_columns,
+            X_variables=X_columns,
             frequency=target_frequency,
             X_imputation=X_imputation,
             pipeline_source=(
@@ -944,62 +1003,24 @@ class ForecastModel(ABC):
 
     def _prepare_training_data(
         self,
-        raw_y: pd.DataFrame,
-        raw_X: pd.DataFrame | None,
+        data: ModelData,
         transformation: FittedDataTransformation,
-        X_imputation: str | None,
         drop_transformation_nans: bool,
     ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
         """Transform, impute, regularise, and model-prepare training data."""
-        pipeline = transformation.pipeline
-        y, X = transformation.transform_fit_inputs(raw_y, raw_X)
-        if pipeline is not None:
-            y_variables = list(transformation.y_variables)
-            X_variables = (
-                list(transformation.X_variables)
-                if transformation.X_variables is not None
-                else None
-            )
-            if drop_transformation_nans:
-                y_leading_rows = leading_nan_row_count(y, y_variables)
-                if y_leading_rows:
-                    y = y.iloc[y_leading_rows:]
-                if X is not None:
-                    X_leading_rows = leading_nan_row_count(X, X_variables)
-                    if X_leading_rows:
-                        X = X.iloc[X_leading_rows:]
-                if y.empty or y.dropna(how="all").empty:
-                    raise NoUsableTransformedYError(
-                        "No usable transformed y observations remain after "
-                        "transformation."
-                    )
-
-        if (
-            X is not None
-            and X_imputation is not None
-            and self._needs_ragged_edge_imputation
-        ):
-            last_valid_dates = [X[col].last_valid_index() for col in X.columns]
-            last_valid_dates = [date for date in last_valid_dates if date is not None]
-            target_date = max(last_valid_dates + [y.index[-1]])
-            X = impute_X(
-                X,
-                target_date,
-                steps=0,
-                method=X_imputation,
-                frequencies=transformation.X_frequency_mapping,
-            )
-
-        if (
-            not self._handles_missing_values
-            or transformation.y_frequency_mapping
-            or transformation.X_frequency_mapping
-        ):
-            y = regularise_missing_rows(y, transformation.y_frequency_mapping)
-            if X is not None:
-                X = regularise_missing_rows(X, transformation.X_frequency_mapping)
-
-        return self._prepare_fit_inputs(y, X)
+        mapping = transformation.data_transformation
+        prepared = data.transform(dict(mapping) if mapping is not None else None)
+        if mapping is not None and drop_transformation_nans:
+            prepared = prepared.trim_undefined_prefix()
+            if not len(prepared.index("y")) or not prepared.last_valid_dates("y"):
+                raise NoUsableTransformedYError(
+                    "No usable transformed y observations remain after transformation."
+                )
+        if transformation.X_imputation is not None and self._needs_ragged_edge_imputation:
+            target = max(prepared.last_valid_dates("X") + [prepared.index("y")[-1]])
+            prepared = prepared.impute(target, method=transformation.X_imputation)
+        prepared = prepared.regularise()
+        return self._prepare_fit_inputs(prepared.to_wide("y"), prepared.to_wide("X"))
 
     def _build_fit_design(
         self,
@@ -1131,131 +1152,47 @@ class ForecastModel(ABC):
         )
         self._is_fitted = True
 
-    def _fit_impl(
+    def _fit_data_impl(
         self,
-        y: pd.DataFrame,
-        X: pd.DataFrame | None = None,
+        data: ModelData,
         y_lags: int = 0,
         X_lags: int | dict = 0,
         dummies: list | dict | None = None,
         data_transformation: dict[str, str] | None = None,
         frequency: str | None = None,
         X_imputation: str | None = None,
-        input_frequencies: dict[str, str] | None = None,
-        y_input_metrics: dict[str, str] | None = None,
-        X_input_metrics: dict[str, str] | None = None,
         drop_transformation_nans: bool = True,
         **kwargs,
     ):
         """Fit the model by orchestrating the preparation stages."""
-        raw_y, raw_X = self._validate_fit_inputs(y, X)
-        if input_frequencies is None:
-            explicit_frequency = frequency is not None
-            requested_metrics = data_transformation or self.data_transformation or {}
-            y_input_metrics = y_input_metrics or {}
-            X_input_metrics = X_input_metrics or {}
-            y_frequency_variables = [
-                variable
-                for variable in raw_y.columns
-                if requested_metrics.get(variable) in {"diff", "log diff", "pop", "yoy"}
-                and y_input_metrics.get(variable, "levels") == "levels"
-            ]
-            X_frequency_variables = (
-                [
-                    variable
-                    for variable in raw_X.columns
-                    if requested_metrics.get(variable)
-                    in {"diff", "log diff", "pop", "yoy"}
-                    and X_input_metrics.get(variable, "levels") == "levels"
-                ]
-                if raw_X is not None
-                else []
-            )
-            calendar_dates = (
-                raw_y.index.to_timestamp()
-                if isinstance(raw_y.index, pd.PeriodIndex)
-                else raw_y.index
-            )
-            calendar_index = (
-                calendar_dates.is_month_start.all() or calendar_dates.is_month_end.all()
-            )
-            if calendar_index and (
-                explicit_frequency
-                or y_lags
+        _validate_X_imputation(X_imputation)
+        mapping = (
+            self.data_transformation
+            if self.data_transformation is not None
+            else data_transformation
+        )
+        data, frequency = data.resolve_frequencies(
+            mapping,
+            frequency,
+            require_calendars=bool(
+                y_lags
                 or X_lags
                 or dummies
                 or X_imputation
                 or not self._handles_missing_values
-            ):
-                y_frequency_variables = list(raw_y.columns)
-                X_frequency_variables = list(raw_X.columns) if raw_X is not None else []
-            y_frequency_variables = (
-                list(raw_y.columns) if frequency is not None else y_frequency_variables
-            )
-            X_frequency_variables = (
-                list(raw_X.columns)
-                if frequency is not None and raw_X is not None
-                else X_frequency_variables
-            )
-            input_frequencies = {
-                variable: None
-                for variable in [
-                    *raw_y.columns,
-                    *(raw_X.columns if raw_X is not None else []),
-                ]
-            }
-            input_frequencies.update(
-                infer_variable_frequencies(raw_y, y_frequency_variables, "raw y")
-            )
-            if raw_X is not None:
-                input_frequencies.update(
-                    infer_variable_frequencies(raw_X, X_frequency_variables, "raw X")
-                )
-            inferred_frequency = (
-                raw_y.index.freqstr
-                if isinstance(raw_y.index, pd.PeriodIndex)
-                else raw_y.index.inferred_freq
-            )
-            if frequency is None and calendar_index and not inferred_frequency:
-                frequency = infer_frequency_from_dates(raw_y.index, "raw y")
-            elif frequency is None and inferred_frequency:
-                inferred_frequency = inferred_frequency.replace("Q-", "QE-")
-                rule_code = pd.tseries.frequencies.to_offset(
-                    inferred_frequency
-                ).rule_code.upper()
-                frequency = (
-                    "M"
-                    if rule_code.startswith(("ME", "MS"))
-                    else "Q"
-                    if rule_code.startswith(("QE", "QS"))
-                    else inferred_frequency
-                )
-        _validate_X_imputation(X_imputation)
-        if getattr(self, "_formula", None):
-            y_input_metrics = _restrict_mapping(y_input_metrics, raw_y.columns)
-            X_columns = raw_X.columns if raw_X is not None else []
-            X_input_metrics = _restrict_mapping(X_input_metrics, X_columns)
-        self._raw_y_history = raw_y
-        self._raw_X_history = raw_X
+            ),
+        )
+        self._raw_data = data
         fitted_transformation = self._resolve_fit_transformation(
-            raw_y,
-            raw_X,
+            data,
             data_transformation,
             frequency,
             X_imputation,
-            input_frequencies,
-            y_input_metrics,
-            X_input_metrics,
         )
-        self._input_frequencies = {
-            **fitted_transformation.y_frequency_mapping,
-            **fitted_transformation.X_frequency_mapping,
-        }
+        self._input_frequencies = data.frequencies("y") | data.frequencies("X")
         prepared_y, prepared_X = self._prepare_training_data(
-            raw_y,
-            raw_X,
+            data,
             fitted_transformation,
-            X_imputation,
             drop_transformation_nans,
         )
         y_estimation, X_estimation, design_state = self._build_fit_design(
@@ -1298,14 +1235,28 @@ class ForecastModel(ABC):
         if not getattr(self, "_is_fitted", False):
             raise AttributeError("Model has not been fitted yet; call fit() first.")
         if context is None:
-            context = ForecastContext(
-                y_history=self._raw_y_history,
-                X_history=self._raw_X_history,
+            for role, frame in (("y", y), ("X", X)):
+                if frame is not None:
+                    ModelData.validate_frame(frame, role)
+            future = ModelData.from_wide(
                 y_conditioning=y,
                 X_conditioning=X,
+                frequencies={
+                    **self._raw_data.frequencies("y"),
+                    **self._raw_data.frequencies("X"),
+                },
+                y_conditioning_input_metrics=self._raw_data.metrics("y"),
+                X_conditioning_input_metrics=self._raw_data.metrics("X"),
+            )
+            return self._predict_from_data(
+                self._raw_data.with_conditioning(future),
                 forecast_origin=self._fitted_model_configuration.forecast_origin,
-                y_conditioning_input_metrics=None,
-                X_conditioning_input_metrics=None,
+                steps=steps,
+                decomp=decomp,
+                data_transformation=data_transformation,
+                frequency=frequency,
+                X_imputation=X_imputation,
+                **kwargs,
             )
         return self.predict(
             context,
@@ -1327,44 +1278,52 @@ class ForecastModel(ABC):
         X_imputation: str | None = None,
         **kwargs,
     ) -> pd.DataFrame:
-        """Generate forecasts.
-
-        Args:
-            steps : int
-                Number of steps ahead to forecast. Default 1.
-            X : pd.DataFrame, optional
-                Exogenous regressors, extended over the forecast horizon.
-                Combined with the raw ``X`` history stored by ``fit()`` (future
-                value wins on any overlapping date) before transforming, so
-                the first transformed value is anchored to the final raw
-                fitted observation. This merge happens whether or not a
-                pipeline is resolved, so an untransformed autoregressive model
-                still sees its full raw history.
-            y : pd.DataFrame, optional
-                Conditioning paths for y, shape (steps, n_y_vars); NaN entries
-                are unconstrained. Combined with the raw ``y`` history the same
-                way, whether or not a pipeline is resolved.
-            decomp : bool, optional
-                If True, include decomposition rows from ``_forecast_decomp()``
-                in the returned ``ForecastResult``. Default False.
-            data_transformation : dict, optional
-                Call-level fallback transformation, used only when this model
-                has no model-owned ``data_transformation`` of its own. Should
-                match whatever was passed to ``fit()`` for this model.
-            frequency : str, optional
-                Legacy target frequency metadata ("M" or "Q"). Input
-                transformation frequency is inferred from each raw column.
-            X_imputation : str, optional
-                Ragged-edge imputation strategy applied to ``X`` after any
-                transformation, extending it to cover the forecast horizon,
-                when ``self._needs_ragged_edge_imputation`` is True. If that
-                attribute is False, the model handles its own ragged edge and
-                this option is not applied.
-        Returns:
-            pd.DataFrame
-                ``steps`` rows indexed by a DatetimeIndex named ``"date"``, one
-                column per target variable.
+        """Generate forecasts from a fitted model and a ``ForecastContext`` containing
+        the history, optional conditioning paths, and forecast origin.
         """
+        if not getattr(self, "_is_fitted", False):
+            raise AttributeError("Model has not been fitted yet; call fit() first.")
+        data = ModelData.from_context(context, self._raw_data)
+        return self._predict_data(
+            data,
+            forecast_origin=context.forecast_origin,
+            steps=steps,
+            decomp=decomp,
+            data_transformation=data_transformation,
+            frequency=frequency,
+            X_imputation=X_imputation,
+            **kwargs,
+        )
+
+    def _predict_from_data(self, data, *, forecast_origin, **kwargs):
+        """Retain the public predict override used by realtime consumers."""
+        if type(self).predict is not ForecastModel.predict:
+            return self.predict(
+                ForecastContext._from_data(data, forecast_origin), **kwargs
+            )
+        return self._predict_data(data, forecast_origin=forecast_origin, **kwargs)
+
+    def _forecast_from_data(self, data, *, forecast_origin, **kwargs):
+        """Retain the public forecast override used by tree components."""
+        if type(self).forecast is not ForecastModel.forecast:
+            return self.forecast(
+                context=ForecastContext._from_data(data, forecast_origin), **kwargs
+            )
+        return self._predict_from_data(data, forecast_origin=forecast_origin, **kwargs)
+
+    def _predict_data(
+        self,
+        data: ModelData,
+        *,
+        forecast_origin=None,
+        steps=1,
+        decomp=False,
+        data_transformation=None,
+        frequency=None,
+        X_imputation=None,
+        **kwargs,
+    ):
+        """Prepare labelled inputs, construct the design and validate the result."""
         # Validate that steps is an integer greater than zero
         if not isinstance(steps, int) or steps <= 0:
             raise ValueError("'Steps' must be an integer greater than zero")
@@ -1402,147 +1361,27 @@ class ForecastModel(ABC):
         effective_X_imputation = (
             fitted_transformation.X_imputation if X_imputation is None else X_imputation
         )
-        if context.y_conditioning is not None:
-            if not isinstance(context.y_conditioning, pd.DataFrame):
-                raise TypeError("y must be a pandas DataFrame or None")
-            self._validate_datetime_frame(context.y_conditioning, "y")
-        if context.X_conditioning is not None:
-            if not isinstance(context.X_conditioning, pd.DataFrame):
-                raise TypeError("X must be a pandas DataFrame or None")
-            self._validate_datetime_frame(context.X_conditioning, "X")
         _validate_X_imputation(X_imputation)
-
-        raw_y_history = context.y_history
-        raw_X_history = context.X_history
-        if not isinstance(raw_y_history, pd.DataFrame):
-            raise TypeError("context.y_history must be a pandas DataFrame.")
-        self._validate_datetime_frame(raw_y_history, "context.y_history")
-        if raw_X_history is not None:
-            if not isinstance(raw_X_history, pd.DataFrame):
-                raise TypeError("context.X_history must be a pandas DataFrame or None.")
-            self._validate_datetime_frame(raw_X_history, "context.X_history")
-        raw_y_conditioning = context.y_conditioning
-        raw_X_conditioning = context.X_conditioning
         if getattr(self, "_formula", None):
-            raw_y_history = self._formula.extract_y(raw_y_history)
-            if raw_y_conditioning is not None:
-                raw_y_conditioning = raw_y_conditioning[
-                    [
-                        column
-                        for column in fitted_transformation.y_variables
-                        if column in raw_y_conditioning.columns
-                    ]
-                ]
-
-            if fitted_transformation.X_variables is None:
-                raw_X_history = None
-                raw_X_conditioning = None
-            else:
-                X_columns = list(fitted_transformation.X_variables)
-                if raw_X_history is not None:
-                    raw_X_history = raw_X_history[
-                        [column for column in X_columns if column in raw_X_history]
-                    ]
-                if raw_X_conditioning is not None:
-                    raw_X_conditioning = raw_X_conditioning[
-                        [column for column in X_columns if column in raw_X_conditioning]
-                    ]
-        y_conditioning_input_metrics = (
-            context.y_conditioning_input_metrics
-            if context.y_conditioning_input_metrics is not None
-            else fitted_transformation.y_input_metric_mapping
-        )
-        X_conditioning_input_metrics = (
-            context.X_conditioning_input_metrics
-            if context.X_conditioning_input_metrics is not None
-            else fitted_transformation.X_input_metric_mapping
-        )
-        if getattr(self, "_formula", None):
-            y_conditioning_input_metrics = _restrict_mapping(
-                y_conditioning_input_metrics, fitted_transformation.y_variables
-            )
-            X_conditioning_input_metrics = _restrict_mapping(
-                X_conditioning_input_metrics, fitted_transformation.X_variables or ()
+            data = data.subset(
+                fitted_transformation.y_variables, fitted_transformation.X_variables
             )
         forecast_origin = (
-            context.forecast_origin
-            if context.forecast_origin is not None
-            else raw_y_history.index[-1]
+            forecast_origin if forecast_origin is not None else data.index("y")[-1]
         )
-        pipeline = fitted_transformation.pipeline
-
-        if pipeline is not None:
-            y_history, y_conditioning, X_history, X_conditioning = (
-                fitted_transformation.transform_forecast_inputs(
-                    y_history=raw_y_history,
-                    y_conditioning=raw_y_conditioning,
-                    X_history=raw_X_history,
-                    X_future=(raw_X_conditioning if raw_X_history is not None else None),
-                    y_conditioning_input_metrics=y_conditioning_input_metrics,
-                    X_conditioning_input_metrics=X_conditioning_input_metrics,
-                )
-            )
-            y_input = combine_history_and_future(y_history, y_conditioning)
-            if raw_X_history is not None and raw_X_conditioning is not None:
-                X_input = combine_history_and_future(X_history, X_conditioning)
-            else:
-                X_input = None
-        else:
-            # No transformation to apply, but an untransformed autoregressive
-            # model still needs its raw fitted history ahead of an explicitly
-            # supplied conditioning/future path, with the future value
-            # winning on any overlapping (backcast) date - the same contract
-            # as the pipeline-resolved branch above. Only merge when the
-            # caller actually supplied a conditioning/future value: passing
-            # None is how a model explicitly opts out of using that input for
-            # this call (e.g. an external-process model distinguishing "no
-            # future regressors" from "reuse the fit regressors").
-            y_input = (
-                combine_history_and_future(raw_y_history, raw_y_conditioning)
-                if raw_y_conditioning is not None
-                else None
-            )
-            X_input = (
-                combine_history_and_future(raw_X_history, raw_X_conditioning)
-                if raw_X_history is not None and raw_X_conditioning is not None
-                else None
-            )
-
-        if y_input is not None and (
-            not self._handles_missing_values or fitted_transformation.y_frequency_mapping
-        ):
-            y_input = regularise_missing_rows(
-                y_input, fitted_transformation.y_frequency_mapping
-            )
-        if (
-            X_input is not None
-            and raw_X_history is not None
-            and (
-                not self._handles_missing_values
-                or fitted_transformation.X_frequency_mapping
-            )
-        ):
-            X_input = regularise_missing_rows(
-                X_input, fitted_transformation.X_frequency_mapping
-            )
-
-        if (
-            X_input is not None
-            and effective_X_imputation is not None
-            and self._needs_ragged_edge_imputation
-        ):
+        mapping = fitted_transformation.data_transformation
+        data = data.with_fitted_metadata(self._raw_data)
+        prepared = data.transform(
+            dict(mapping) if mapping is not None else None, combine=True
+        ).regularise()
+        if effective_X_imputation is not None and self._needs_ragged_edge_imputation:
             target_frequency = fitted_transformation.frequency
             target_period = pd.Period(forecast_origin, freq=target_frequency) + steps
             target_date = target_period.to_timestamp(how="end").normalize()
-            X_input = impute_X(
-                X_input,
-                target_date,
-                steps=0,
-                method=effective_X_imputation,
-                frequencies=fitted_transformation.X_frequency_mapping,
-            )
-
-        y_input, X_input = self._prepare_forecast_inputs(y_input, X_input)
+            prepared = prepared.impute(target_date, method=effective_X_imputation)
+        y_input, X_input = self._prepare_forecast_inputs(
+            prepared.to_wide("y"), prepared.to_wide("X")
+        )
 
         if getattr(self, "_formula", None) and y_input is not None:
             y_input = self._formula.extract_y(y_input)
