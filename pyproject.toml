@@ -41,6 +41,7 @@ dev = [
     "forecast_realtime[docs,notebooks,models]",
     "pre_commit >= 4.6.0",
     "pytest >= 9.0.3",
+    "pytest-cov",
     "pytest-xdist", # Enables parallel test runs with pytest -n auto.
     "pydoclint >= 0.9.1",
     "syrupy >= 5.2.0",
