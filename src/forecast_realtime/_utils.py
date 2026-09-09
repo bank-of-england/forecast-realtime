@@ -6,8 +6,9 @@ import warnings
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
-from scipy.stats import t as student_t
+
+from ._model_data import ModelData
+from ._model_data import _ar1_t_impute as _ar1_t_impute
 
 
 def validate_forecast_horizons(horizons, steps: int, model_name: str) -> None:
@@ -198,136 +199,6 @@ def build_dummies(
     return pd.DataFrame(cols, index=index)
 
 
-def _ar1_t_impute(observed, shortage, rng):
-    """Simulate future values from a Student-t AR(1) model.
-
-    The last observed value is repeated when the model cannot be fitted.
-
-    Args:
-        observed : array-like
-            The observed (in-sample) values of the column to extrapolate.
-        shortage : int
-            Number of future values to simulate.
-        rng : np.random.Generator
-            Random number generator used to draw the Student-t innovations.
-
-    Returns:
-        list[float] : The ``shortage`` simulated future values.
-    """
-    if shortage <= 0:
-        return []
-
-    values = np.asarray(observed, dtype=float)
-    values = values[np.isfinite(values)]
-
-    def _last_value_fallback():
-        last = values[-1] if len(values) else 0.0
-        return [float(last)] * shortage
-
-    if len(values) < 5:
-        # Too few observations to fit the model; repeat the last observed value.
-        return _last_value_fallback()
-
-    if np.all(values == values[0]):
-        return _last_value_fallback()
-
-    y_t = values[1:]
-    y_lag = values[:-1]
-
-    # OLS starting values for the intercept, persistence and innovation scale.
-    design = np.column_stack([np.ones_like(y_lag), y_lag])
-    try:
-        beta, *_ = np.linalg.lstsq(design, y_t, rcond=None)
-        c0, phi0 = beta[0], beta[1]
-        resid = y_t - design @ beta
-        sigma0 = np.sqrt(np.sum(resid**2) / max(len(resid) - 2, 1))
-    except (np.linalg.LinAlgError, ValueError):
-        return _last_value_fallback()
-
-    phi0 = np.clip(phi0, -0.99, 0.99)
-    if not np.isfinite(c0) or not np.isfinite(phi0) or not np.isfinite(sigma0):
-        return _last_value_fallback()
-    sigma0 = sigma0 if sigma0 > 0 else 1.0
-
-    # Unconstrained parametrisation for the maximum-likelihood fit:
-    #   phi   = tanh(z_phi)           -> |phi| < 1  (stationary)
-    #   scale = exp(log_scale)        -> scale > 0
-    #   nu    = 2 + exp(log_nu_excess) -> nu > 2     (finite variance)
-    x0 = np.array(
-        [
-            np.arctanh(np.clip(phi0, -0.99, 0.99)),
-            c0,
-            np.log(sigma0),
-            np.log(3.0),  # start at nu = 5
-        ]
-    )
-
-    def _transformed_parameters(params):
-        z_phi, c, log_scale, log_nu_excess = params
-        return c, np.tanh(z_phi), np.exp(log_scale), 2.0 + np.exp(log_nu_excess)
-
-    def _valid_parameters(params):
-        try:
-            c, phi, scale, nu = _transformed_parameters(params)
-        except (FloatingPointError, OverflowError, ValueError):
-            return None
-        if (
-            not np.isfinite(c)
-            or not np.isfinite(phi)
-            or abs(phi) >= 1
-            or not np.isfinite(scale)
-            or scale <= 0
-            or not np.isfinite(nu)
-            or nu <= 2
-        ):
-            return None
-        return c, phi, scale, nu
-
-    def _simulate(params):
-        transformed = _valid_parameters(params)
-        if transformed is None:
-            return None
-        c, phi, scale, nu = transformed
-        fill = []
-        x_prev = values[-1]
-        for _ in range(shortage):
-            eps = rng.standard_t(nu) * scale
-            x_prev = c + phi * x_prev + eps
-            if not np.isfinite(x_prev):
-                return None
-            fill.append(float(x_prev))
-        return fill
-
-    def _neg_log_likelihood(params):
-        z_phi, c, log_scale, log_nu_excess = params
-        phi = np.tanh(z_phi)
-        scale = np.exp(log_scale)
-        nu = 2.0 + np.exp(log_nu_excess)
-        mu = c + phi * y_lag
-        return -np.sum(student_t.logpdf(y_t, df=nu, loc=mu, scale=scale))
-
-    try:
-        result = minimize(_neg_log_likelihood, x0, method="Nelder-Mead")
-    except (ValueError, FloatingPointError):
-        return _simulate(x0) or _last_value_fallback()
-
-    try:
-        params = np.asarray(getattr(result, "x", []), dtype=float)
-    except (TypeError, ValueError):
-        params = np.empty(0)
-    if (
-        not getattr(result, "success", False)
-        or params.shape != (4,)
-        or not np.all(np.isfinite(params))
-    ):
-        params = x0
-
-    fill = _simulate(params)
-    if fill is None and not np.array_equal(params, x0):
-        fill = _simulate(x0)
-    return fill or _last_value_fallback()
-
-
 def impute_X(
     X: pd.DataFrame,
     last_date: pd.Timestamp,
@@ -381,87 +252,11 @@ def impute_X(
         ``X`` with every column extending to its own ``last_date + steps``
         periods, on its own supplied frequency.
     """
-    # RNG for stochastic imputation methods (e.g. "ar1_t").
-    rng = np.random.default_rng(random_state)
-
-    # Impute each column separately, each on its own frequency, so a
-    # low-frequency column (e.g. quarterly) mixed with a higher-frequency
-    # one (e.g. monthly) is not padded/trimmed using the wrong spacing.
-    imputed_columns: dict[str, pd.Series] = {}
-    all_missing_columns = X.columns[X.isna().all()].tolist()
-    if all_missing_columns:
-        raise ValueError(
-            "Cannot impute regressors with no observations: "
-            f"{all_missing_columns}. Provide at least one finite value for each "
-            "regressor."
-        )
-
-    if X.empty:
-        return X
-
-    for col in X.columns:
-        original_col = X[col].sort_index()
-        col_values = original_col.dropna()
-
-        try:
-            freq = frequencies[col]
-        except KeyError:
-            raise ValueError(f"No frequency was supplied for X column '{col}'.") from None
-
-        offset_frequency = {"M": "ME", "Q": "QE-DEC"}.get(freq, freq)
-        offset = pd.tseries.frequencies.to_offset(offset_frequency)
-        target_last_date = last_date + offset * steps
-
-        last_valid_date_col = col_values.index[-1]
-
-        last_period = pd.Period(target_last_date, freq=offset)
-        last_col_period = pd.Period(last_valid_date_col, freq=offset)
-        shortage = (last_period - last_col_period).n
-
-        if shortage <= 0:
-            # trim the surplus values not needed for this column's target,
-            # keeping the original (NaN-preserving) values up to that point
-            trimmed_last_date = col_values.iloc[: len(col_values) + shortage].index[-1]
-            final_series = original_col.loc[original_col.index <= trimmed_last_date]
-        else:
-            # keep the original (NaN-preserving) values up to the last
-            # observation, then append the generated fill values
-            base_series = original_col.loc[original_col.index <= last_valid_date_col]
-            if method == "last":
-                fill_values = [col_values.iloc[-1]] * shortage
-            elif method == "mean":
-                fill_values = [col_values.mean()] * shortage
-            elif method == "ar1_t":
-                fill_values = _ar1_t_impute(col_values, shortage, rng)
-            else:  # "zero"
-                fill_values = [0.0] * shortage
-
-            fill_index = pd.date_range(
-                start=last_valid_date_col, periods=shortage + 1, freq=offset
-            )[1:]
-            final_series = pd.concat(
-                [base_series, pd.Series(fill_values, index=fill_index)]
-            )
-
-        imputed_columns[col] = final_series
-
-    # union index covering each column's own final (padded/trimmed) range;
-    # genuine internal gaps survive since each column's final series is
-    # sliced from its original (NaN-preserving) values, but surplus dates
-    # trimmed off one column are not resurrected via another column's index
-    union_index = None
-    for series in imputed_columns.values():
-        union_index = (
-            series.index if union_index is None else union_index.union(series.index)
-        )
-    union_index = union_index.sort_values()
-
-    X = pd.DataFrame(
-        {col: series.reindex(union_index) for col, series in imputed_columns.items()},
-        index=union_index,
+    return (
+        ModelData.from_wide(X=X, frequencies=frequencies)
+        .impute(last_date, steps, method, random_state)
+        .to_wide("X")
     )
-
-    return X
 
 
 def regularise_missing_rows(
@@ -476,38 +271,4 @@ def regularise_missing_rows(
     """
     if data is None or data.empty:
         return data
-
-    columns = {}
-    for column in data.columns:
-        series = data[column].sort_index()
-        first = series.first_valid_index()
-        last = series.last_valid_index()
-        frequency = frequencies[column]
-
-        if first is None or last is None or frequency is None:
-            columns[column] = series
-            continue
-
-        periods = pd.period_range(
-            start=pd.Period(first, freq=frequency),
-            end=pd.Period(last, freq=frequency),
-            freq=frequency,
-        )
-        if isinstance(data.index, pd.PeriodIndex):
-            complete_index = periods
-        else:
-            valid_dates = pd.DatetimeIndex(series.dropna().index)
-            timestamp_anchor = "start" if valid_dates.is_month_start.all() else "end"
-            complete_index = periods.to_timestamp(how=timestamp_anchor).normalize()
-        columns[column] = series.reindex(series.index.union(complete_index)).sort_index()
-
-    index = None
-    for series in columns.values():
-        index = series.index if index is None else index.union(series.index)
-
-    result = pd.DataFrame(
-        {column: series.reindex(index) for column, series in columns.items()},
-        index=index.sort_values(),
-    )
-    result.index.name = data.index.name
-    return result
+    return ModelData.from_wide(y=data, frequencies=frequencies).regularise().to_wide()

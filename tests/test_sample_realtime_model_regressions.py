@@ -415,8 +415,9 @@ def _run_monthly_tree(panel, *, parallel):
     return realtime
 
 
-def test_monthly_tree_with_levels_and_logs_is_parallel_equivalent(
+def test_monthly_tree_with_levels_and_logs_survives_serialised_dispatch(
     sample_realtime_complete,
+    inline_executor,
 ):
     tree = _make_monthly_tree()
     pickle.dumps(tree)
@@ -646,7 +647,9 @@ def _run_ragged_bridge(panel, *, parallel):
     return realtime
 
 
-def test_ragged_bridge_ols_is_parallel_equivalent(sample_realtime_ragged):
+def test_ragged_bridge_ols_survives_serialised_dispatch(
+    sample_realtime_ragged, inline_executor
+):
     sequential = _run_ragged_bridge(sample_realtime_ragged, parallel=False)
     process_parallel = _run_ragged_bridge(sample_realtime_ragged, parallel=True)
     sequential_result = native_result(sequential, "ragged_bridge", "levels")

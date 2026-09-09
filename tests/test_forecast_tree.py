@@ -1673,3 +1673,84 @@ def test_forecasttree_model_root_uses_fitted_root_transformation():
     tree.fit(_make_levels_y([100.0, 110.0, 121.0]), frequency="M")
 
     assert tree.native_metric_mapping() == {"target": "diff"}
+
+
+@pytest.mark.parametrize(
+    "nested",
+    [pytest.param(False, id="flat"), pytest.param(True, id="nested")],
+)
+@pytest.mark.parametrize(
+    "live_mapping",
+    [
+        pytest.param({}, id="empty"),
+        pytest.param(None, id="none"),
+        pytest.param({"target": "levels"}, id="different_complete"),
+    ],
+)
+def test_forecasttree_owned_mapping_uses_fitted_policy_after_mapping_mutates(
+    nested, live_mapping
+):
+    leaf = RecordingPipelineLeaf("leaf")
+    child = leaf
+    if nested:
+        child = ForecastTree(
+            TreeNode(transform=_first_value, children=[leaf], name="inner"),
+            label="inner_tree",
+        )
+    tree = ForecastTree(
+        TreeNode(transform=_first_value, children=[child], name="root"),
+        data_transformation={"target": "diff"},
+    )
+    tree.fit(_make_levels_y([100.0, 110.0, 121.0, 133.1]), frequency="M")
+
+    np.testing.assert_allclose(leaf.fit_calls[0]["y"]["target"], [10.0, 11.0, 12.1])
+    baseline = tree.forecast(steps=1, frequency="M")
+    tree.data_transformation = live_mapping
+
+    forecast = tree.forecast(steps=1, frequency="M")
+
+    np.testing.assert_allclose(baseline["target"], [12.1])
+    pd.testing.assert_frame_equal(forecast, baseline)
+
+
+@pytest.mark.parametrize(
+    "live_mapping",
+    [
+        pytest.param({}, id="empty"),
+        pytest.param(None, id="none"),
+        pytest.param({"target": "levels", "leaf": "levels"}, id="different"),
+    ],
+)
+def test_forecasttree_stacker_uses_captured_fit_policy_after_mapping_mutates(
+    live_mapping,
+):
+    leaf = ConstantForecastModel("leaf", value=1.0)
+    transform = RecordingTransformModel(
+        "stacker", data_transformation={"target": "diff", "leaf": "diff"}
+    )
+    tree = ForecastTree(TreeNode(transform=transform, children=[leaf], name="stack"))
+    tree.fit(_make_levels_y([100.0, 110.0, 121.0]), frequency="M")
+
+    transform.data_transformation = live_mapping
+
+    forecast = tree.forecast(steps=1, frequency="M")
+
+    np.testing.assert_allclose(forecast["target"].to_numpy(), [11.0])
+    assert tree.native_metric_mapping() == {"target": "diff"}
+
+
+def test_forecasttree_mapping_free_stacker_keeps_fitted_implicit_policy():
+    leaf = ConstantForecastModel("leaf", value=1.0)
+    transform = RecordingTransformModel("stacker")
+    tree = ForecastTree(TreeNode(transform=transform, children=[leaf], name="stacker"))
+    tree.fit(_make_levels_y([100.0, 110.0, 121.0, 133.1]), frequency="Q")
+
+    baseline = tree.forecast(steps=1, frequency="Q")
+    baseline_mapping = tree.native_metric_mapping()
+    transform.data_transformation = {"target": "levels", "leaf": "levels"}
+
+    forecast = tree.forecast(steps=1, frequency="Q")
+
+    pd.testing.assert_frame_equal(forecast, baseline)
+    assert tree.native_metric_mapping() == baseline_mapping
+    assert "frequency" not in transform.forecast_calls[-1]["kwargs"]

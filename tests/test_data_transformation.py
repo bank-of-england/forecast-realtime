@@ -184,7 +184,7 @@ def test_reconstruct_levels_rebuilds_from_diff():
     pipeline = DataTransformationPipeline({"gdp": "diff"})
 
     result = pipeline.reconstruct_levels(
-        forecasts=forecasts, outturns=outturns, y_variables=["gdp"], frequency="M"
+        forecasts=forecasts, outturns=outturns, y_variables=["gdp"]
     )
 
     reconstructed = result.loc[
@@ -245,12 +245,12 @@ def test_filter_and_reconstruct_are_deterministic_across_pipeline_instances():
     )
 
     other_reconstructed = DataTransformationPipeline({"gdp": "diff"}).reconstruct_levels(
-        forecasts=forecasts.copy(), outturns=outturns, y_variables=["gdp"], frequency="M"
+        forecasts=forecasts.copy(), outturns=outturns, y_variables=["gdp"]
     )
     pipeline_reconstructed = DataTransformationPipeline(
         {"gdp": "diff"}
     ).reconstruct_levels(
-        forecasts=forecasts.copy(), outturns=outturns, y_variables=["gdp"], frequency="M"
+        forecasts=forecasts.copy(), outturns=outturns, y_variables=["gdp"]
     )
 
     pd.testing.assert_frame_equal(

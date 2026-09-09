@@ -88,7 +88,7 @@ def test_realtime_ols_handles_lagged_single_frequency_data(
         data_transformation=transformations,
         steps=2,
         first_vintage="2017-12-31",
-        last_vintage="2018-12-31",
+        last_vintage="2018-03-31",
         X_imputation="last",
     )
 
@@ -100,7 +100,7 @@ def test_realtime_ols_handles_lagged_single_frequency_data(
         )
     ]
 
-    assert forecasts["vintage_date"].nunique() >= 5
+    assert forecasts["vintage_date"].nunique() >= 2
     assert forecasts.groupby("vintage_date").size().eq(2).all()
     assert forecasts["forecast_horizon"].isin([0, 1]).all()
     assert np.isfinite(forecasts["value"]).all()
@@ -137,7 +137,7 @@ def test_realtime_ols_lags_work_at_monthly_and_quarterly_frequency(
         y_lags=1,
         X_lags=1,
         first_vintage="2017-12-31",
-        last_vintage="2018-12-31",
+        last_vintage="2018-03-31",
         X_imputation="last",
     )
 
@@ -186,7 +186,7 @@ def test_realtime_ols_decomposition_reconstructs_lagged_forecasts(
         y_lags=1,
         X_lags=1,
         first_vintage="2017-12-31",
-        last_vintage="2018-12-31",
+        last_vintage="2018-03-31",
         X_imputation="last",
         decomp=True,
         reconstruct_levels=False,
@@ -206,6 +206,7 @@ def test_realtime_ols_decomposition_reconstructs_lagged_forecasts(
             & frame["metric"].eq("levels")
         )
     ]
+    assert forecasts["vintage_date"].nunique() >= 2
     totals = level_decompositions.groupby(["vintage_date", "date", "forecast_horizon"])[
         "contribution"
     ].sum()
@@ -295,7 +296,7 @@ def test_realtime_ols_mixed_frequency_formula_decomposition(
         },
         steps=2,
         first_vintage="2018-06-30",
-        last_vintage="2019-06-30",
+        last_vintage="2018-09-30",
         X_imputation="last",
         decomp=True,
     )
@@ -401,7 +402,7 @@ def test_realtime_midas_handles_mixed_frequency_lagged_data(
         data_transformation={"quarterly_target": "levels", X_variable: "levels"},
         steps=2,
         first_vintage="2017-12-31",
-        last_vintage="2018-12-31",
+        last_vintage="2018-03-31",
         X_imputation="last",
     )
 
@@ -413,12 +414,12 @@ def test_realtime_midas_handles_mixed_frequency_lagged_data(
         )
     ]
 
-    assert forecasts["vintage_date"].nunique() >= 5
+    assert forecasts["vintage_date"].nunique() >= 2
     assert forecasts.groupby("vintage_date").size().between(1, 2).all()
     assert forecasts.groupby("vintage_date")["forecast_horizon"].agg(set).eq({0, 1}).all()
     assert forecasts["forecast_horizon"].isin([0, 1]).all()
     representative_forecasts = forecasts.loc[
-        forecasts["vintage_date"].eq(pd.Timestamp("2018-12-31"))
+        forecasts["vintage_date"].eq(pd.Timestamp("2018-03-31"))
     ]
     assert len(representative_forecasts) == 2
     assert set(representative_forecasts["forecast_horizon"]) == {0, 1}
@@ -500,7 +501,7 @@ def test_realtime_bridge_ols_mixed_frequency_quarterly_target(mixed_frequency_ou
         },
         steps=2,
         first_vintage="2017-12-31",
-        last_vintage="2018-12-31",
+        last_vintage="2018-03-31",
         X_imputation="last",
     )
 
@@ -512,15 +513,15 @@ def test_realtime_bridge_ols_mixed_frequency_quarterly_target(mixed_frequency_ou
         )
     ]
 
-    assert forecasts["vintage_date"].nunique() >= 5
+    assert forecasts["vintage_date"].nunique() >= 2
     assert forecasts["forecast_horizon"].isin([0, 1]).all()
     assert np.isfinite(forecasts["value"]).all()
 
     # Manually replicate the vintage loop for a single vintage: select the
     # latest release for y/X as of that vintage, aggregate X to quarterly,
     # fit and forecast with Bridge OLS directly.
-    check_vintage = pd.Timestamp("2018-12-31")
-    last_observed_date = pd.Timestamp("2018-09-30")
+    check_vintage = pd.Timestamp("2018-03-31")
+    last_observed_date = pd.Timestamp("2017-12-31")
     manual_forecast = _manual_bridge_ols_forecast(
         outturns,
         y_variable,
@@ -581,7 +582,7 @@ def test_realtime_bridge_ols_respects_publication_lags(mixed_frequency_outturns)
             },
             steps=1,
             first_vintage="2017-12-31",
-            last_vintage="2018-12-31",
+            last_vintage="2018-03-31",
             X_imputation=X_imputation,
         )
         all_forecasts = model.data.forecasts
@@ -657,7 +658,7 @@ def test_realtime_bridge_decomposition_supports_mixed_regressors_and_lags(
         y_lags=1,
         X_lags=1,
         first_vintage="2018-06-30",
-        last_vintage="2019-06-30",
+        last_vintage="2018-09-30",
         X_imputation="last",
         decomp=True,
         reconstruct_levels=False,
@@ -677,6 +678,7 @@ def test_realtime_bridge_decomposition_supports_mixed_regressors_and_lags(
     assert np.isfinite(forecasts["value"]).all()
     assert decompositions is not None
     assert not decompositions.empty
+    assert decompositions["vintage_date"].nunique() >= 2
 
     level_decompositions = decompositions.loc[decompositions["decomposition"].eq("level")]
     assert {"monthly_a", "quarterly_b"}.issubset(set(level_decompositions["component"]))

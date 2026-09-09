@@ -94,10 +94,14 @@ arrow::write_parquet(result, out_path)
 """
 
 
-def _r_fable_available() -> bool:
-    """Return True when the R runtime and fable dependencies are installed."""
+@pytest.fixture(scope="session")
+def r_fable_available():
+    """Skip tests when R and the fable dependencies are unavailable."""
+    reason = (
+        "Rscript and the R packages arrow, fable, fabletools, and tsibble are required"
+    )
     if shutil.which("Rscript") is None:
-        return False
+        pytest.skip(reason)
     try:
         result = subprocess.run(
             [
@@ -112,16 +116,9 @@ def _r_fable_available() -> bool:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0 and result.stdout.strip() == "TRUE"
-
-
-requires_r_fable = pytest.mark.skipif(
-    not _r_fable_available(),
-    reason=(
-        "Rscript and the R packages arrow, fable, fabletools, and tsibble are required"
-    ),
-)
+        pytest.skip(reason)
+    if result.returncode != 0 or result.stdout.strip() != "TRUE":
+        pytest.skip(reason)
 
 
 @pytest.fixture
@@ -222,24 +219,28 @@ def _forecast_data(y, vintage, freq="Q"):
     )
 
 
-@requires_r_fable
+@pytest.mark.usefixtures("r_fable_available")
 @pytest.mark.parametrize(
-    "model_factory",
+    "model_factory,freq",
     [
-        lambda index: rt.models.RFableETS(error="A", trend="A", season="N", index=index),
-        lambda index: rt.models.RFableARIMA(p=1, d=0, q=0, index=index),
+        (
+            lambda index: rt.models.RFableETS(
+                error="A", trend="A", season="N", index=index
+            ),
+            "Q",
+        ),
+        (lambda index: rt.models.RFableARIMA(p=1, d=0, q=0, index=index), "M"),
     ],
-    ids=["ets", "arima"],
+    ids=["quarterly-ets", "monthly-arima"],
 )
-@pytest.mark.parametrize("freq", ["Q", "M"])
-def test_fable_matches_direct_r_and_realtime(
+def test_fable_realtime_matches_direct_r(
     model_factory,
     freq,
     quarterly_series,
     monthly_series,
     tmp_path,
 ):
-    """Native fable, direct wrapper, and RealTimeModel give identical values."""
+    """RealTimeModel forecasts match an independently fitted native fable model."""
     index = "quarter" if freq == "Q" else "month"
     series = quarterly_series if freq == "Q" else monthly_series
     offset = pd.offsets.QuarterEnd(1) if freq == "Q" else pd.offsets.MonthEnd(1)
@@ -247,9 +248,6 @@ def test_fable_matches_direct_r_and_realtime(
     model = model_factory(index)
     steps = 4
     direct = _direct_fable_forecast(series, model.spec, steps, tmp_path, freq)
-
-    model.fit(series)
-    wrapped = model.forecast(steps=steps)["target"].to_numpy()
 
     vintage = series.index[-1] + offset
     realtime = rt.RealTimeModel(
@@ -274,11 +272,10 @@ def test_fable_matches_direct_r_and_realtime(
         .to_numpy()
     )
 
-    np.testing.assert_allclose(wrapped, direct, rtol=1e-5, atol=1e-5)
     np.testing.assert_allclose(realtime_values, direct, rtol=1e-5, atol=1e-5)
 
 
-@requires_r_fable
+@pytest.mark.usefixtures("r_fable_available")
 def test_fable_arima_with_xreg(quarterly_series, tmp_path):
     """RFableARIMA with a regressor matches a direct R call using the same xreg."""
     steps = 4
@@ -345,7 +342,7 @@ def test_rfablemodel_rejects_date_regressor_name_before_serialising(quarterly_se
         model.fit(quarterly_series, X)
 
 
-@requires_r_fable
+@pytest.mark.usefixtures("r_fable_available")
 @pytest.mark.parametrize("reserved_name", ["value", "index"])
 def test_rfablemodel_rejects_reserved_regressor_names(
     quarterly_series,

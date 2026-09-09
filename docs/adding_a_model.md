@@ -71,14 +71,19 @@ def __init__(
 
 Estimate the model using historical data (`y`), for example by fitting regression coefficients, training tree splits, or computing summary statistics from the observed time series. After this call, the model should be ready to produce forecasts.
 
-`_fit()` receives the **already-processed** design matrix. If `y_lags` or `X_lags` were specified, `ForecastModel.fit()` has already appended the lag columns to `X` and dropped NaN rows before calling `_fit()`. Do not call `build_lagged_design` or do any lag construction inside `_fit()`.
+`_fit()` receives the **already-processed** design matrix. If lags or dummies
+were specified, `ForecastModel.fit()` has already appended those columns to
+`X`. `build_lagged_design` retains NaNs; after `_prepare_estimation_inputs()`,
+rows with missing estimation values are dropped only when
+`_handles_missing_values=False`. Do not call `build_lagged_design` or do any
+lag construction inside `_fit()`.
 
 **Inputs:**
 
 | Argument | Type | Description |
 |----------|------|-------------|
-| `y` | `pd.DataFrame` | Target variable(s). **Index:** `DatetimeIndex`. **Values:** already transformed (e.g. growth rates). When lags are used this is the NaN-dropped aligned target; otherwise the full training history. |
-| `X` | `pd.DataFrame` or `None` | Design matrix, potentially augmented with lag columns. Column order: base X cols, then `_y_lag1…_y_lagk`, then `col_lag1…col_lagk` per X column. `None` if no regressors and `y_lags=0`. |
+| `y` | `pd.DataFrame` | Target variable(s). **Index:** normally a `DatetimeIndex`; a supported direct identity path may preserve a `PeriodIndex`. **Values:** already transformed (e.g. growth rates). This is the prepared estimation target; rows with missing values may remain when the model handles them, and are otherwise dropped after `_prepare_estimation_inputs()`. |
+| `X` | `pd.DataFrame` or `None` | Design matrix, potentially augmented with lags and dummies. Before formula selection, column order is base X cols, then `_y_lag1…_y_lagk`, then `col_lag1…col_lagk` per X column, followed by dummies. `None` if there are no base, lag or dummy regressors. |
 | `**kwargs` | | Extra keyword arguments forwarded from `RealTimeModel.forecast(..., **kwargs)`. `y_lags` and `X_lags` are **not** present here — they are consumed by `ForecastModel.fit()`. |
 
 **Example `y` (quarterly, single variable, `data_transformation={"cpisa": "pop"}`):**
@@ -110,22 +115,22 @@ date
 
 ### `_forecast(steps, X=None, y=None, **kwargs)` — Forecasting
 
-Produce multi-step-ahead forecasts using the fitted model. This method is called after `_fit()` and should return predicted values for the next `steps` periods. Each row of the output corresponds to a forecast horizon (row 0 is the nowcast of the current period, row 1 is one period ahead, and so on).
+Produce multi-step-ahead forecasts using the fitted model. This method is called after `_fit()` and should return predicted values for the next `steps` periods. Each row of the output corresponds to a forecast horizon; row 0 is the first forecast row, row 1 is the next row, and so on.
 
 **Inputs:**
 
 | Argument | Type | Description |
 |----------|------|-------------|
 | `steps` | `int` | Number of periods ahead to forecast (always ≥ 1). |
-| `X` | `pd.DataFrame` or `None` | Design matrix over history **and** the forecast horizon, indexed by a `DatetimeIndex`; the last `steps` rows hold the regressor forecasts. Column order matches the `X` passed to `_fit`. `None` if no `X_variables` (or no `X_cond_variables`) were specified. |
-| `y` | `pd.DataFrame` or `None` | Target history plus conditioning paths over the horizon, indexed by a `DatetimeIndex`. Column order matches the `y` passed to `_fit`. Entries set to `NaN` are unconstrained; non-NaN entries pin that variable/horizon to an externally supplied value (e.g. MPR projections). `None` if no `y_cond_variables` were specified. |
+| `X` | `pd.DataFrame` or `None` | Prepared design over history and any supplied forecast conditioning, indexed by a `DatetimeIndex`. Select forecast rows by date or forecast origin; they are not guaranteed to be the final `steps` rows. Column order matches the `X` passed to `_fit`. `None` when omitted; lag or dummy settings may still create a design. |
+| `y` | `pd.DataFrame` or `None` | Prepared target history plus conditioning paths over the horizon when conditioning is supplied, indexed by a `DatetimeIndex`. With an explicit transformation, `y` includes prepared history even without conditioning; with implicit identity, it may be `None` when no conditioning is supplied. Column order matches the `y` passed to `_fit`. Non-missing future values provide conditioning; `NaN` values are unconstrained. |
 | `**kwargs` | | Additional keyword arguments. |
 
 **Output:**
 
-Must return a `pd.DataFrame` of shape `(steps, n_y_variables)`:
-- **Index:** a `pd.DatetimeIndex` (name `"date"`) of length `steps`, one date per horizon. The subclass must provide this index. AR-style models can call `self._wrap_forecast(arr, steps)` to wrap an `(steps, n_vars)` ndarray with dates inferred from `self.y.index`; mixed-frequency models (e.g. MIDAS) build the DataFrame with their own anchor dates.
-- **Rows** correspond to forecast horizons 0, 1, …, steps−1 (horizon 0 = nowcast of the current period).
+Must return either a `pd.DataFrame` or an array-like object of shape `(steps, n_y_variables)`:
+- **Index:** a supplied `pd.DataFrame` must have its own `pd.DatetimeIndex` of length `steps`, one date per horizon. For an array-like result, the base class supplies standard dates from the effective forecast origin. By default, the first date is one period after that origin. Mixed-frequency models (e.g. MIDAS) can build a DataFrame with their own anchor dates.
+- **Rows** correspond to forecast horizons 0, 1, …, steps−1; horizon 0 is the first forecast row.
 - **Columns** must match the order and count of columns in the `y` DataFrame that was passed to `_fit()`.
 - Values must be in the metric declared by the model's `data_transformation`
     (or the call-level fallback). `RealTimeModel` handles back-transformation to
@@ -151,13 +156,41 @@ pd.DataFrame(
 )  # shape: (4, 2)
 ```
 
-The base class validates that the return value is a `DataFrame` with a `DatetimeIndex`, exactly `steps` rows, and the same number of columns as the fitted `y`.
+The base class validates the returned shape and the number of target columns. A returned DataFrame must supply a `DatetimeIndex`; array-like results receive the standard forecast dates when the base class wraps them.
+
+---
+
+## Data and Extension Boundary
+
+Model authors use the public `fit()`, `forecast()`, `predict()`, and
+`ForecastContext` interfaces. The existing DataFrame contracts for
+`_prepare_fit_inputs()`, `_prepare_forecast_inputs()`,
+`_prepare_estimation_inputs()`, `_fit()`, `_forecast()`, and
+`_forecast_decomp()` remain in force. Use those hooks; do not import or depend
+on the private `ModelData` implementation.
+
+Internally, `FittedModelConfiguration` and its `FittedDataTransformation`
+record the policy selected at fit time, while the canonical long-labelled
+`ModelData` keeps raw observations and provenance separate from prepared
+DataFrames. `ModelInputRequirements` is shared by ordinary models and trees:
+it reports the raw `y` and `X` roles a consumer needs even when no mapping is
+configured.
+
+Trees label composition inputs with their actual synthetic columns and native
+metrics. Callable nodes retain their dictionary-of-DataFrames interface and
+the established `levels` output-metric convention; their input values are not
+necessarily all levels because native child outputs may use other metrics.
+`RealTimeModel` chooses vintages and horizons and schedules forecast tasks;
+`ModelData` performs as-of selection for each task. Worker tasks carry
+`ModelData` rather than parallel frames and metadata. Counterfactual models
+built from replacement data are copied so hook caches cannot leak between
+evaluations.
 
 ---
 
 ### `_forecast_decomp(steps, X=None, y=None, **kwargs)` — Forecast Decomposition (Optional)
 
-Break down forecast revisions into interpretable components. When a forecast is updated between data vintages, the revision can be split into:
+Return additive components of the current forecast in the model's native target metric. `RealTimeModel` evaluates counterfactuals across vintages to derive forecast revisions as:
 
 - **News**: revision from new data released
 - **Reestimation**: revision from model refit (parameter changes, not new data)
@@ -171,7 +204,7 @@ This method is **optional**. If not implemented, return `None` and the model wil
 |----------|------|-------------|
 | `steps` | `int` | Number of periods ahead to forecast (same as `_forecast`). |
 | `X` | `pd.DataFrame` or `None` | Full augmented design matrix (same as passed to `_forecast`). |
-| `y` | `pd.DataFrame` or `None` | Conditioning paths (same as passed to `_forecast`). |
+| `y` | `pd.DataFrame` or `None` | Prepared history and conditioning, when supplied (same as passed to `_forecast`). |
 | `**kwargs` | | Additional keyword arguments. |
 
 **Output (minimal contract):**
@@ -182,10 +215,10 @@ Return `pd.DataFrame` or `None`:
 - If decomposition computed, one row per component per horizon:
   - `forecast_horizon` (int): 0-based horizon index
   - `component` (str): name of the component (e.g. `'intercept'`, `'gdpkp'`, `'cpisa_lag1'`)
-  - `contribution` (float): additive effect — values must sum to the total forecast for each horizon
+    - `contribution` (float): additive effect in the native target metric; values must sum to the current forecast for each horizon
   - `weight` (float or NaN): model coefficient (NaN if not applicable, e.g. black-box models)
 
-`RealTimeModel` augments these rows with metadata (`variable`, `date`, `vintage_date`, `frequency`, `source`, `forecast_metric`, `decomposition`, `revision_source`, `base_vintage_date`) before storing in `rt_model.decompositions`. The model does **not** need to return these columns.
+`RealTimeModel` augments these rows with metadata (`variable`, `date`, `vintage_date`, `frequency`, `source`, `forecast_metric`, `decomposition`, `revision_source`, `base_vintage_date`) before storing in `rt_model.decompositions`. It derives news, reestimation, and interaction by comparing counterfactual evaluations across vintages. The model does **not** need to return these columns or implement vintage revision scheduling.
 
 **Example output (OLS with 2 regressors + intercept, `steps=4`):**
 
@@ -202,7 +235,7 @@ pd.DataFrame(
 
 **Important notes:**
 
-- `forecast_horizon` is 0-based (0 = nowcast)
+- `forecast_horizon` is 0-based (0 = first forecast row)
 - `contribution` values **must sum to the total forecast** for each horizon
 - `weight` can be `NaN` for non-parametric or black-box models
 - Simple models (e.g. moving average) can return `None` and skip decomposition
@@ -341,7 +374,7 @@ rt_model.forecast(
 
 ## Example: OLS with Decomposition
 
-Ordinary Least Squares (OLS) forecasts with interpretable component decomposition. This example shows how `_forecast_decomp()` breaks down forecast revisions into data news, parameter reestimation, and interaction effects.
+Ordinary Least Squares (OLS) forecasts with interpretable component decomposition. This example shows how `_forecast_decomp()` returns additive components of the current forecast in the model's native target metric; `RealTimeModel` compares counterfactuals across vintages to derive data news, parameter reestimation, and interaction effects.
 
 ### Step 1: Subclass `ForecastModel` with decomposition support
 
@@ -379,7 +412,7 @@ class SimpleOLS(ForecastModel):
         self.coef_ = self.model.coef_
         return self
 
-    def _forecast(self, steps: int, X=None, y=None, **kwargs) -> pd.DataFrame:
+    def _forecast(self, steps: int, X=None, y=None, **kwargs) -> np.ndarray:
         """Forecast using OLS: y = intercept + X @ coef."""
         if X is None:
             raise ValueError("SimpleOLS requires X (future regressors)")
@@ -486,12 +519,26 @@ without a shell, and generated path literals are quoted for the target
 language, but this does not sandbox the script or its parameters. Fable
 `spec` and `xreg` values have the same trusted R-expression contract.
 
-**You only write two functions:** `fit(y, X, params)` → returns a model object, and `forecast(model, steps, X, y, params)` → returns a data frame / matrix. The argument order mirrors `ForecastModel._fit` / `_forecast`, with `model` standing in for `self` and `params` for `**kwargs`. `X` is the regressors (`NULL` / `[]` / `nothing` when there are none); at forecast time it holds the future regressor values (one row per step). Both `y` and `X` include a `date` column containing their pandas index. Use this column to align time-series data, and exclude it from numerical regressors unless the model explicitly uses dates.
+**Write two functions:** `fit(y, X, params)` returns a model object, and
+`forecast(model, steps, X, y, params)` returns a data frame or matrix. The
+argument order mirrors `ForecastModel._fit` and `_forecast`, with `model`
+standing in for `self` and `params` for `**kwargs`.
+
+The inputs follow the Python forecasting contract above. Supplied `X` can
+contain prepared history and conditioning, not just one row per forecast step.
+Select horizon rows by date and the fitted state or `forecast_origin` parameter.
+Absent inputs use `NULL`, `[]` or `nothing`, as appropriate; lags and dummies can
+create `X` even without base regressors. An explicit transformation supplies `y`
+history even without conditioning; implicit identity can leave `y` absent.
+
+When present, `y` and `X` include a `date` column containing their pandas index.
+Use it to align time-series data, and exclude it from numerical regressors
+unless the model explicitly uses dates.
 
 ### What the Package Handles for You
 
 1. `fit()` writes `y.parquet` (and optionally `X.parquet`) to a temporary directory, loads `y` and `X` into data frames (`X` is `NULL` / `[]` / `nothing` when absent), deserialises your keyword arguments into `params`, calls your `fit(y, X, params)` function, and **saves the returned model object** to disk (`model.rds` / `model.mat` / `model.jls`). Their pandas indexes are stored as a `date` column.
-2. `forecast()` loads `y` and the future `X`, **deserialises the saved model**, calls your `forecast(model, steps, X, y, params)` function, takes the returned data frame / matrix and **writes it to `forecasts.parquet`**, then returns the result as a `pd.DataFrame` (the base class wraps it with the standard inferred-date `DatetimeIndex`).
+2. `forecast()` loads `y` and the prepared `X`, **deserialises the saved model**, calls your `forecast(model, steps, X, y, params)` function, takes the returned data frame / matrix and **writes it to `forecasts.parquet`**, then returns the result as a `pd.DataFrame`. Select horizon rows from the supplied `date` column using the fitted state or `forecast_origin` parameters; do not assume that the final `steps` rows are the forecast. For array-like output, the base class wraps it with the standard inferred-date `DatetimeIndex`.
 3. The temporary directory is **automatically deleted** when the model object is garbage-collected.
 
 Your functions never touch `cache_dir`, `saveRDS`, `write_parquet`, or any other file I/O — the runner scripts handle all of that.
@@ -685,7 +732,7 @@ function result = ma_model(action, varargin)
     elseif strcmp(action, 'forecast')
         model = varargin{1};
         steps = varargin{2};
-        X     = varargin{3};   % future regressors (one row per step)
+        X     = varargin{3};   % prepared design, possibly including history and conditioning
         y     = varargin{4};
 
         fcst = repmat(model.window_mean, steps, 1);

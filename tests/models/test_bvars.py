@@ -11,12 +11,6 @@ import forecast_evaluation as fe
 
 import forecast_realtime as rt
 
-sample_data = rt.generate_synthetic_data(
-    N=2,
-    first_period="2015-01-31",
-    endpoint="2024-12-31",
-)
-
 
 def test_bvar_declares_missing_values_unsupported():
     """RealTimeModel must complete-case BVAR estimation data."""
@@ -107,12 +101,13 @@ def test_realtime_bvar_receives_no_missing_estimation_values(monkeypatch):
         pd.testing.assert_index_equal(estimation_data.index, expected_index)
 
 
-def test_bvar_native_unconditional():
-    """Test that native bvar and ForecastBVAR wrapper produce identical results."""
-    import forecast_realtime as rt
-
+def test_bvar_matches_native_unconditional_and_conditional_forecasts(
+    sample_realtime_ragged,
+    request,
+):
+    """Both forecast paths match native BVAR using the same fitted models."""
     variables = ["quarterly_1", "quarterly_2"]
-    outturns = sample_data.query("metric == 'levels'").copy()
+    outturns = sample_realtime_ragged.query("metric == 'levels'").copy()
     outturns = outturns[outturns["variable"].isin(variables)]
 
     vintage = pd.Timestamp("2024-06-30")
@@ -130,7 +125,7 @@ def test_bvar_native_unconditional():
     native_model = bv.BVAR(
         n_lags=5, model=prior, stationary=True, optimisation_method="ml"
     )
-    native_model.optimise_hyperparameters(y_vintage, nb_restart=5, random_state=0)
+    native_model.optimise_hyperparameters(y_vintage, nb_restart=0, random_state=0)
     native_model.sample(
         data=y_vintage,
         N_draws=1000,
@@ -152,6 +147,7 @@ def test_bvar_native_unconditional():
     wrapper = rt.models.ForecastBVAR(
         stationary=True,
         n_lags=5,
+        nb_restart=0,
         mode_only=True,
         optim_random_state=0,
         sampling_random_state=0,
@@ -163,30 +159,10 @@ def test_bvar_native_unconditional():
     np.testing.assert_allclose(
         native_forecasts, wrapper_forecasts.values, rtol=1e-5, atol=1e-5
     )
-
-
-def test_bvar_native_conditional():
-    """Test that native bvar and
-    ForecastBVAR wrapper produce identical conditional results."""
-    import forecast_realtime as rt
-
-    variables = ["quarterly_1", "quarterly_2"]
-    outturns = sample_data.query("metric == 'levels'").copy()
-    outturns = outturns[outturns["variable"].isin(variables)]
-
-    vintage = pd.Timestamp("2024-06-30")
-
-    # Training data
-    y_vintage = outturns[outturns["vintage_date"] <= vintage].copy()
-    y_vintage = y_vintage.sort_values("vintage_date", ascending=False).drop_duplicates(
-        subset=["date", "variable"], keep="first"
-    )
-    y_vintage = y_vintage.pivot(index="date", columns="variable", values="value")
-    y_vintage = y_vintage[y_vintage.index < vintage].dropna()
+    compiled_unconditional = wrapper_forecasts.copy()
 
     # Build deterministic conditioning paths: quarterly_1 for two steps and
     # quarterly_2 for one.
-    H = 4
     y_columns = list(y_vintage.columns)
     constraint_mean = np.full((H, len(y_columns)), np.nan)
     conditioning = {"quarterly_1": 1, "quarterly_2": 0}
@@ -195,19 +171,6 @@ def test_bvar_native_conditional():
         col_idx = y_columns.index(var)
         constraint_mean[:adjusted, col_idx] = y_vintage[var].iloc[-1]
 
-    # --- Native bvar ---
-    prior = bv.NaturalConjugate(minnesota=True, soc=True, sur=True)
-    native_model = bv.BVAR(
-        n_lags=5, model=prior, stationary=True, optimisation_method="ml"
-    )
-    native_model.optimise_hyperparameters(y_vintage, nb_restart=5, random_state=0)
-    native_model.sample(
-        data=y_vintage,
-        N_draws=1000,
-        point_only=True,
-        progressbar=False,
-        random_state=0,
-    )
     native_model.forecast(
         H=H,
         constraint_mean=constraint_mean,
@@ -219,17 +182,6 @@ def test_bvar_native_conditional():
         random_state=0,
     )
     native_forecasts = np.mean(native_model.forecast_conditional, axis=0)[-H:]
-
-    # --- ForecastBVAR wrapper ---
-    wrapper = rt.models.ForecastBVAR(
-        stationary=True,
-        n_lags=5,
-        mode_only=True,
-        optim_random_state=0,
-        sampling_random_state=0,
-        forecast_random_state=0,
-    )
-    wrapper.fit(y=y_vintage)
 
     # make constraint_mean a DataFrame with proper dates
     constraint_mean_df = pd.DataFrame(
@@ -245,6 +197,18 @@ def test_bvar_native_conditional():
 
     np.testing.assert_allclose(
         native_forecasts, wrapper_forecasts.values, rtol=1e-5, atol=1e-5
+    )
+
+    # Other contract tests use this same kernel without its compilation overhead.
+    request.getfixturevalue("bvar_python_kernel")
+    pd.testing.assert_frame_equal(
+        wrapper.forecast(steps=H), compiled_unconditional, rtol=1e-12, atol=1e-12
+    )
+    pd.testing.assert_frame_equal(
+        wrapper.forecast(steps=H, y=constraint_mean_df),
+        wrapper_forecasts,
+        rtol=1e-12,
+        atol=1e-12,
     )
 
 

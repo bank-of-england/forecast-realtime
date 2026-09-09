@@ -53,6 +53,33 @@ class TestFormulaInit:
         assert f.X_cols == ["x1"]
 
 
+@pytest.mark.parametrize(
+    "formula, X_columns, expected",
+    [
+        pytest.param(
+            "y2 + y1 ~ x2 + y_lag1 + dummy + missing + x1",
+            ["x1", "x2", "other"],
+            (["y2", "y1"], ["x2", "x1"]),
+            id="raw-inputs-in-formula-order",
+        ),
+        pytest.param(
+            "y ~ .",
+            ["x2", "x1", "other"],
+            (["y"], ["x2", "x1", "other"]),
+            id="wildcard-preserves-supplied-order",
+        ),
+        pytest.param(
+            "y ~ .",
+            None,
+            (["y"], None),
+            id="none-stays-none",
+        ),
+    ],
+)
+def test_input_columns_selects_available_formula_inputs(formula, X_columns, expected):
+    assert Formula(formula).input_columns(X_columns) == expected
+
+
 class TestExtractY:
     """Test y extraction."""
 
@@ -128,6 +155,25 @@ class TestExtractX:
         X = df[["x1", "x2"]]
         result = f.extract_X(X)
         assert list(result.columns) == ["x1"]
+
+    @pytest.mark.parametrize(
+        "formula, expected_X",
+        [
+            ("y ~ x2 + y_lag1 + dummy + missing + x1", ["x2", "x1"]),
+            ("y ~ .", ["x1", "x2", "x3"]),
+        ],
+    )
+    def test_extract_available_inputs_defers_design_terms(self, df, formula, expected_X):
+        y, X = Formula(formula).extract_available_inputs(
+            df[["y"]], df[["x1", "x2", "x3"]]
+        )
+
+        assert list(y.columns) == ["y"]
+        assert list(X.columns) == expected_X
+
+    def test_extract_available_inputs_rejects_missing_y(self, df):
+        with pytest.raises(ValueError, match="'missing' not found"):
+            Formula("missing ~ x1").extract_available_inputs(df[["y"]], df[["x1"]])
 
 
 class TestIntegration:
@@ -251,6 +297,16 @@ class TestFormulaWithForecastModel:
         model.fit(y, X)
 
         assert list(model.X.columns) == ["feature1", "feature2", "feature3"]
+
+    def test_model_wildcard_rejects_unknown_source_metric(self, forecast_data):
+        model = rt.models.ForecastOLS(formula="target ~ .")
+
+        with pytest.raises(ValueError, match="X_input_metrics.*not present"):
+            model.fit(
+                forecast_data[["target"]],
+                forecast_data[["feature1"]],
+                X_input_metrics={"unknown": "diff"},
+            )
 
     def test_model_formula_missing_column_raises(self, forecast_data):
         """Test that formula with missing column raises ValueError."""

@@ -10,16 +10,15 @@ output.
 
 from __future__ import annotations
 
-import copy
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pandas as pd
 
+from forecast_realtime._model_data import ModelData
 from forecast_realtime.data_transformation import (
     DataTransformationPipeline,
     FittedDataTransformation,
-    _validate_mapping_coverage,
 )
 from forecast_realtime.forecast_model import (
     FittedModelConfiguration,
@@ -29,9 +28,6 @@ from forecast_realtime.forecast_model import (
 )
 
 TransformType = Callable[[dict[str, pd.DataFrame]], pd.DataFrame] | ForecastModel
-
-# Raw-input settings do not apply to synthetic child-output columns.
-_NODE_RAW_INPUT_KWARGS = ("X_imputation", "input_frequencies")
 
 
 # --------------------------------------------------------------------------- #
@@ -50,85 +46,40 @@ def _leaf_in_sample_frame(leaf: ForecastModel) -> pd.DataFrame:
         return _as_frame(leaf.y)
 
 
-def _strip_leaf_structure_kwargs(kwargs: dict) -> dict:
-    """Return keyword arguments accepted by a node transform."""
-    blocked = {"y_lags", "X_lags", "dummies"}
-    return {k: v for k, v in kwargs.items() if k not in blocked}
-
-
-def _node_transform_kwargs(kwargs: dict, transform: ForecastModel) -> dict:
+def _node_transform_kwargs(
+    kwargs: dict, transform: ForecastModel, *, fitted: bool = False
+) -> dict:
     """Return keyword arguments for a stacking model transform."""
-    node_kwargs = _strip_leaf_structure_kwargs(kwargs)
-    for key in _NODE_RAW_INPUT_KWARGS:
-        node_kwargs.pop(key, None)
-    node_kwargs["data_transformation"] = None
-    if transform.data_transformation is None:
-        node_kwargs.pop("frequency", None)
-        node_kwargs.pop("drop_transformation_nans", None)
-    return node_kwargs
+    mapping = (
+        transform._fitted_model_configuration.data_transformation.data_transformation
+        if fitted
+        else transform.data_transformation
+    )
+    blocked = {"y_lags", "X_lags", "dummies", "X_imputation"}
+    if mapping is None:
+        blocked.update(("frequency", "drop_transformation_nans"))
+    return {k: v for k, v in kwargs.items() if k not in blocked} | {
+        "data_transformation": None
+    }
 
 
-def _component_metric_mapping(component: ForecastModel) -> dict[str, str]:
-    """Return the native output metric implied by a fitted component."""
-    columns = list(getattr(component, "y", pd.DataFrame()).columns)
-    if not columns:
-        return {}
-    return component.native_metric_mapping(target_variables=columns)
-
-
-def _component_input_metrics(node: TreeNode) -> dict[str, str]:
-    """Map a node's synthetic columns to its children's output metrics."""
-    metrics = {}
-    for child in node.children:
-        if isinstance(child, ForecastModel):
-            output = _component_metric_mapping(child)
-            if output:
-                metrics[child.label] = next(iter(output.values()))
+def _labelled_components(node, components, target_data):
+    """Label each actual child output without guessing callable arithmetic units."""
+    for name, child in zip(node.child_names, node.children, strict=True):
+        frame = components[name]
+        model = child if isinstance(child, ForecastModel) else child.transform
+        if isinstance(model, ForecastModel):
+            metrics = model.native_metric_mapping(list(frame.columns))
+            frequency = model._fitted_model_configuration.data_transformation.frequency
+            raw_frequencies = model._raw_data.frequencies("y")
+            frequencies = {
+                column: raw_frequencies.get(column) or frequency
+                for column in frame.columns
+            }
         else:
-            output = _component_metric_mapping(child.transform)
-            if output:
-                metrics[child.name] = next(iter(output.values()))
-    return metrics
-
-
-def _validate_node_transform_mapping(
-    node: TreeNode,
-    transform: ForecastModel,
-    y_variables: list[str],
-    X_variables: list[str],
-) -> None:
-    """Validate a node-owned mapping against the node's actual inputs."""
-    mapping = transform.data_transformation
-    if mapping is not None:
-        formula = getattr(transform, "_formula", None)
-        if formula is not None:
-            y_variables = list(formula.y_cols)
-            if not formula.has_wildcard:
-                X_variables = [
-                    variable for variable in X_variables if variable in formula.X_cols
-                ]
-        _validate_mapping_coverage(
-            mapping,
-            y_variables,
-            X_variables,
-            context=f"node {node.name!r}",
-        )
-
-
-def _concat_components(components: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """Concatenate named per-source frames into one design matrix.
-
-    A single-column source keeps that source's name as its column; a
-    multi-column source has its columns prefixed with its name, avoiding
-    collisions across sources.
-    """
-    frames = []
-    for name, frame in components.items():
-        if frame.shape[1] == 1:
-            frames.append(frame.set_axis([name], axis=1))
-        else:
-            frames.append(frame.add_prefix(f"{name}_"))
-    return pd.concat(frames, axis=1)
+            metrics = {column: "levels" for column in frame.columns}
+            frequencies = target_data.frequencies("y")
+        yield name, frame, metrics, frequencies
 
 
 def _select_target(frame: pd.DataFrame, target: str, source_name: str) -> pd.DataFrame:
@@ -392,6 +343,20 @@ class ForecastTree(ForecastModel):
         )
         self._refresh_capability_flags()
 
+    def forecast(
+        self,
+        steps: int = 1,
+        X: pd.DataFrame | None = None,
+        y: pd.DataFrame | None = None,
+        decomp: bool = False,
+        context: ForecastContext | None = None,
+        **kwargs,
+    ) -> ForecastResult:
+        """Retain the tree's positional context on the shared forecast path."""
+        return super().forecast(
+            steps=steps, X=X, y=y, decomp=decomp, context=context, **kwargs
+        )
+
     def native_metric_mapping(
         self, target_variables: list[str] | None = None
     ) -> dict[str, str]:
@@ -441,76 +406,73 @@ class ForecastTree(ForecastModel):
             component._handles_missing_values for component in components
         )
 
-    def input_metric_requirements(
+    def input_requirements(
         self,
         y_variables: list[str],
         X_variables: list[str] | None = None,
         data_transformation=None,
-    ) -> dict[str, tuple[str, ...]]:
-        """Report raw metric requirements without flattening component plans.
-
-        The returned tuples preserve contradictory leaf requirements. Realtime
-        source selection may retain levels when they can derive every request;
-        each fitted component still receives and executes its own plan.
-        """
-        fallback = self.data_transformation or data_transformation or {}
-        requirements: dict[str, set[str]] = {variable: set() for variable in y_variables}
-        requirements.update({variable: set() for variable in (X_variables or [])})
-
-        def collect(component, owner_mapping):
-            if isinstance(component, ForecastTree):
-                nested_owner = (
-                    component.data_transformation
-                    if component.data_transformation is not None
-                    else owner_mapping
-                )
-                for child in component.spec.children:
-                    collect(child, nested_owner)
-                if isinstance(component.spec.transform, ForecastModel):
-                    collect(component.spec.transform, nested_owner)
-                return
-
-            mapping = component.data_transformation or owner_mapping
-            if isinstance(component, ForecastModel):
-                formula = getattr(component, "_formula", None)
-                component_y_variables = (
-                    list(formula.y_cols) if formula is not None else y_variables
-                )
-                component_X_variables = (
-                    (
-                        [
-                            variable
-                            for variable in (X_variables or [])
-                            if variable in formula.X_cols
-                        ]
-                        if not formula.has_wildcard
-                        else X_variables or []
-                    )
-                    if formula is not None
-                    else X_variables or []
-                )
-                for variable in component_y_variables:
-                    if variable in mapping:
-                        requirements[variable].add(mapping[variable])
-                for variable in component_X_variables:
-                    if variable in mapping:
-                        requirements[variable].add(mapping[variable])
-
+    ):
+        """Compose consumer requests without merging roles or losing unmapped inputs."""
+        fallback = (
+            self.data_transformation
+            if self.data_transformation is not None
+            else data_transformation
+        )
+        requirements = []
         for leaf in self.spec.all_leaves():
-            collect(leaf, fallback)
-        for node in self.spec.nodes():
-            if isinstance(node.transform, ForecastModel):
-                collect(node.transform, fallback)
+            requirements.extend(
+                leaf.input_requirements(y_variables, X_variables, fallback)
+            )
 
-        return {
-            variable: tuple(sorted(metrics))
-            for variable, metrics in requirements.items()
-            if metrics
-        }
+        def output_columns(component):
+            if isinstance(component, ForecastModel):
+                return component.resolve_target_variables(y_variables)
+            if isinstance(component.transform, ForecastModel):
+                return component.transform.resolve_target_variables(y_variables)
+            return [component.target or y_variables[0]]
+
+        for node in self.spec.nodes():
+            if not isinstance(node.transform, ForecastModel):
+                continue
+            columns = []
+            for name, child in zip(node.child_names, node.children, strict=True):
+                outputs = output_columns(child)
+                columns.extend(
+                    [name]
+                    if len(outputs) == 1
+                    else [f"{name}_{column}" for column in outputs]
+                )
+            for request in node.transform.input_requirements(y_variables, columns):
+                requirements.append(
+                    replace(
+                        request,
+                        consumer=f"{self.label}/{node.name}/{request.consumer}",
+                        X_kind="component",
+                        X=request.X
+                        if request.explicit
+                        else tuple((column, "native") for column, _ in request.X),
+                    )
+                )
+        return tuple(requirements)
+
+    def input_metric_requirements(
+        self, y_variables, X_variables=None, data_transformation=None
+    ):
+        """Project consumer requests for callers of the established inspection API."""
+        metrics = {}
+        for request in self.input_requirements(
+            y_variables, X_variables, data_transformation
+        ):
+            for role in ("y", "X"):
+                for variable, metric in request.items(role):
+                    metrics.setdefault(variable, set()).add(metric)
+        return {variable: tuple(sorted(values)) for variable, values in metrics.items()}
 
     required_input_metrics = input_metric_requirements
 
-    def _resolve_child_data_transformation(self, kwargs: dict) -> dict:
+    def _resolve_child_data_transformation(
+        self, kwargs: dict, *, fitted: bool = False
+    ) -> dict:
         """Override the ``data_transformation`` fallback forwarded to children.
 
         When this tree owns a ``data_transformation``, its mapping
@@ -519,9 +481,18 @@ class ForecastTree(ForecastModel):
         tree's own pipeline still wins); otherwise the call-level
         ``data_transformation`` already in ``kwargs`` is left untouched.
         """
-        if self.data_transformation is None:
+        if fitted:
+            policy = self._fitted_model_configuration.data_transformation
+            mapping = (
+                dict(policy.data_transformation)
+                if policy.pipeline_source == "model"
+                else None
+            )
+        else:
+            mapping = self.data_transformation
+        if mapping is None:
             return kwargs
-        return {**kwargs, "data_transformation": self.data_transformation}
+        return {**kwargs, "data_transformation": mapping}
 
     def _resolve_fit_origin(self, root_transform: TransformType):
         """Resolve the final usable date represented by the fitted root output."""
@@ -534,13 +505,6 @@ class ForecastTree(ForecastModel):
                 "The callable root transform produced no usable fitted output."
             )
         return root_output.index[-1]
-
-    def fit(self, y: pd.DataFrame, X: pd.DataFrame | None = None, **kwargs):
-        """Fit the tree and return ``self`` after all nodes succeed."""
-        candidate = copy.deepcopy(self)
-        candidate._fit_impl(y, X, **kwargs)
-        self._commit_fit(candidate)
-        return self
 
     def _commit_fit(self, candidate: ForecastTree) -> None:
         """Publish fitted state from ``candidate`` to this tree and its components."""
@@ -587,7 +551,7 @@ class ForecastTree(ForecastModel):
                     visited.add(child_pair)
                     original_child._commit_fit(candidate_child)
 
-    def _fit_impl(self, y: pd.DataFrame, X: pd.DataFrame | None = None, **kwargs):
+    def _fit_data_impl(self, data: ModelData, **kwargs):
         """Fit every leaf and every stacking transform in the spec tree.
 
         ``y``/``X`` are forwarded to every leaf/nested tree raw
@@ -599,15 +563,12 @@ class ForecastTree(ForecastModel):
         tree's own pipeline when it has one (see
         ``_resolve_child_data_transformation``).
         """
-        if not isinstance(y, pd.DataFrame):
-            raise TypeError("y must be a pandas DataFrame")
-
-        self._raw_y_history = y.copy()
-        self._raw_X_history = X.copy() if X is not None else None
+        self._raw_data = data.history()
+        y = data.to_wide("y")
 
         self._refresh_capability_flags()
         kwargs = self._resolve_child_data_transformation(kwargs)
-        self._fit(y, X, **kwargs)
+        self._fit(y, data.to_wide("X"), **kwargs)
 
         root_transform = self.spec.transform
         if isinstance(root_transform, ForecastModel):
@@ -625,14 +586,14 @@ class ForecastTree(ForecastModel):
         self.last_y_fit_date = self._resolve_fit_origin(root_transform)
         self._fitted_model_configuration = FittedModelConfiguration(
             data_transformation=FittedDataTransformation.from_fit(
-                None,
+                self.resolve_input_data_transformation(kwargs.get("data_transformation")),
                 y_variables=list(self.y.columns),
                 X_variables=None,
-                y_frequencies={},
-                X_frequencies={},
                 frequency=None,
                 X_imputation=None,
-                pipeline_source="none",
+                pipeline_source=(
+                    "model" if self.data_transformation is not None else "fallback"
+                ),
             ),
             y_columns=tuple(self.y.columns),
             X_columns=None,
@@ -651,69 +612,48 @@ class ForecastTree(ForecastModel):
         self._is_fitted = True
         return self
 
-    def forecast(
+    def _predict_data(
         self,
-        steps: int = 1,
-        X: pd.DataFrame | None = None,
-        y: pd.DataFrame | None = None,
-        decomp: bool = False,
-        context: ForecastContext | None = None,
+        data: ModelData,
+        *,
+        forecast_origin=None,
+        steps=1,
+        decomp=False,
         **kwargs,
     ) -> ForecastResult:
-        """Produce each node's forecast bottom-up and return the root's.
-
-        Overrides the base ``ForecastModel.forecast()`` so the root ``y``/``X``
-        (history plus any conditioning/future paths) are forwarded to every
-        leaf/nested tree raw (untransformed): each leaf/nested tree combines
-        them with its own raw fit history and applies its own transformation
-        exactly once, inside its own ``forecast()``. ``**kwargs`` are
-        forwarded to every leaf's ``forecast()``, with ``data_transformation``
-        overridden by this tree's own pipeline when it has one.
-        """
-        if context is None:
-            context = ForecastContext(
-                y_history=self._raw_y_history,
-                X_history=self._raw_X_history,
-                y_conditioning=y,
-                X_conditioning=X,
-                forecast_origin=self.last_y_fit_date,
-            )
-        return self.predict(
-            context,
-            steps=steps,
-            decomp=decomp,
-            **kwargs,
-        )
-
-    def predict(
-        self,
-        context: ForecastContext,
-        steps: int = 1,
-        decomp: bool = False,
-        **kwargs,
-    ) -> ForecastResult:
-        """Evaluate the tree from an explicit, immutable forecast context."""
+        """Evaluate each consumer from shared raw observations and fitted policies."""
         if not isinstance(steps, int) or steps <= 0:
             raise ValueError("'Steps' must be an integer greater than zero")
 
-        kwargs = self._resolve_child_data_transformation(kwargs)
-        forecast_origin = context.forecast_origin or context.y_history.index[-1]
-        forecast = self._forecast(
-            context=context,
-            steps=steps,
-            X=context.X_conditioning,
-            y=context.y_conditioning,
-            forecast_origin=forecast_origin,
-            **kwargs,
+        kwargs = self._resolve_child_data_transformation(kwargs, fitted=True)
+        forecast_origin = (
+            forecast_origin if forecast_origin is not None else data.index("y")[-1]
         )
+        if type(self)._forecast is ForecastTree._forecast:
+            forecast = self._forecast_data(
+                data, steps=steps, forecast_origin=forecast_origin, **kwargs
+            )
+            conditioning = {
+                "X": data.to_wide("X", "conditioning"),
+                "y": data.to_wide("y", "conditioning"),
+            }
+        else:
+            context = ForecastContext._from_data(data, forecast_origin)
+            conditioning = {"X": context.X_conditioning, "y": context.y_conditioning}
+            forecast = self._forecast(
+                context=context,
+                steps=steps,
+                **conditioning,
+                forecast_origin=forecast_origin,
+                **kwargs,
+            )
         return self._finalise_forecast(
             forecast,
             steps=steps,
             forecast_origin=forecast_origin,
             decomp=decomp,
             decomp_kwargs={
-                "X": context.X_conditioning,
-                "y": context.y_conditioning,
+                **conditioning,
                 "forecast_origin": forecast_origin,
                 **kwargs,
             },
@@ -721,12 +661,12 @@ class ForecastTree(ForecastModel):
 
     def _fit(self, y: pd.DataFrame, X: pd.DataFrame | None = None, **kwargs):
         for leaf in self.spec.all_leaves():
-            leaf_y = y
+            leaf_data = self._raw_data
             leaf_formula = getattr(leaf, "_formula", None)
             if leaf_formula:
                 target_rows = leaf_formula.extract_y(y).notna().all(axis=1)
-                leaf_y = y.loc[target_rows]
-            leaf.fit(leaf_y, X, **kwargs)
+                leaf_data = leaf_data.with_dates("y", y.index[target_rows])
+            leaf._fit_from_data(leaf_data, **kwargs)
 
         nodes = self.spec.nodes()
         # Resolve the column each callable node reduces its children to.
@@ -747,22 +687,22 @@ class ForecastTree(ForecastModel):
             components = {name: raw[name] for name in node.child_names}
             transform = node.transform
             if isinstance(transform, ForecastModel):
-                X_node = _concat_components(components)
-                X_node = X_node.dropna(how="all")
+                node_data = ModelData.from_components(
+                    self._raw_data,
+                    _labelled_components(node, components, self._raw_data),
+                )
+                X_node = node_data.to_wide("X").dropna(how="all")
                 common_index = X_node.index.intersection(y.index)
-                _validate_node_transform_mapping(
-                    node, transform, list(y.columns), list(X_node.columns)
+                node_data = node_data.with_dates("y", common_index).with_dates(
+                    "X", common_index
                 )
-                transform.fit(
-                    y.loc[common_index],
-                    X_node.loc[common_index],
-                    **self._node_fit_kwargs(
-                        kwargs,
-                        transform,
-                        list(y.columns),
-                        _component_input_metrics(node),
-                    ),
-                )
+                try:
+                    transform._fit_from_data(
+                        node_data,
+                        **_node_transform_kwargs(kwargs, transform),
+                    )
+                except ValueError as error:
+                    raise ValueError(f"node {node.name!r}: {error}") from error
                 raw[node.name] = _as_frame(transform.fitted_values)
             else:
                 reduced = _reduce_components(components, self._node_targets[node.name])
@@ -771,33 +711,27 @@ class ForecastTree(ForecastModel):
         self.fitted_values_ = raw[self.spec.name]
         return self
 
-    @staticmethod
-    def _node_fit_kwargs(
-        kwargs: dict,
-        transform: ForecastModel,
-        y_variables: list[str],
-        X_input_metrics: dict[str, str],
-    ) -> dict:
-        """Prepare a stacking fit call with synthetic source provenance."""
-        node_kwargs = _node_transform_kwargs(kwargs, transform)
-        y_input_metrics = node_kwargs.pop("y_input_metrics", None) or {}
-        node_kwargs.pop("X_input_metrics", None)
-        if transform.data_transformation is not None:
-            mapping = transform.data_transformation
-            node_kwargs["y_input_metrics"] = {
-                variable: y_input_metrics.get(variable, "levels")
-                for variable in y_variables
-                if variable in mapping
-            }
-            node_kwargs["X_input_metrics"] = X_input_metrics
-        return node_kwargs
-
     def _forecast(
         self,
         context: ForecastContext,
         steps: int = 1,
         X: pd.DataFrame | None = None,
         y: pd.DataFrame | None = None,
+        forecast_origin=None,
+        **kwargs,
+    ) -> pd.DataFrame:
+        """Adapt the established context hook to the shared tree traversal."""
+        return self._forecast_data(
+            ModelData.from_context(context, self._raw_data),
+            steps=steps,
+            forecast_origin=forecast_origin,
+            **kwargs,
+        )
+
+    def _forecast_data(
+        self,
+        data: ModelData,
+        steps: int = 1,
         forecast_origin=None,
         **kwargs,
     ) -> pd.DataFrame:
@@ -810,16 +744,9 @@ class ForecastTree(ForecastModel):
         """
         raw: dict[str, pd.DataFrame] = {}
         for leaf in self.spec.all_leaves():
-            leaf_result = leaf.forecast(
-                context=ForecastContext(
-                    y_history=context.y_history,
-                    X_history=context.X_history,
-                    y_conditioning=context.y_conditioning,
-                    X_conditioning=context.X_conditioning,
-                    forecast_origin=forecast_origin,
-                    y_conditioning_input_metrics=context.y_conditioning_input_metrics,
-                    X_conditioning_input_metrics=context.X_conditioning_input_metrics,
-                ),
+            leaf_result = leaf._forecast_from_data(
+                data,
+                forecast_origin=forecast_origin,
                 steps=steps,
                 **kwargs,
             )
@@ -830,34 +757,18 @@ class ForecastTree(ForecastModel):
             components = {name: raw[name] for name in node.child_names}
             transform = node.transform
             if isinstance(transform, ForecastModel):
-                X_node = _concat_components(components)
-                ragged_y = context.y_history.loc[
-                    context.y_history.index > transform.last_y_fit_date
-                ]
-                node_y_conditioning = (
-                    context.y_conditioning.combine_first(ragged_y)
-                    if context.y_conditioning is not None
-                    else ragged_y
+                future = ModelData.from_components(
+                    data,
+                    _labelled_components(node, components, data),
+                    kind="conditioning",
                 )
-                if node_y_conditioning.empty:
-                    node_y_conditioning = None
-                _validate_node_transform_mapping(
-                    node,
-                    transform,
-                    list(context.y_history.columns),
-                    list(X_node.columns),
-                )
-                transform_result = transform.forecast(
-                    context=ForecastContext(
-                        y_history=transform._raw_y_history,
-                        X_history=transform._raw_X_history,
-                        y_conditioning=node_y_conditioning,
-                        X_conditioning=X_node,
-                        forecast_origin=forecast_origin,
-                        X_conditioning_input_metrics=_component_input_metrics(node),
-                    ),
+                node_data = transform._raw_data.with_conditioning(future)
+                node_data = node_data.published_after(data, transform.last_y_fit_date)
+                transform_result = transform._forecast_from_data(
+                    node_data,
+                    forecast_origin=forecast_origin,
                     steps=steps,
-                    **_node_transform_kwargs(kwargs, transform),
+                    **_node_transform_kwargs(kwargs, transform, fitted=True),
                 )
                 raw[node.name] = transform_result.forecast
             else:

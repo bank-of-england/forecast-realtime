@@ -4,20 +4,19 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ._model_data import ModelData
+
 
 @dataclass(frozen=True)
 class ForecastTask:
     """Pickleable work item submitted to a realtime forecast worker."""
 
     model: object
+    data: ModelData
     data_transformation: object
     vintages: np.ndarray
-    common: dict
-    input_metrics: dict[str, str] = None
-    y_input_metrics: dict[str, str] = None
-    X_input_metrics: dict[str, str] = None
-    y_conditioning_input_metrics: dict[str, str] = None
-    X_conditioning_input_metrics: dict[str, str] = None
+    options: dict
+    model_kwargs: dict
 
 
 @dataclass(frozen=True)
