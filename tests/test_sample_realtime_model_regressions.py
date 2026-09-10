@@ -576,7 +576,7 @@ def _conditioned_forecast_data(panel, metric, conditioning_panel=None):
 
 
 def _run_conditioned_pop(panel, conditioning_metric, conditioning_panel=None):
-    model = rt.models.ForecastOLS(
+    model = _ConditioningForecastOLS(
         label="conditioned_pop",
         data_transformation={"monthly_1": "pop"},
     )
@@ -594,6 +594,10 @@ def _run_conditioned_pop(panel, conditioning_metric, conditioning_panel=None):
         reconstruct_levels=False,
     )
     return realtime
+
+
+class _ConditioningForecastOLS(rt.models.ForecastOLS):
+    _supports_target_conditioning = True
 
 
 def test_monthly_pop_conditioning_matches_native_pop_conditioning(

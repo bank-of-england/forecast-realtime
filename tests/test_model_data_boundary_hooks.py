@@ -36,6 +36,8 @@ class _BoundaryModel(ForecastModel):
 
 
 class _RecordingModel(ForecastModel):
+    _supports_target_conditioning = True
+
     def _fit(self, y, X=None, **kwargs):
         self.fitted_values_ = y.copy()
         return self
@@ -388,6 +390,8 @@ def test_tree_forecast_hook_preserves_context_and_conditioning(boundary, replace
             else:
                 y.loc[:, "target"] = 777.0
                 X.loc[:, "feature"] = 888.0
+            self.hook_y = context.y_conditioning.copy()
+            self.hook_X = context.X_conditioning.copy()
             return super()._forecast(
                 context, steps=steps, X=X, y=y, forecast_origin=forecast_origin, **kwargs
             )
@@ -405,7 +409,7 @@ def test_tree_forecast_hook_preserves_context_and_conditioning(boundary, replace
     X_conditioning = conditioning.rename(columns={"target": "feature"})
     leaf = _RecordingModel(label="leaf")
     tree = ContextTree(
-        TreeNode(transform=lambda components: components["leaf"], children=[leaf])
+        TreeNode(transform=_RecordingModel(label="root"), children=[leaf], name="root")
     ).fit(history, X_history)
     context = ForecastContext(
         y_history=history,
@@ -431,13 +435,13 @@ def test_tree_forecast_hook_preserves_context_and_conditioning(boundary, replace
 
     assert tree.hook_calls == 1
     assert result.index.equals(conditioning.index)
+    expected_hook_y = conditioning.assign(target=777.0)
+    expected_hook_X = X_conditioning.assign(feature=888.0)
+    pd.testing.assert_frame_equal(tree.hook_y, expected_hook_y)
+    pd.testing.assert_frame_equal(tree.hook_X, expected_hook_X)
+    assert leaf.received_forecast_y is None
     pd.testing.assert_frame_equal(
-        leaf.received_forecast_y.loc[conditioning.index],
-        conditioning.assign(target=777.0),
-    )
-    pd.testing.assert_frame_equal(
-        leaf.received_forecast_X.loc[conditioning.index],
-        X_conditioning.assign(feature=888.0),
+        leaf.received_forecast_X.loc[conditioning.index], expected_hook_X
     )
     pd.testing.assert_frame_equal(
         conditioning, _monthly_y([130.0, 140.0], start="2020-04-30")
@@ -454,10 +458,9 @@ def test_tree_forecast_preserves_the_public_context_position(positional_context)
     leaf = _RecordingModel(label="leaf")
     tree = ForecastTree(
         TreeNode(
-            transform=lambda components: components["leaf"],
+            transform=_RecordingModel(label="root"),
             children=[leaf],
             name="root",
-            target="target",
         )
     ).fit(history)
     context = ForecastContext(
@@ -474,9 +477,7 @@ def test_tree_forecast_preserves_the_public_context_position(positional_context)
     )
 
     assert result.forecast.index.equals(conditioning.index)
-    pd.testing.assert_frame_equal(
-        leaf.received_forecast_y.loc[conditioning.index], conditioning
-    )
+    assert leaf.received_forecast_y is None
 
 
 @pytest.mark.parametrize("replacement", [False, True])
@@ -501,7 +502,7 @@ def test_forecast_context_exposes_published_paths_and_reconciles_native_conditio
     future = ModelData.from_wide(
         y_conditioning=native_future,
         frequencies={"target": "M"},
-        y_conditioning_input_metrics={"target": "diff"},
+        y_conditioning_input_metrics={"target": "pop"},
     )
     raw = base.with_conditioning(future).published_after(
         ModelData.from_wide(y=full_history, frequencies={"target": "M"}),
@@ -515,22 +516,30 @@ def test_forecast_context_exposes_published_paths_and_reconciles_native_conditio
         ),
         pd.Timestamp("2020-03-31"),
     )
-    assert (
-        published_only.y_conditioning.loc[pd.Timestamp("2020-04-30"), "target"] == 133.1
-    )
+    assert published_only.y_published.loc[pd.Timestamp("2020-04-30"), "target"] == 133.1
 
     context = ForecastContext._from_data(raw, pd.Timestamp("2020-03-31"))
-    expected = pd.DataFrame(
-        {"target": [12.1, 5.0]},
-        index=pd.date_range("2020-04-30", periods=2, freq="ME"),
-    )
-    pd.testing.assert_frame_equal(context.y_conditioning, expected)
-    assert context.y_conditioning_input_metrics == {"target": "diff"}
+    expected_conditioning = native_future
+    expected_published = _monthly_y([133.1], start="2020-04-30")
+    pd.testing.assert_frame_equal(context.y_conditioning, expected_conditioning)
+    assert context.y_conditioning_input_metrics == {"target": "pop"}
+    pd.testing.assert_frame_equal(context.y_published, expected_published)
+    assert context.y_published_input_metrics == {"target": "levels"}
 
-    model = _RecordingModel(data_transformation={"target": "diff"})
+    round_trip = ModelData.from_context(context, raw)
+    pd.testing.assert_frame_equal(
+        round_trip.to_wide("y", "conditioning"), expected_conditioning
+    )
+    pd.testing.assert_frame_equal(
+        round_trip.to_wide("y", "published"), expected_published
+    )
+
+    model = _RecordingModel(data_transformation={"target": "pop"})
     model.fit(fit_history, frequency="M")
     model.predict(context, steps=2)
-    pd.testing.assert_frame_equal(model.received_forecast_y.loc[expected.index], expected)
+    pd.testing.assert_frame_equal(
+        model.received_forecast_y.loc[native_future.index], native_future
+    )
     pd.testing.assert_frame_equal(native_future, _monthly_y([5.0], start="2020-05-31"))
     pd.testing.assert_frame_equal(full_history, _monthly_y([100.0, 110.0, 121.0, 133.1]))
 

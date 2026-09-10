@@ -126,7 +126,14 @@ def _make_tasks(
         data_transformation=_MAPPING,
     )
     return rt.RealTimeModel._build_forecast_tasks(
-        [(model, _MAPPING, data)],
+        [
+            (
+                model,
+                _MAPPING,
+                data,
+                {"y_steps_ahead": None, "X_steps_ahead": None},
+            )
+        ],
         vintages,
         _common_options(decomp=decomp),
         batch_size=batch_size,

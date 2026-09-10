@@ -181,6 +181,30 @@ print(rt_model.decompositions)
 See [forecasting_strategy.md](forecasting_strategy.md) for the full
 methodology.
 
+## Model-owned source conditioning
+
+Use the model's `conditioning` argument when models in one run need different
+sources or durations. The resolver handles each model's policy independently.
+`periods` counts from the first forecast period, so it is positive and
+inclusive in ordinary language (`periods=3` means periods 1 to 3). The older
+run-level `y_steps_ahead` and `X_steps_ahead` arguments keep their zero-based
+inclusive convention (`0` means one period).
+
+The precedence rules are deliberately strict: `conditioning=None` inherits the
+run fallback, a non-empty mapping replaces it completely, and `conditioning={}`
+disables external conditioning. `None` and `{}` are also distinct in the
+legacy source and horizon mappings. Treat a missing source label as invalid.
+When a known source has no path for a variable or vintage, preserve the existing
+missing-path behaviour.
+
+Only models that explicitly opt in to target conditioning can accept explicit
+future y constraints. Recursive regression and tree models without a supporting
+root reject unsupported-y conditioning rather than ignoring it. Direct model
+calls do not consult conditioning policies: they use the explicitly supplied frames.
+
+For the tree-specific routing rules and the `ForecastContext.y_published`
+migration, see [ForecastTree](forecast_tree.md) and [Adding a New Model](adding_a_model.md).
+
 ## Parallel execution
 
 The vintage loop can run in parallel across models and vintage batches:

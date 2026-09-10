@@ -2,6 +2,7 @@ import copy
 import os
 import pickle
 import warnings
+from collections.abc import Mapping
 from concurrent.futures import ProcessPoolExecutor
 from numbers import Integral
 
@@ -61,6 +62,17 @@ def _validate_conditioning(role, selected_variables, horizons, sources, steps):
     horizon_name = f"{role}_steps_ahead"
     source_name = f"{role}_sources"
 
+    for name, value in ((horizon_name, horizons), (source_name, sources)):
+        if value is not None and not isinstance(value, Mapping):
+            raise TypeError(f"{name} must be a mapping or None.")
+    if sources is not None:
+        for variable, source in sources.items():
+            if not isinstance(source, str) or not source:
+                raise TypeError(
+                    f"{source_name} variable {variable!r}: source must be a non-empty "
+                    "string."
+                )
+
     if horizons is not None:
         if selected_variables is None:
             raise ValueError(
@@ -103,6 +115,59 @@ def _validate_conditioning(role, selected_variables, horizons, sources, steps):
             f"{source_name} is provided but {horizon_name} is None. "
             f"Please provide {horizon_name} to use {source_name}."
         )
+
+
+def _resolve_conditioning(model, requirements, y_variables, fallback, sources, steps):
+    """Resolve one replacement policy or project the validated run fallback."""
+    variables = model._conditioning_variables(requirements, y_variables)
+    policy = model.conditioning
+    resolved = {}
+    for role in ("y", "X"):
+        if policy is None:
+            for suffix in ("sources", "steps_ahead"):
+                value = fallback[f"{role}_{suffix}"]
+                resolved[f"{role}_{suffix}"] = (
+                    None
+                    if value is None
+                    else {
+                        key: item for key, item in value.items() if key in variables[role]
+                    }
+                )
+        else:
+            entries = getattr(policy, role)
+            for entry in entries:
+                if entry.variable not in variables[role]:
+                    raise ValueError(
+                        f"Model {model.label!r}: conditioning {role} variable "
+                        f"{entry.variable!r} is not a selected raw input."
+                    )
+                if entry.periods > steps:
+                    raise ValueError(
+                        f"Model {model.label!r}: variable {entry.variable!r} "
+                        f"conditioning periods must not exceed steps={steps}."
+                    )
+            resolved[f"{role}_sources"] = (
+                {entry.variable: entry.source for entry in entries} if entries else None
+            )
+            resolved[f"{role}_steps_ahead"] = (
+                {entry.variable: entry.periods - 1 for entry in entries}
+                if entries
+                else None
+            )
+        for variable, source in (resolved[f"{role}_sources"] or {}).items():
+            if source not in sources:
+                raise ValueError(
+                    f"Model {model.label!r}: variable {variable!r} has unknown "
+                    f"conditioning source {source!r}."
+                )
+    model._validate_target_conditioning(
+        {
+            variable
+            for variable, horizon in (resolved["y_steps_ahead"] or {}).items()
+            if horizon is not None
+        }
+    )
+    return resolved
 
 
 def _resolve_step_frequency(
@@ -498,8 +563,23 @@ class RealTimeModel:
                 requirements = model.input_requirements(
                     y_variables, X_variables, data_transformation
                 )
+                conditioning = _resolve_conditioning(
+                    model,
+                    requirements,
+                    y_variables,
+                    dict(
+                        y_sources=y_sources,
+                        X_sources=X_sources,
+                        y_steps_ahead=y_steps_ahead,
+                        X_steps_ahead=X_steps_ahead,
+                    ),
+                    set(forecasts.get("source", ())),
+                    steps,
+                )
                 selected = archive.select(
-                    requirements, y_sources=y_sources, X_sources=X_sources
+                    requirements,
+                    y_sources=conditioning["y_sources"],
+                    X_sources=conditioning["X_sources"],
                 )
             except ValueError as error:
                 raise ValueError(f"Model '{model.label}': {error}") from error
@@ -511,6 +591,10 @@ class RealTimeModel:
                     model,
                     effective_transformation,
                     selected,
+                    {
+                        key: conditioning[key]
+                        for key in ("y_steps_ahead", "X_steps_ahead")
+                    },
                 )
             )
 
@@ -530,8 +614,6 @@ class RealTimeModel:
         # selected data and transformation policy; the realtime loop applies
         # vintage selection and conditioning before prediction.
         common = dict(
-            y_steps_ahead=y_steps_ahead,
-            X_steps_ahead=X_steps_ahead,
             steps=steps,
             label=label,
             first_forecast_horizon=ffh_dict,
@@ -607,14 +689,14 @@ class RealTimeModel:
             for start in range(0, len(vintages), batch_size)
         ] or [vintages]
         tasks = []
-        for model, data_transformation, data in resolved_model_data:
+        for model, data_transformation, data, conditioning in resolved_model_data:
             tasks.extend(
                 ForecastTask(
                     model=model,
                     data=data,
                     data_transformation=data_transformation,
                     vintages=batch,
-                    options=copy.deepcopy(common),
+                    options=copy.deepcopy(common | conditioning),
                     model_kwargs=copy.deepcopy(model_kwargs),
                 )
                 for batch in batches

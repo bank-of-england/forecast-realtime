@@ -2,6 +2,7 @@
 
 import copy
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -25,6 +26,51 @@ from forecast_realtime.formula import Formula
 X_IMPUTATION_METHODS = ("zero", "last", "mean", "ar1_t")
 
 
+@dataclass(frozen=True)
+class _ConditioningEntry:
+    variable: str
+    source: str
+    periods: int
+
+
+@dataclass(frozen=True)
+class _ConditioningPolicy:
+    y: tuple[_ConditioningEntry, ...] = ()
+    X: tuple[_ConditioningEntry, ...] = ()
+
+
+def _parse_conditioning(value, label):
+    """Copy and validate a model-owned conditioning policy."""
+    if value is None:
+        return None
+    prefix = f"Model {label!r}: conditioning"
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{prefix} must be a mapping or None.")
+    if set(value) - {"y", "X"}:
+        raise ValueError(f"{prefix} accepts only 'y' and 'X' roles.")
+    roles = {}
+    for role, entries in value.items():
+        if not isinstance(entries, Mapping):
+            raise TypeError(f"{prefix} {role} must be a variable mapping.")
+        parsed = []
+        for variable, entry in entries.items():
+            name = f"{prefix} {role} variable {variable!r}"
+            if not isinstance(variable, str) or not variable:
+                raise TypeError(f"{name} must have a non-empty string name.")
+            if not isinstance(entry, Mapping):
+                raise TypeError(f"{name} must map source and periods.")
+            if set(entry) != {"source", "periods"}:
+                raise ValueError(f"{name} requires exactly source and periods.")
+            source, periods = entry["source"], entry["periods"]
+            if not isinstance(source, str) or not source:
+                raise TypeError(f"{name} source must be a non-empty string.")
+            if type(periods) is not int or periods <= 0:
+                raise ValueError(f"{name} periods must be a positive integer.")
+            parsed.append(_ConditioningEntry(variable, source, periods))
+        roles[role] = tuple(parsed)
+    return _ConditioningPolicy(**roles)
+
+
 class NoUsableTransformedYError(ValueError):
     """Raised when input preparation leaves no usable transformed target rows."""
 
@@ -36,15 +82,19 @@ class ForecastContext:
     y_history: pd.DataFrame
     X_history: pd.DataFrame | None
     y_conditioning: pd.DataFrame | None = None
+    """Raw explicit target constraints, never merged with published observations."""
     X_conditioning: pd.DataFrame | None = None
     forecast_origin: pd.Timestamp | None = None
     y_conditioning_input_metrics: dict[str, str] | None = None
     X_conditioning_input_metrics: dict[str, str] | None = None
+    y_published: pd.DataFrame | None = None
+    """Published target observations after the fitted history."""
+    y_published_input_metrics: dict[str, str] | None = None
+    """Input units of published targets, independent of explicit constraint units."""
 
     @classmethod
     def _from_data(cls, data, forecast_origin):
         """Materialise raw frames only for a supported public-method override."""
-        data = data.for_context()
         return cls(
             data.to_wide("y"),
             data.to_wide("X"),
@@ -53,6 +103,8 @@ class ForecastContext:
             forecast_origin,
             data.metrics("y", "conditioning"),
             data.metrics("X", "conditioning"),
+            data.to_wide("y", "published"),
+            data.metrics("y", "published"),
         )
 
 
@@ -404,25 +456,33 @@ class ForecastModel(ABC):
 
     _supports_multivariate_y: bool = True
 
+    _supports_target_conditioning: bool = False
+
     def __init__(
         self,
         label: str | None = None,
         formula: str | None = None,
         data_transformation: dict[str, str] | None = None,
         align_start_dates: bool = False,
+        conditioning: dict | None = None,
     ):
-        """
-        Args:
-            label : str, optional
-                Name used by RealTimeModel to tag forecasts. Defaults to the
-                class name.
-            formula : str, optional
-                R-style variable selection, e.g. "cpisa ~ gdpkp + unemp".
-                Defaults to using all y and X variables.
-            data_transformation : dict, optional
-                Optional model-owned mapping from variable to required metric.
-                When set, ``RealTimeModel.forecast()`` uses this transformation
-                for the model instead of the call-level mapping.
+        """Configure input selection, transformation and conditioning.
+
+        Parameters
+        ----------
+        label : str | None
+            Forecast label. Defaults to the class name.
+        formula : str | None
+            Variable selection, e.g. ``"cpisa ~ gdpkp + unemp"``.
+            None uses all supplied y and X variables.
+        data_transformation : dict[str, str] | None
+            Model-owned variable-to-metric mapping, preferred over the run fallback.
+        align_start_dates : bool
+            Align input series to their latest common starting date.
+        conditioning : dict | None
+            Sources and positive durations by role and variable.
+            None inherits the run fallback; an empty mapping disables it.
+            Direct forecasts use supplied frames independently of this policy.
         """
         self.label = label if label is not None else self.__class__.__name__
         self._formula = Formula(formula) if formula else None
@@ -430,6 +490,31 @@ class ForecastModel(ABC):
         self._is_fitted = False
         self.data_transformation = data_transformation
         self.align_start_dates = align_start_dates
+        self._conditioning = _parse_conditioning(conditioning, self.label)
+
+    @property
+    def conditioning(self):
+        """Immutable conditioning policy; direct forecasts use supplied frames instead."""
+        return self._conditioning
+
+    def _conditioning_variables(self, requirements, y_variables):
+        """Return raw inputs eligible for source conditioning."""
+        return {
+            role: {
+                variable
+                for request in requirements
+                for variable, _ in request.items(role)
+            }
+            for role in ("y", "X")
+        }
+
+    def _validate_target_conditioning(self, variables):
+        """Reject explicit target requests the model cannot enforce."""
+        if variables and not self._supports_target_conditioning:
+            raise ValueError(
+                f"Model {self.label!r} does not support target conditioning "
+                f"for variables {sorted(variables)}."
+            )
 
     @property
     def data_transformation(self) -> dict[str, str] | None:
@@ -1271,6 +1356,7 @@ class ForecastModel(ABC):
 
     def _predict_from_data(self, data, *, forecast_origin, **kwargs):
         """Retain the public predict override used by realtime consumers."""
+        self._validate_explicit_target_path(data, forecast_origin, kwargs.get("steps", 1))
         if type(self).predict is not ForecastModel.predict:
             return self.predict(
                 ForecastContext._from_data(data, forecast_origin), **kwargs
@@ -1279,11 +1365,46 @@ class ForecastModel(ABC):
 
     def _forecast_from_data(self, data, *, forecast_origin, **kwargs):
         """Retain the public forecast override used by tree components."""
+        self._validate_explicit_target_path(data, forecast_origin, kwargs.get("steps", 1))
         if type(self).forecast is not ForecastModel.forecast:
             return self.forecast(
                 context=ForecastContext._from_data(data, forecast_origin), **kwargs
             )
         return self._predict_from_data(data, forecast_origin=forecast_origin, **kwargs)
+
+    def _conditioning_dates(self, data, forecast_origin, steps):
+        """Use the model's forecast calendar when inspecting explicit paths."""
+        configuration = self._fitted_model_configuration
+        origin = forecast_origin if forecast_origin is not None else data.index("y")[-1]
+        dates = self._infer_forecast_dates(
+            data.index("y"),
+            steps,
+            frequency=configuration.data_transformation.frequency,
+            start=origin,
+        )
+        if self._forecast_dates_include_origin:
+            dates = pd.DatetimeIndex([pd.Timestamp(origin)]).append(dates[:-1])
+        return dates
+
+    def _validate_explicit_target_path(self, data, forecast_origin, steps):
+        """Validate raw explicit constraints before preparation or public overrides."""
+        if type(steps) is not int or steps <= 0:
+            raise ValueError("steps must be an integer greater than zero")
+        frame = data.to_wide("y", "conditioning")
+        if frame is None or frame.empty or not frame.notna().any().any():
+            return None
+        dates = self._conditioning_dates(data, forecast_origin, steps)
+        if isinstance(frame.index, pd.PeriodIndex):
+            frame.index = frame.index.to_timestamp(how="end").normalize()
+        active = frame.loc[frame.index.isin(dates)].dropna(axis=1, how="all")
+        self._validate_target_conditioning(set(active.columns))
+        unknown = set(active.columns) - set(self._fitted_model_configuration.y_columns)
+        if unknown:
+            raise ValueError(
+                f"Model {self.label!r}: conditioning variables {sorted(unknown)} "
+                "are not fitted targets."
+            )
+        return active
 
     def _predict_data(
         self,
@@ -1300,10 +1421,11 @@ class ForecastModel(ABC):
         """Prepare labelled inputs, construct the design and validate the result."""
         # Validate that steps is an integer greater than zero
         if not isinstance(steps, int) or steps <= 0:
-            raise ValueError("'Steps' must be an integer greater than zero")
+            raise ValueError("steps must be an integer greater than zero")
         if not getattr(self, "_is_fitted", False):
             raise AttributeError("Model has not been fitted yet; call fit() first.")
         configuration = self._fitted_model_configuration
+        self._validate_explicit_target_path(data, forecast_origin, steps)
         fitted_transformation = configuration.data_transformation
         fitted_pipeline_mapping = (
             dict(fitted_transformation.data_transformation)

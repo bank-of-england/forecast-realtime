@@ -66,11 +66,14 @@ class ForecastBVAR(ForecastModel):
         Random seed passed to ``BVAR.sample()``. Default is 42.
     forecast_random_state : int | None
         Random seed passed to ``BVAR.forecast()``. Default is 42.
+    conditioning : dict | None
+        Optional model-owned conditioning configuration.
     """
 
     _handles_mixed_frequencies = True
 
     _handles_missing_values = False
+    _supports_target_conditioning = True
 
     def __init__(
         self,
@@ -101,6 +104,7 @@ class ForecastBVAR(ForecastModel):
         optim_random_state: int | None = 42,
         sampling_random_state: int | None = 42,
         forecast_random_state: int | None = 42,
+        conditioning: dict | None = None,
     ):
         if forecasts_type not in ("mean", "median"):
             raise ValueError(
@@ -114,6 +118,7 @@ class ForecastBVAR(ForecastModel):
             label=label,
             formula=formula,
             data_transformation=data_transformation,
+            conditioning=conditioning,
         )
 
         # ── Prior model ───────────────────────────────────────────────
@@ -251,11 +256,11 @@ class ForecastBVAR(ForecastModel):
                 "Model must be fitted before forecasting. Call fit() first."
             )
 
-        # keep only data after the last training date for conditioning
+        # Align sparse or longer supplied paths to the requested forecast calendar.
         if y is not None:
-            origin = forecast_origin or self._fitted_model_configuration.forecast_origin
-            y = y[y.index > origin]
-            y = None if y.empty else y.to_numpy()
+            dates = self._conditioning_dates(self._raw_data, forecast_origin, steps)
+            y = y.reindex(index=dates, columns=self.y.columns)
+            y = y.to_numpy() if y.notna().any().any() else None
 
         self.bvar.forecast(
             H=steps,

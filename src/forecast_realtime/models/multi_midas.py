@@ -47,6 +47,8 @@ class ForecastMultiMIDAS(ForecastModel):
         Optional formula selecting the target and regressors.
     data_transformation : dict[str, str] | None
         Optional model-owned raw-input transformation configuration.
+    conditioning : dict | None
+        Optional model-owned conditioning configuration.
     """
 
     _handles_mixed_frequencies = True
@@ -69,12 +71,14 @@ class ForecastMultiMIDAS(ForecastModel):
         label: str | None = None,
         formula: str | None = None,
         data_transformation: dict[str, str] | None = None,
+        conditioning: dict | None = None,
     ) -> None:
 
         super().__init__(
             label=label,
             formula=formula,
             data_transformation=data_transformation,
+            conditioning=conditioning,
         )
 
         self.variables = variables

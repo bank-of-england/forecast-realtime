@@ -1,16 +1,16 @@
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.1.3
+  - repo: local
     hooks:
-      - id: ruff
+      - id: ruff-check
         name: Run Ruff linter
-        args: [--fix]
-        additional_dependencies: []
+        entry: ruff check
         language: system  # Use the system Python environment
-      - id: ruff-format
-        name: Run Ruff formatter
-        additional_dependencies: []
+        types_or: [python, pyi, jupyter]
+      - id: ruff-format-check
+        name: Check Ruff formatting
+        entry: ruff format --check
         language: system  # Use the system Python environment
+        types_or: [python, pyi, jupyter, markdown]
 
   - repo: local
     hooks:

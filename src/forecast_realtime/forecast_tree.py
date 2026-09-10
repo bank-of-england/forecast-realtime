@@ -324,6 +324,8 @@ class ForecastTree(ForecastModel):
         own leaves/children. The call-level ``data_transformation`` passed to
         ``fit()``/``forecast()`` is used only where neither this tree nor any
         nearer ancestor tree owns a pipeline.
+    conditioning : dict | None
+        Conditioning policy for raw X inputs and root-only target constraints.
     """
 
     def __init__(
@@ -331,6 +333,7 @@ class ForecastTree(ForecastModel):
         spec: TreeNode,
         label: str | None = None,
         data_transformation: dict[str, str] | None = None,
+        conditioning: dict | None = None,
     ):
         if not isinstance(spec, TreeNode):
             raise TypeError(
@@ -340,6 +343,7 @@ class ForecastTree(ForecastModel):
         super().__init__(
             label=label,
             data_transformation=data_transformation,
+            conditioning=conditioning,
         )
         self._refresh_capability_flags()
 
@@ -399,11 +403,55 @@ class ForecastTree(ForecastModel):
             for node in self.spec.nodes()
             if isinstance(node.transform, ForecastModel)
         )
+        for component in components:
+            if component.conditioning is not None:
+                raise ValueError(
+                    f"Model {self.label!r}: contained model {component.label!r} "
+                    "must not own conditioning; configure the ForecastTree instead."
+                )
+            if isinstance(component, ForecastTree):
+                component._refresh_capability_flags()
+        root = self.spec.transform
+        self._supports_target_conditioning = (
+            isinstance(root, ForecastModel) and root._supports_target_conditioning
+        )
+        self._forecast_dates_include_origin = (
+            isinstance(root, ForecastModel) and root._forecast_dates_include_origin
+        )
         self._needs_ragged_edge_imputation = any(
             component._needs_ragged_edge_imputation for component in components
         )
         self._handles_missing_values = all(
             component._handles_missing_values for component in components
+        )
+
+    def _conditioning_variables(self, requirements, y_variables):
+        self._refresh_capability_flags()
+        variables = super()._conditioning_variables(requirements, y_variables)
+        variables["y"] = set(self.resolve_target_variables(y_variables))
+        return variables
+
+    def _validate_target_conditioning(self, variables):
+        self._refresh_capability_flags()
+        if variables:
+            components = self.spec.all_leaves() + [
+                node.transform for node in self.spec.nodes()
+            ]
+            if any(isinstance(component, ForecastTree) for component in components):
+                raise ValueError(
+                    f"Model {self.label!r}: nested-tree target routing is unsupported."
+                )
+        super()._validate_target_conditioning(variables)
+
+    def _conditioning_dates(self, data, forecast_origin, steps):
+        root = self.spec.transform
+        if isinstance(root, ForecastModel):
+            return root._conditioning_dates(data, forecast_origin, steps)
+        return self._infer_forecast_dates(
+            data.index("y"),
+            steps,
+            frequency=pd.infer_freq(data.index("y")),
+            start=forecast_origin,
         )
 
     def input_requirements(
@@ -625,6 +673,8 @@ class ForecastTree(ForecastModel):
         if not isinstance(steps, int) or steps <= 0:
             raise ValueError("'Steps' must be an integer greater than zero")
 
+        self._validate_explicit_target_path(data, forecast_origin, steps)
+
         kwargs = self._resolve_child_data_transformation(kwargs, fitted=True)
         forecast_origin = (
             forecast_origin if forecast_origin is not None else data.index("y")[-1]
@@ -743,9 +793,10 @@ class ForecastTree(ForecastModel):
         every leaf's ``forecast()``.
         """
         raw: dict[str, pd.DataFrame] = {}
+        child_data = data.without_target_conditioning()
         for leaf in self.spec.all_leaves():
             leaf_result = leaf._forecast_from_data(
-                data,
+                child_data,
                 forecast_origin=forecast_origin,
                 steps=steps,
                 **kwargs,
@@ -758,7 +809,7 @@ class ForecastTree(ForecastModel):
             transform = node.transform
             if isinstance(transform, ForecastModel):
                 future = ModelData.from_components(
-                    data,
+                    data if node is self.spec else child_data,
                     _labelled_components(node, components, data),
                     kind="conditioning",
                 )
