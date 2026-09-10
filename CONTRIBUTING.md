@@ -29,8 +29,8 @@ pre-commit install
 
 The hooks run:
 
-- Ruff linting, with automatic fixes where possible
-- Ruff formatting
+- Ruff linting
+- Ruff formatting checks, including Python blocks in Markdown
 - API documentation generation in `docs/api.md`
 - Notebook documentation freshness checks
 - NumPy-style docstring checks with `pydoclint`
@@ -45,7 +45,50 @@ pre-commit run --all-files
 
 When the public API changes, update its exports and docstrings; the hooks generate `docs/api.md` from them.
 
-## 2. Code
+## 2. Internal data architecture
+
+`ModelData` is the private consolidation point for labelled observations,
+provenance, conditioning paths, and archive selection. Keep the public
+`fit()`, `forecast()`, `predict()`, and `ForecastContext` interfaces stable,
+including the DataFrame-based preparation and model hooks
+`_prepare_fit_inputs()`, `_prepare_forecast_inputs()`,
+`_prepare_estimation_inputs()`, `_fit()`, `_forecast()`, and
+`_forecast_decomp()`. New model code should use those hooks rather than
+importing private `ModelData`.
+
+`FittedModelConfiguration` with its reduced `FittedDataTransformation` stores
+model policy; canonical long-labelled `ModelData` stores raw values and
+provenance. `ModelInputRequirements` is the shared ordinary-model/tree report
+of raw required `y` and `X` roles, including when no mapping is present. Trees
+must label composition inputs with their actual synthetic columns and native
+metrics; callable transforms keep the established levels convention.
+
+`RealTimeModel` chooses vintages and horizons and schedules forecast tasks;
+`ModelData` performs as-of selection for each task. A `ForecastTask` now carries
+one `ModelData` payload instead of parallel frames and metadata, and
+replacement-data counterfactual models are copied to isolate hook caches.
+
+The following private removals are deliberate: `RawInputBundle`,
+`InputMetricMapping`, `PreparedModelInputs`, and `ResolvedTransformationPlan`;
+the changed `ForecastTask` shape; and the operation wrappers formerly on
+`FittedDataTransformation`. Do not use these names as extension points.
+`DataTransformationPipeline` and the module helpers remain import-compatible
+adapters where existing internal integrations need them.
+
+## 3. Behavioural decisions
+
+The consolidated path rejects conflicting values or metadata for the same
+series/date/vintage key, while collapsing exact duplicate archive rows. `y`
+and `X` conditioning sources are selected independently. Published levels and
+native conditioning inputs are converted before they are overlaid, and
+multivariate synthetic metrics are resolved per column.
+
+`parallel=True` with `decomp=True` remains rejected. Sequential execution uses
+one complete vintage batch per model to retain revision continuity. Run tests in
+the `forecast-realtime` conda environment with `pytest -n auto`; this work
+does not add a runtime dependency.
+
+## 4. Code
 
 The `main` branch holds released code and accepts changes only through pull requests. Start each change from the main repository's `dev` branch, then open a pull request from your fork back to `dev`. Changes can accumulate there until the maintainers are ready to release a new version of the package.
 
@@ -76,7 +119,7 @@ git push -u origin fix/123-short-description
 
 Then open a pull request to the `dev` branch of the main repository.
 
-## 3. Submit a pull request
+## 5. Submit a pull request
 
 Opening a pull request to `dev` starts two workflows:
 
@@ -85,7 +128,7 @@ Opening a pull request to `dev` starts two workflows:
 
 ## For maintainers
 
-### 4. Release a version
+### 6. Release a version
 
 When the changes in `dev` are ready to ship, a maintainer opens a pull request from `dev` to `main`. This starts the package-quality and ecosystem workflows again.
 

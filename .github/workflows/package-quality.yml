@@ -31,6 +31,7 @@ jobs:
         run: |
           python -m build
           python -m twine check dist/*
+          python -m pip install --force-reinstall --no-deps dist/*.whl
 
       - name: Run Ruff linter
         run: ruff check .
@@ -48,8 +49,8 @@ jobs:
 
       - name: Check documentation
         run: |
-          pydoclint --style=numpy .
+          pydoclint src tests
           zensical build --clean --strict
 
-      - name: Run tests
-        run: pytest
+      - name: Run tests with coverage
+        run: pytest --cov=forecast_realtime --cov-branch --cov-report=xml

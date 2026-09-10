@@ -1,11 +1,11 @@
 """Focused tests for the raw wide-input API on ``DataTransformationPipeline``.
 
-``RealTimeModel`` will eventually select a raw vintage and pass raw wide
-``y``/``X`` frames (levels, one column per variable) straight into model
-``fit()``/``forecast()``. These tests cover the pipeline methods that
-prepare those raw frames: ``transform_fit_inputs()`` for a single training
-snapshot and ``transform_forecast_inputs()`` for historical data plus
-appended conditioning/future rows treated as one trajectory.
+``RealTimeModel`` selects a raw vintage and passes raw wide ``y``/``X`` frames
+(levels, one column per variable) into model ``fit()``/``forecast()``. These
+tests cover the pipeline methods that prepare those raw frames:
+``transform_fit_inputs()`` for a single training snapshot and
+``transform_forecast_inputs()`` for historical data plus appended
+conditioning/future rows treated as one trajectory.
 
 The existing long-form ``apply``/``filter``/``reconstruct_levels`` contract
 (covered in ``tests/test_data_transformation.py``) is unchanged; these tests
@@ -82,6 +82,86 @@ def test_transform_fit_inputs_identity_applies_to_y_and_X_source_metrics():
 
     pd.testing.assert_frame_equal(y_out, y)
     pd.testing.assert_frame_equal(X_out, X)
+
+
+@pytest.mark.parametrize(
+    ("history_dates", "values", "future_date"),
+    [
+        (_dates(), [], "2020-01-31"),
+        (_dates("2020-01-31"), [100.0], "2020-02-29"),
+        (_dates("2020-01-31", "2020-03-31"), [100.0, 110.0], "2020-04-30"),
+        (
+            _dates("2020-01-31", "2020-03-31"),
+            [np.nan, np.nan],
+            "2020-04-30",
+        ),
+    ],
+    ids=["empty", "one-observation", "sparse-two-observations", "all-missing"],
+)
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        {"gdp": "levels", "unemp": "levels"},
+        {"gdp": "diff", "unemp": "logs"},
+    ],
+    ids=["levels", "native-metrics"],
+)
+@pytest.mark.parametrize(
+    "frequencies",
+    [None, {"gdp": "M", "unemp": "M"}],
+    ids=["without-frequencies", "explicit-frequencies"],
+)
+@pytest.mark.parametrize("boundary", ["fit", "forecast"])
+@pytest.mark.parametrize("frequency", [None, "M"])
+def test_transform_inputs_identity_preserves_degenerate_wide_frames(
+    history_dates, values, future_date, mapping, frequencies, boundary, frequency
+):
+    y_history = pd.DataFrame({"gdp": values}, index=history_dates)
+    X_history = pd.DataFrame(
+        {"unemp": [value / 25 for value in values]}, index=history_dates
+    )
+    future_index = _dates(future_date)
+    y_conditioning = pd.DataFrame({"gdp": [125.0]}, index=future_index)
+    X_future = pd.DataFrame({"unemp": [5.0]}, index=future_index)
+    pipeline = DataTransformationPipeline(mapping)
+
+    if boundary == "fit":
+        y_history_out, X_history_out = pipeline.transform_fit_inputs(
+            y_history,
+            X_history,
+            y_variables=["gdp"],
+            X_variables=["unemp"],
+            frequency=frequency,
+            frequencies=frequencies,
+            y_input_metrics={"gdp": mapping["gdp"]},
+            X_input_metrics={"unemp": mapping["unemp"]},
+        )
+    else:
+        (
+            y_history_out,
+            y_conditioning_out,
+            X_history_out,
+            X_future_out,
+        ) = pipeline.transform_forecast_inputs(
+            y_history,
+            y_conditioning=y_conditioning,
+            X_history=X_history,
+            X_future=X_future,
+            y_variables=["gdp"],
+            X_variables=["unemp"],
+            frequency=frequency,
+            frequencies=frequencies,
+            y_input_metrics={"gdp": mapping["gdp"]},
+            X_input_metrics={"unemp": mapping["unemp"]},
+            y_conditioning_input_metrics={"gdp": mapping["gdp"]},
+            X_conditioning_input_metrics={"unemp": mapping["unemp"]},
+        )
+
+    pd.testing.assert_frame_equal(y_history_out, y_history)
+    pd.testing.assert_frame_equal(X_history_out, X_history)
+    if boundary == "forecast":
+        pd.testing.assert_frame_equal(y_conditioning_out, y_conditioning)
+        pd.testing.assert_frame_equal(X_future_out, X_future)
 
 
 @pytest.mark.parametrize(
@@ -273,6 +353,153 @@ def test_transform_fit_inputs_yoy_accepts_per_variable_frequencies():
     )
 
 
+@pytest.mark.parametrize(
+    (
+        "dates",
+        "values",
+        "future_date",
+        "future_value",
+        "fit_expected",
+        "forecast_expected",
+    ),
+    [
+        (
+            pd.date_range("2019-01-31", periods=13, freq="ME"),
+            np.arange(100.0, 113.0),
+            pd.Timestamp("2020-02-29"),
+            113.0,
+            (112.0 / 100.0 - 1) * 100,
+            (113.0 / 101.0 - 1) * 100,
+        ),
+        (
+            pd.date_range("2019-03-31", periods=5, freq="QE"),
+            [100.0, 102.0, 104.0, 106.0, 110.0],
+            pd.Timestamp("2020-06-30"),
+            112.0,
+            (110.0 / 100.0 - 1) * 100,
+            (112.0 / 102.0 - 1) * 100,
+        ),
+    ],
+    ids=["monthly", "quarterly"],
+)
+def test_wide_pipeline_infers_source_calendar_without_frequency(
+    dates, values, future_date, future_value, fit_expected, forecast_expected
+):
+    y = pd.DataFrame({"gdp": values}, index=dates)
+    pipeline = DataTransformationPipeline({"gdp": "yoy"})
+
+    fit_out, _ = pipeline.transform_fit_inputs(y, y_variables=["gdp"])
+    _, conditioning_out, _, _ = pipeline.transform_forecast_inputs(
+        y,
+        y_conditioning=pd.DataFrame(
+            {"gdp": [future_value]}, index=pd.DatetimeIndex([future_date])
+        ),
+        y_variables=["gdp"],
+    )
+
+    np.testing.assert_allclose(fit_out["gdp"].iloc[-1], fit_expected)
+    np.testing.assert_allclose(conditioning_out["gdp"].iloc[0], forecast_expected)
+
+
+@pytest.mark.parametrize(
+    (
+        "fallback_frequency",
+        "y_dates",
+        "y_values",
+        "X_dates",
+        "X_values",
+        "y_conditioning",
+        "X_future",
+        "y_conditioning_input_metrics",
+        "X_conditioning_input_metrics",
+        "fit_y_expected",
+        "fit_X_expected",
+        "future_y_expected",
+        "future_X_expected",
+    ),
+    [
+        (
+            "M",
+            pd.date_range("2020-01-31", periods=4, freq="ME"),
+            [100.0, 110.0, 121.0, 133.1],
+            pd.date_range("2020-03-31", periods=2, freq="QE"),
+            [100.0, 105.0],
+            (pd.Timestamp("2020-05-31"), 146.41),
+            (pd.Timestamp("2020-09-30"), 7.0),
+            None,
+            {"driver": "diff"},
+            [np.nan, 10.0, 10.0, 10.0],
+            [np.nan, 5.0],
+            10.0,
+            7.0,
+        ),
+        (
+            "Q",
+            pd.date_range("2020-03-31", periods=4, freq="QE"),
+            [100.0, 105.0, 110.25, 121.275],
+            pd.date_range("2020-01-31", periods=4, freq="ME"),
+            [10.0, 12.0, 15.0, 18.0],
+            (pd.Timestamp("2021-03-31"), 10.0),
+            (pd.Timestamp("2020-05-31"), 21.0),
+            {"target": "pop"},
+            None,
+            [np.nan, 5.0, 5.0, 10.0],
+            [np.nan, 2.0, 3.0, 3.0],
+            10.0,
+            3.0,
+        ),
+    ],
+    ids=["monthly-y-quarterly-X", "quarterly-y-monthly-X"],
+)
+def test_wide_pipeline_mixed_source_calendars_ignore_fallback_frequency(
+    fallback_frequency,
+    y_dates,
+    y_values,
+    X_dates,
+    X_values,
+    y_conditioning,
+    X_future,
+    y_conditioning_input_metrics,
+    X_conditioning_input_metrics,
+    fit_y_expected,
+    fit_X_expected,
+    future_y_expected,
+    future_X_expected,
+):
+    y = pd.DataFrame({"target": y_values}, index=y_dates)
+    X = pd.DataFrame({"driver": X_values}, index=X_dates)
+    pipeline = DataTransformationPipeline({"target": "pop", "driver": "diff"})
+
+    y_fit, X_fit = pipeline.transform_fit_inputs(
+        y,
+        X,
+        y_variables=["target"],
+        X_variables=["driver"],
+        frequency=fallback_frequency,
+    )
+    _, y_conditioning_out, _, X_future_out = pipeline.transform_forecast_inputs(
+        y,
+        y_conditioning=pd.DataFrame(
+            {"target": [y_conditioning[1]]},
+            index=pd.DatetimeIndex([y_conditioning[0]]),
+        ),
+        X_history=X,
+        X_future=pd.DataFrame(
+            {"driver": [X_future[1]]}, index=pd.DatetimeIndex([X_future[0]])
+        ),
+        y_variables=["target"],
+        X_variables=["driver"],
+        frequency=fallback_frequency,
+        y_conditioning_input_metrics=y_conditioning_input_metrics,
+        X_conditioning_input_metrics=X_conditioning_input_metrics,
+    )
+
+    np.testing.assert_allclose(y_fit["target"].to_numpy(), fit_y_expected, equal_nan=True)
+    np.testing.assert_allclose(X_fit["driver"].to_numpy(), fit_X_expected, equal_nan=True)
+    np.testing.assert_allclose(y_conditioning_out["target"].iloc[0], future_y_expected)
+    np.testing.assert_allclose(X_future_out["driver"].iloc[0], future_X_expected)
+
+
 def test_transform_fit_inputs_uses_per_variable_frequencies():
     monthly_dates = pd.date_range("2019-01-31", periods=15, freq="ME")
     quarterly_dates = pd.date_range("2019-03-31", periods=5, freq="QE")
@@ -305,6 +532,51 @@ def test_transform_fit_inputs_uses_per_variable_frequencies():
         y_out.loc[pd.Timestamp("2020-03-31"), "quarterly"],
         (110.0 / 100.0 - 1) * 100,
     )
+
+
+@pytest.mark.parametrize(
+    (
+        "dates",
+        "values",
+        "mapping",
+        "fallback_frequency",
+        "supplied_frequency",
+        "expected",
+    ),
+    [
+        (
+            pd.to_datetime(["2019-03-31", "2020-03-31"]),
+            [100.0, 110.0],
+            {"gdp": "yoy"},
+            "M",
+            "Q",
+            [np.nan, 10.0],
+        ),
+        (
+            pd.to_datetime(["2020-01-31"]),
+            [100.0],
+            {"gdp": "pop"},
+            "Q",
+            "M",
+            [np.nan],
+        ),
+    ],
+    ids=["sparse-quarterly", "single-monthly"],
+)
+def test_wide_pipeline_honours_supplied_frequency_metadata(
+    dates, values, mapping, fallback_frequency, supplied_frequency, expected
+):
+    y = pd.DataFrame({"gdp": values}, index=dates)
+    pipeline = DataTransformationPipeline(mapping)
+
+    y_out, _ = pipeline.transform_fit_inputs(
+        y,
+        y_variables=["gdp"],
+        frequency=fallback_frequency,
+        frequencies={"gdp": supplied_frequency},
+    )
+
+    np.testing.assert_allclose(y_out["gdp"].to_numpy(), expected, equal_nan=True)
 
 
 def test_transform_fit_inputs_uses_per_variable_X_frequencies():
@@ -703,7 +975,7 @@ def test_transform_fit_inputs_non_datetime_index_raises():
     y = pd.DataFrame({"gdp": [100.0, 110.0]})
     pipeline = DataTransformationPipeline({"gdp": "levels"})
 
-    with pytest.raises(ValueError, match="DatetimeIndex"):
+    with pytest.raises(TypeError, match="DatetimeIndex"):
         pipeline.transform_fit_inputs(y, y_variables=["gdp"], frequency="M")
 
 
@@ -1016,16 +1288,16 @@ def test_wide_methods_do_not_depend_on_long_form_wide_conversion_helpers():
 def test_transform_fit_inputs_diff_uses_shared_arithmetic_core(monkeypatch):
     """The direct wide path and the legacy long-form ``difference_by_vintage``
     share a single ``_difference_series`` implementation for "diff"."""
-    import forecast_realtime.data_transformation as data_transformation
+    import forecast_realtime._model_data as model_data
 
     calls = []
-    original = data_transformation._difference_series
+    original = model_data._difference_series
 
     def spy(values, logarithmic=False):
         calls.append(logarithmic)
         return original(values, logarithmic=logarithmic)
 
-    monkeypatch.setattr(data_transformation, "_difference_series", spy)
+    monkeypatch.setattr(model_data, "_difference_series", spy)
 
     y = pd.DataFrame(
         {"gdp": [100.0, 110.0, 125.0]},
@@ -1044,16 +1316,16 @@ def test_transform_fit_inputs_diff_uses_shared_arithmetic_core(monkeypatch):
 def test_transform_fit_inputs_yoy_uses_shared_growth_core(monkeypatch):
     """The direct wide path and the legacy long-form ``growth_by_vintage``
     share a single ``_growth_series`` implementation for "yoy"/"pop"."""
-    import forecast_realtime.data_transformation as data_transformation
+    import forecast_realtime._model_data as model_data
 
     calls = []
-    original = data_transformation._growth_series
+    original = model_data._growth_series
 
     def spy(values, periods):
         calls.append(periods)
         return original(values, periods=periods)
 
-    monkeypatch.setattr(data_transformation, "_growth_series", spy)
+    monkeypatch.setattr(model_data, "_growth_series", spy)
 
     values = [100.0, 102.0, 104.0, 106.0, 110.0]
     y = pd.DataFrame(
@@ -1074,16 +1346,16 @@ def test_transform_fit_inputs_yoy_uses_shared_growth_core(monkeypatch):
 def test_logs_uses_shared_arithmetic_core(monkeypatch):
     """The long-form ``apply()`` path and the direct wide path share a single
     ``_logs_series`` implementation for "logs"."""
-    import forecast_realtime.data_transformation as data_transformation
+    import forecast_realtime._model_data as model_data
 
     calls = []
-    original = data_transformation._logs_series
+    original = model_data._logs_series
 
     def spy(values):
         calls.append(True)
         return original(values)
 
-    monkeypatch.setattr(data_transformation, "_logs_series", spy)
+    monkeypatch.setattr(model_data, "_logs_series", spy)
 
     values = [100.0, 110.0, 125.0]
     pipeline = DataTransformationPipeline({"gdp": "logs"})

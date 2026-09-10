@@ -50,6 +50,8 @@ class ForecastElasticNet(LinearRegression):
         Whether to remove rows containing missing values before fitting.
     align_start_dates : bool
         Whether to align the starts of the target and regressor series.
+    conditioning : dict | None
+        Optional model-owned conditioning configuration.
     """
 
     def __init__(
@@ -67,6 +69,7 @@ class ForecastElasticNet(LinearRegression):
         data_transformation: dict[str, str] | None = None,
         drop_nans: bool = False,
         align_start_dates: bool = True,
+        conditioning: dict | None = None,
     ):
         super().__init__(
             fit_intercept=fit_intercept,
@@ -78,6 +81,7 @@ class ForecastElasticNet(LinearRegression):
             data_transformation=data_transformation,
             drop_nans=drop_nans,
             align_start_dates=align_start_dates,
+            conditioning=conditioning,
         )
         if cv is not None and alphas is not None and np.asarray(alphas).ndim == 0:
             raise TypeError("alphas must be array-like when cv is not None")

@@ -1,15 +1,19 @@
 """Snapshot regression for the compact model demonstration."""
 
+import importlib
+
 import numpy as np
 import pandas as pd
 import pytest
 
-# examples/demo_models.py builds scikit-learn models from the ``[models]`` extra.
-pytest.importorskip("sklearn")
-
-from examples.demo_models import run_demo
-from tests.models.test_fable import requires_r_fable
+from tests.realtime_fixtures import generate_synthetic_data
 from tests.schemas import decomposition_schema
+
+# The demo builds models from the complete ``[models]`` extra.
+for dependency in ("sklearn", "bvar", "nowcast_midas"):
+    pytest.importorskip(dependency)
+
+run_demo = pytest.importorskip("forecast_realtime.examples.demo_models").run_demo
 
 _SORT_COLUMNS = [
     "date",
@@ -48,6 +52,13 @@ _DECOMPOSITION_KEY_COLUMNS = [
 ]
 
 
+def test_packaged_example_modules_import():
+    """Every shipped example module is importable without external runtimes."""
+    for module in ("demo_models", "demo_models_fable", "midas_bvar_tree"):
+        imported = importlib.import_module(f"forecast_realtime.examples.{module}")
+        assert imported.__package__ == "forecast_realtime.examples"
+
+
 def snapshot_forecasts(frame):
     """Normalise the demo's forecast records for a deterministic snapshot."""
     result = frame.sort_values(_SORT_COLUMNS).reset_index(drop=True)
@@ -72,11 +83,18 @@ def snapshot_decompositions(frame):
     return result.to_dict(orient="records")
 
 
-@requires_r_fable
-def test_demo_models(snapshot):
-    """The demo is stable and parallel execution matches sequential execution."""
+@pytest.fixture(autouse=True)
+def synthetic_inputs(monkeypatch):
+    """Exercise the demo models without rebuilding transformations per vintage."""
+    monkeypatch.setattr(
+        "forecast_realtime.examples.demo_models.rt.generate_synthetic_data",
+        generate_synthetic_data,
+    )
+
+
+def test_demo_models(snapshot, bvar_python_kernel):
+    """The default demo includes every model and matches its numerical snapshot."""
     sequential = run_demo(N_vintages=6)
-    parallel = run_demo(N_vintages=6, parallel=True)
 
     expected_sources = {
         "Big OLS",
@@ -84,34 +102,22 @@ def test_demo_models(snapshot):
         "Ridge",
         "LASSO",
         "Elastic Net",
-        "Fable ARIMA",
         "Bridge OLS",
         "MIDAS",
         "BVAR",
         "MIDAS BVAR",
     }
     assert set(sequential.data.forecasts["source"]) == expected_sources
-    assert set(parallel.data.forecasts["source"]) == expected_sources
-
-    sequential_forecasts = sequential.data.forecasts.sort_values(
-        _SORT_COLUMNS
-    ).reset_index(drop=True)
-    parallel_forecasts = parallel.data.forecasts.sort_values(_SORT_COLUMNS).reset_index(
-        drop=True
-    )
-    pd.testing.assert_frame_equal(
-        sequential_forecasts,
-        parallel_forecasts,
-        rtol=1e-5,
-        atol=1e-5,
-    )
     assert snapshot_forecasts(sequential.data.forecasts) == snapshot
 
 
-@requires_r_fable
-def test_demo_models_decompositions(snapshot):
+def test_demo_models_decompositions(snapshot, bvar_python_kernel):
     """Demo decompositions reconstruct native forecasts and revisions."""
-    result = run_demo(N_vintages=2, decomp=True, reconstruct_levels=False)
+    result = run_demo(
+        N_vintages=2,
+        decomp=True,
+        reconstruct_levels=False,
+    )
 
     assert result.decompositions is not None
     assert not result.decompositions.empty

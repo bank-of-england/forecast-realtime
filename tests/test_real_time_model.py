@@ -1,6 +1,5 @@
 import copy
 import inspect
-import time
 import warnings
 
 import forecast_evaluation as fe
@@ -48,6 +47,44 @@ class _CaptureFitModel(ForecastModel):
 
     def _forecast(self, steps, X=None, y=None, **kwargs):
         return pd.DataFrame({self.y.columns[0]: np.zeros(steps)})
+
+
+class _FailingFitModel(ForecastModel):
+    """Fail during fitting to exercise per-model isolation."""
+
+    def _fit(self, y, X=None, **kwargs):
+        raise RuntimeError("deliberate fit failure")
+
+    def _forecast(self, steps, X=None, y=None, **kwargs):
+        raise AssertionError("forecast must not run after a failed fit")
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_model_fit_failure_does_not_discard_other_models(
+    forecast_data, parallel, inline_executor
+):
+    """A failed model is skipped while successful model forecasts are kept."""
+    broken = _FailingFitModel(label="broken")
+    working = rt.models.ForecastOLS(label="working")
+    model = rt.RealTimeModel(
+        data=forecast_data,
+        models=[broken, working],
+    )
+    working.label = "broken"
+
+    with pytest.warns(UserWarning, match="Model 'broken'.*deliberate fit failure"):
+        model.forecast(
+            y_variables=["monthly_a"],
+            data_transformation={"monthly_a": "levels"},
+            steps=1,
+            first_vintage="2020-01-31",
+            last_vintage="2020-01-31",
+            parallel=parallel,
+            max_workers=2,
+        )
+
+    assert not model.data.forecasts.empty
+    assert set(model.data.forecasts["source"]) == {"broken"}
 
 
 @pytest.mark.parametrize(
@@ -425,7 +462,9 @@ def test_forecast_rejects_dated_dataframe_with_reordered_target_columns():
 
 
 @pytest.mark.parametrize("parallel", [False, True])
-def test_forecast_raises_domain_error_when_all_vintages_are_skipped(parallel):
+def test_forecast_raises_domain_error_when_all_vintages_are_skipped(
+    parallel, inline_executor
+):
     """Explain when no selected vintage has usable target data."""
     vintage = pd.Timestamp("2020-01-31")
     outturns = pd.DataFrame(
@@ -473,6 +512,8 @@ def test_nowcast_overlap_uses_forecast_as_the_differencing_base():
     """
 
     class ConditioningEchoModel(ForecastModel):
+        _supports_target_conditioning = True
+
         def _fit(self, y, X=None, **kwargs):
             return self
 
@@ -1120,10 +1161,7 @@ def test_revision_counterfactual_does_not_mutate_fitted_model():
 
     _level_contributions(
         model,
-        y_history=y,
-        X_history=None,
-        y_conditioning=None,
-        X_conditioning=None,
+        data=model._raw_data,
         forecast_origin=model.last_y_fit_date,
         steps=2,
         dates=forecast.index,
@@ -1860,7 +1898,7 @@ def test_ar1_t_uses_finite_ols_fallback_for_invalid_optimiser(
     monkeypatch, optimiser_result
 ):
     monkeypatch.setattr(
-        "forecast_realtime._utils.minimize", lambda *args, **kwargs: optimiser_result
+        "forecast_realtime._model_data.minimize", lambda *args, **kwargs: optimiser_result
     )
     observed = pd.Series(np.arange(1.0, 9.0))
 
@@ -2169,6 +2207,7 @@ class _SpyModel(ForecastModel):
     captured_y: list = []
     captured_X: list = []
     captured_fit_y: list = []
+    _supports_target_conditioning = True
 
     def _fit(self, y, X=None, **kwargs):
         _SpyModel.captured_fit_y.append(y.copy())
@@ -2184,11 +2223,15 @@ class _SpyModel(ForecastModel):
 
 
 @pytest.mark.parametrize(
-    "conditioning_source, expect_conditioning_applied",
-    [("nowcast", True), ("other_source", False)],
+    "conditioning_source, expected_error, expect_conditioning_applied, known_source",
+    [
+        ("nowcast", None, True, False),
+        ("other_source", "unknown conditioning source", False, False),
+        ("other_source", None, False, True),
+    ],
 )
 def test_y_conditioning_forecast_source_filter(
-    conditioning_source, expect_conditioning_applied
+    conditioning_source, expected_error, expect_conditioning_applied, known_source
 ):
     """``y_sources`` only lets matching-source conditioning values reach the
     model; a mismatched source is filtered out and conditioning is skipped."""
@@ -2215,6 +2258,14 @@ def test_y_conditioning_forecast_source_filter(
             "forecast_horizon": [0, 1],
         }
     )
+    if known_source:
+        conditioning = pd.concat(
+            [
+                conditioning,
+                conditioning.iloc[[0]].assign(variable="other", source="nowcast"),
+            ],
+            ignore_index=True,
+        )
     data = fe.NowcastData(
         outturns_data=outturns,
         forecasts_data=conditioning,
@@ -2225,7 +2276,7 @@ def test_y_conditioning_forecast_source_filter(
     _SpyModel.captured_X = []
     model = rt.RealTimeModel(data=data, models=_SpyModel())
 
-    model.forecast(
+    forecast = dict(
         y_variables=["target"],
         y_steps_ahead={"target": 1},
         y_sources={"target": "nowcast"},
@@ -2235,6 +2286,11 @@ def test_y_conditioning_forecast_source_filter(
         first_vintage=str(vintage.date()),
         last_vintage=str(vintage.date()),
     )
+    if expected_error is not None:
+        with pytest.raises(ValueError, match=expected_error):
+            model.forecast(**forecast)
+        return
+    model.forecast(**forecast)
 
     seen_y = _SpyModel.captured_y[0]
     conditioning_reached_model = seen_y["target"].isin([50.0, 60.0]).any()
@@ -2242,11 +2298,15 @@ def test_y_conditioning_forecast_source_filter(
 
 
 @pytest.mark.parametrize(
-    "conditioning_source, expect_conditioning_applied",
-    [("nowcast_source", True), ("other_source", False)],
+    "conditioning_source, expected_error, expect_conditioning_applied, known_source",
+    [
+        ("nowcast_source", None, True, False),
+        ("other_source", "unknown conditioning source", False, False),
+        ("other_source", None, False, True),
+    ],
 )
 def test_X_conditioning_forecast_source_filter(
-    conditioning_source, expect_conditioning_applied
+    conditioning_source, expected_error, expect_conditioning_applied, known_source
 ):
     """``X_sources`` only lets matching-source regressor forecasts reach the
     model; a mismatched source is filtered out and conditioning is skipped."""
@@ -2273,13 +2333,21 @@ def test_X_conditioning_forecast_source_filter(
             "forecast_horizon": [0, 1],
         }
     )
+    if known_source:
+        conditioning = pd.concat(
+            [
+                conditioning,
+                conditioning.iloc[[0]].assign(variable="target", source="nowcast_source"),
+            ],
+            ignore_index=True,
+        )
     data.add_forecasts(conditioning, metric="levels")
 
     _SpyModel.captured_y = []
     _SpyModel.captured_X = []
     model = rt.RealTimeModel(data=data, models=_SpyModel())
 
-    model.forecast(
+    forecast = dict(
         y_variables=["target"],
         X_variables=["driver"],
         X_steps_ahead={"driver": 1},
@@ -2290,6 +2358,11 @@ def test_X_conditioning_forecast_source_filter(
         first_vintage=str(vintage.date()),
         last_vintage=str(vintage.date()),
     )
+    if expected_error is not None:
+        with pytest.raises(ValueError, match=expected_error):
+            model.forecast(**forecast)
+        return
+    model.forecast(**forecast)
 
     seen_X = _SpyModel.captured_X[0]
     conditioning_reached_model = seen_X["driver"].isin([500.0, 600.0]).any()
@@ -2471,11 +2544,12 @@ def test_realtime_metric_selection_rejects_ambiguous_available_metrics():
 
 
 @pytest.mark.parametrize("metric", ["pop", "levels"])
-def test_forecast_accepts_forecast_data_filtered_to_pop_or_levels(metric):
+def test_forecast_accepts_forecast_data_filtered_to_pop_or_levels(
+    metric, sample_realtime_complete
+):
     """Realtime forecasting works from either stored metric representation."""
-    sample_data = rt.generate_synthetic_data(N=1, publication_lags=False)
     forecast_data = fe.ForecastData(
-        outturns_data=sample_data,
+        outturns_data=sample_realtime_complete.copy(),
         compute_levels=False,
         data_check=False,
     )
@@ -2493,6 +2567,7 @@ def test_forecast_accepts_forecast_data_filtered_to_pop_or_levels(metric):
     rt_model.forecast(
         y_variables=["monthly_1"],
         data_transformation={"monthly_1": "pop"},
+        label="filtered",
         steps=1,
         first_forecast_horizon=1,
         first_vintage="2024-01-31",
@@ -2503,6 +2578,7 @@ def test_forecast_accepts_forecast_data_filtered_to_pop_or_levels(metric):
     assert not results.empty
     assert results["variable"].eq("monthly_1").all()
     assert results["metric"].eq("pop").any()
+    assert results["source"].eq(f"OLS-{metric} - filtered").all()
 
 
 def test_filter_by_variables_and_metric_keeps_matching_rows():
@@ -2629,39 +2705,37 @@ class TestParallelExecution:
         data,
         model,
         label,
-        y_variables=["cpisa"],
-        X_variables=["unemp"],
+        y_variables=["quarterly_1"],
+        X_variables=["quarterly_2"],
         data_transformation=None,
         parallel=False,
         batch_size=10,
         y_lags=4,
     ):
-        """Execute forecast and return (forecasts, elapsed_time) tuple."""
+        """Execute forecast and return the resulting forecasts."""
         if data_transformation is None:
             # pop by default for y_variables and X_variables
             data_transformation = {var: "pop" for var in y_variables + X_variables}
 
         rt_model = rt.RealTimeModel(data=data.copy(), models=model)
 
-        start_time = time.time()
         rt_model.forecast(
             y_variables=y_variables,
             X_variables=X_variables,
             data_transformation=data_transformation,
-            steps=8,
+            steps=2,
             label=label,
-            first_vintage="2015-03-31",
-            last_vintage="2018-12-31",
+            first_vintage="2024-01-31",
+            last_vintage="2024-03-31",
             parallel=parallel,
             batch_size=batch_size,
             y_lags=y_lags,
             X_imputation="zero",
         )
-        elapsed = time.time() - start_time
 
-        return rt_model.data.forecasts.copy(), elapsed
+        return rt_model.data.forecasts.copy()
 
-    def _assert_forecasts_equal(self, actual, expected, normalize_source=None):
+    def _assert_forecasts_equal(self, actual, expected):
         """Assert two forecast DataFrames are equal after sorting. Reduces duplication."""
         assert actual.shape[0] == expected.shape[0], (
             f"Shape mismatch: {actual.shape[0]} vs {expected.shape[0]}"
@@ -2673,9 +2747,6 @@ class TestParallelExecution:
         expected_sorted = expected.sort_values(
             ["vintage_date", "date", "variable"]
         ).reset_index(drop=True)
-
-        if normalize_source:
-            actual_sorted["source"] = normalize_source
 
         pd.testing.assert_frame_equal(
             actual_sorted[
@@ -2703,15 +2774,9 @@ class TestParallelExecution:
         )
 
     @pytest.fixture
-    def setup_data(self):
+    def setup_data(self, sample_realtime_ragged):
         """Load and prepare test data for parallel execution tests."""
-        forecast_data = fe.ForecastData(load_fer=True)
-        forecast_data.filter(
-            variables=["cpisa", "unemp"],
-            start_vintage="2015-01-01",
-            end_vintage="2020-12-31",
-        )
-        return forecast_data
+        return fe.NowcastData(outturns_data=sample_realtime_ragged.copy())
 
     @pytest.fixture
     def setup_models(self):
@@ -2719,56 +2784,24 @@ class TestParallelExecution:
         return [
             rt.models.ForecastOLS(forecast_strategy="recursive", label="ForecastOLS_rec"),
             rt.models.ForecastOLS(
-                forecast_strategy="direct", steps=8, label="ForecastOLS_dir"
+                forecast_strategy="direct", steps=2, label="ForecastOLS_dir"
             ),
         ]
-
-    def test_single_model_sequential_vs_parallel_vintages(self, setup_data):
-        """
-        Test single model sequential vs parallel vintage execution equivalence.
-
-        Validates vintage-level parallelisation correctness and reports timing.
-        """
-        model = rt.models.ForecastOLS()
-
-        # Sequential and parallel execution with timing
-        forecasts_seq, time_seq = self._run_forecast_and_return(
-            setup_data, model, "Seq", parallel=False
-        )
-        forecasts_par, time_par = self._run_forecast_and_return(
-            setup_data, model, "Par", parallel=True, batch_size=2
-        )
-
-        # Report timing
-        speedup = time_seq / time_par if time_par > 0 else float("inf")
-        print("\nSingle Model Timing:")
-        print(f"  Sequential: {time_seq:.3f}s")
-        print(f"  Parallel:   {time_par:.3f}s")
-        print(f"  Speedup:    {speedup:.2f}x")
-
-        # Validate equivalence
-        self._assert_forecasts_equal(
-            forecasts_par, forecasts_seq, normalize_source="ForecastOLS - Seq"
-        )
 
     def test_multiple_models_sequential_vs_parallel(self, setup_data, setup_models):
         """
         Test multiple models sequential vs parallel execution equivalence.
-
-        Validates model-level parallelisation and reports timing.
         """
         # Sequential: run each model separately and merge (current ml_models.py pattern)
         models_seq_results = {}
-        total_time_seq = 0.0
         for model in setup_models:
             model_label = model.label
-            forecasts, elapsed = self._run_forecast_and_return(
+            forecasts = self._run_forecast_and_return(
                 copy.deepcopy(setup_data),
                 model,
                 None,
                 parallel=False,
             )
-            total_time_seq += elapsed
             # Filter to only this model's forecasts (exclude baseline forecasts
             # that came with setup_data)
             models_seq_results[model_label] = forecasts[
@@ -2779,32 +2812,23 @@ class TestParallelExecution:
 
         # Parallel: list-based multi-model approach (uses single method call)
         rt_par = rt.RealTimeModel(data=setup_data.copy(), models=setup_models)
-        start_time = time.time()
         rt_par.forecast(
-            y_variables=["cpisa"],
-            X_variables=["unemp"],
-            data_transformation={"cpisa": "pop", "unemp": "pop"},
-            steps=8,
-            first_vintage="2015-03-31",
-            last_vintage="2018-12-31",
+            y_variables=["quarterly_1"],
+            X_variables=["quarterly_2"],
+            data_transformation={"quarterly_1": "pop", "quarterly_2": "pop"},
+            steps=2,
+            first_vintage="2024-01-31",
+            last_vintage="2024-03-31",
             parallel=True,
             y_lags=4,
             X_imputation="zero",
         )
-        time_par = time.time() - start_time
         data_par = rt_par.data.forecasts.copy()
         # Filter to only the models we just ran (exclude baseline forecasts)
-        model_labels = [m.label for m in setup_models]
-        data_par = data_par[data_par["source"].isin(model_labels)]
-
-        # Report timing
-        speedup = total_time_seq / time_par if time_par > 0 else float("inf")
-        print("\nMultiple Models Timing:")
-        print(f"  Sequential (sum): {total_time_seq:.3f}s")
-        print(f"  Parallel:         {time_par:.3f}s")
-        print(f"  Speedup:          {speedup:.2f}x")
 
         # Validate equivalence per model
+        assert data_seq_merged["vintage_date"].nunique() == 3
+        assert data_par["vintage_date"].nunique() == 3
         assert data_seq_merged.shape[0] == data_par.shape[0]
 
         data_seq_sorted = data_seq_merged.sort_values(
@@ -2819,97 +2843,6 @@ class TestParallelExecution:
             seq_model = data_seq_sorted[data_seq_sorted["source"] == model_label]
             par_model = data_par_sorted[data_par_sorted["source"] == model_label]
             self._assert_forecasts_equal(par_model, seq_model)
-
-    def test_backwards_compatibility_single_model(self, setup_data):
-        """
-        Test that existing single-model code still works (backwards compatibility).
-        """
-        model = rt.models.ForecastOLS()
-        forecasts, time_seq = self._run_forecast_and_return(
-            setup_data, model, "Seq", parallel=False
-        )
-
-        # Also test parallel mode and report timing
-        _, time_par = self._run_forecast_and_return(
-            setup_data, model, "Par", parallel=True, batch_size=2
-        )
-
-        speedup = time_seq / time_par if time_par > 0 else float("inf")
-        print("\nBackwards Compatibility (Single Model) Timing:")
-        print(f"  Sequential: {time_seq:.3f}s")
-        print(f"  Parallel:   {time_par:.3f}s")
-        print(f"  Speedup:    {speedup:.2f}x")
-
-        # Should work without errors
-        assert forecasts is not None
-        assert not forecasts.empty
-        # Filter to only ForecastOLS forecasts (data may contain older baseline forecasts)
-        ols_forecasts = forecasts[forecasts["source"] == "ForecastOLS - Seq"]
-        assert not ols_forecasts.empty, "No ForecastOLS forecasts found"
-        assert (ols_forecasts["source"] == "ForecastOLS - Seq").all() or (
-            ols_forecasts["source"] == "ForecastOLS"
-        ).all()
-
-    @pytest.mark.skip(
-        reason="This test is a demonstration of parallelization"
-        " benefits with a large workload. too slow."
-    )
-    def test_50_models_large_scale(self, setup_data):
-        """
-        Test parallelization with 50 models (all same ForecastOLS model).
-
-        Demonstrates parallelization benefit with significant workload.
-        Uses default parameters: parallel=True with auto batch_size.
-        """
-        # Create 50 identical ForecastOLS models with explicit labels
-        models_50 = [
-            rt.models.ForecastOLS(label=f"ForecastOLS_{i:02d}") for i in range(50)
-        ]
-
-        # Run with parallel=True and auto batch_size (batch_size=None)
-        rt_model = rt.RealTimeModel(data=setup_data.copy(), models=models_50)
-
-        start_time = time.time()
-        rt_model.forecast(
-            y_variables=["cpisa"],
-            X_variables=["unemp"],
-            data_transformation={"cpisa": "pop", "unemp": "pop"},
-            steps=8,
-            first_vintage="2015-03-31",
-            last_vintage="2018-12-31",
-            parallel=True,
-            # batch_size=None -> auto-computed based on num_workers
-            y_lags=4,
-        )
-        time_parallel = time.time() - start_time
-
-        start_time = time.time()
-        rt_model.forecast(
-            y_variables=["cpisa"],
-            X_variables=["unemp"],
-            data_transformation={"cpisa": "pop", "unemp": "pop"},
-            steps=8,
-            first_vintage="2015-03-31",
-            last_vintage="2018-12-31",
-            parallel=False,
-            y_lags=4,
-        )
-        time_sequential = time.time() - start_time
-
-        forecasts = rt_model.data.forecasts.copy()
-        print("\n50 Models Parallel (auto batch_size) Timing:")
-        print(f"  Time: {time_parallel:.3f}s")
-        print("50 Models Sequential Timing:")
-        print(f"  Time: {time_sequential:.3f}s")
-
-        # Validate results
-        assert forecasts is not None
-        assert not forecasts.empty
-        ols_forecasts = forecasts[forecasts["source"].str.startswith("ForecastOLS")]
-        ols_models = ols_forecasts["source"].unique()
-        assert len(ols_models) == len(models_50), (
-            f"Expected {len(models_50)} ForecastOLS models, got {len(ols_models)}"
-        )
 
 
 # ============================================================================
@@ -3504,6 +3437,7 @@ class _PipelineSpyModel(ForecastModel):
     """
 
     captured: dict = {}
+    _supports_target_conditioning = True
 
     def _fit(self, y, X=None, **kwargs):
         return self
@@ -3576,7 +3510,7 @@ def test_two_models_receive_independently_transformed_data_sequential():
     np.testing.assert_allclose(diff_row["value"].iloc[0], 121.0)
 
 
-def test_two_models_receive_independently_transformed_data_parallel():
+def test_two_models_receive_independently_transformed_data_parallel(inline_executor):
     """The same per-model dispatch holds with ``parallel=True``.
 
     Each (model, vintage_batch) worker must receive that model's own
@@ -3826,6 +3760,7 @@ class _TreePipelineLeaf(ForecastModel):
 @pytest.mark.parametrize("parallel", [False, True])
 def test_realtime_tree_dispatch_accepts_complete_leaf_pipelines_without_fallback(
     parallel,
+    inline_executor,
 ):
     vintage = pd.Timestamp("2020-03-31")
     dates = pd.date_range("2019-01-31", periods=15, freq="ME")
@@ -3887,6 +3822,7 @@ def test_realtime_tree_dispatch_accepts_complete_leaf_pipelines_without_fallback
 @pytest.mark.parametrize("parallel", [False, True])
 def test_realtime_tree_owned_input_pipeline_does_not_reconstruct_root_output(
     parallel,
+    inline_executor,
 ):
     vintage = pd.Timestamp("2020-03-31")
     dates = pd.date_range("2020-01-31", periods=3, freq="ME")

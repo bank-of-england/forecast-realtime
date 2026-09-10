@@ -1,4 +1,5 @@
-# Load ForecastData with FER dataset
+"""Tests for ForecastBVAR using deterministic synthetic data."""
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -8,7 +9,7 @@ pytest.importorskip("bvar")
 import bvar as bv
 import forecast_evaluation as fe
 
-forecast_data = fe.ForecastData(load_fer=True)
+import forecast_realtime as rt
 
 
 def test_bvar_declares_missing_values_unsupported():
@@ -100,15 +101,16 @@ def test_realtime_bvar_receives_no_missing_estimation_values(monkeypatch):
         pd.testing.assert_index_equal(estimation_data.index, expected_index)
 
 
-def test_bvar_native_unconditional():
-    """Test that native bvar and ForecastBVAR wrapper produce identical results."""
-    import forecast_realtime as rt
-
-    variables = ["cpisa", "gdpkp"]
-    outturns = forecast_data.outturns.copy()
+def test_bvar_matches_native_unconditional_and_conditional_forecasts(
+    sample_realtime_ragged,
+    request,
+):
+    """Both forecast paths match native BVAR using the same fitted models."""
+    variables = ["quarterly_1", "quarterly_2"]
+    outturns = sample_realtime_ragged.query("metric == 'levels'").copy()
     outturns = outturns[outturns["variable"].isin(variables)]
 
-    vintage = pd.Timestamp("2015-03-31")
+    vintage = pd.Timestamp("2024-06-30")
     y_vintage = outturns[outturns["vintage_date"] <= vintage].copy()
     y_vintage = y_vintage.sort_values("vintage_date", ascending=False).drop_duplicates(
         subset=["date", "variable"], keep="first"
@@ -123,7 +125,7 @@ def test_bvar_native_unconditional():
     native_model = bv.BVAR(
         n_lags=5, model=prior, stationary=True, optimisation_method="ml"
     )
-    native_model.optimise_hyperparameters(y_vintage, nb_restart=5, random_state=0)
+    native_model.optimise_hyperparameters(y_vintage, nb_restart=0, random_state=0)
     native_model.sample(
         data=y_vintage,
         N_draws=1000,
@@ -145,6 +147,7 @@ def test_bvar_native_unconditional():
     wrapper = rt.models.ForecastBVAR(
         stationary=True,
         n_lags=5,
+        nb_restart=0,
         mode_only=True,
         optim_random_state=0,
         sampling_random_state=0,
@@ -156,63 +159,18 @@ def test_bvar_native_unconditional():
     np.testing.assert_allclose(
         native_forecasts, wrapper_forecasts.values, rtol=1e-5, atol=1e-5
     )
+    compiled_unconditional = wrapper_forecasts.copy()
 
-
-def test_bvar_native_conditional():
-    """Test that native bvar and
-    ForecastBVAR wrapper produce identical conditional results."""
-    import forecast_realtime as rt
-
-    variables = ["cpisa", "gdpkp"]
-    outturns = forecast_data.outturns.copy()
-    outturns = outturns[outturns["variable"].isin(variables)]
-    forecasts = forecast_data.forecasts.copy()
-    forecasts = forecasts[
-        (forecasts["variable"].isin(variables)) & (forecasts["source"] == "mpr")
-    ]
-
-    vintage = pd.Timestamp("2015-03-31")
-
-    # Training data
-    y_vintage = outturns[outturns["vintage_date"] <= vintage].copy()
-    y_vintage = y_vintage.sort_values("vintage_date", ascending=False).drop_duplicates(
-        subset=["date", "variable"], keep="first"
-    )
-    y_vintage = y_vintage.pivot(index="date", columns="variable", values="value")
-    y_vintage = y_vintage[y_vintage.index < vintage].dropna()
-
-    # Conditioning forecasts
-    fcst_vintage = forecasts[forecasts["vintage_date"] <= vintage].copy()
-    fcst_vintage = fcst_vintage.sort_values(
-        "vintage_date", ascending=False
-    ).drop_duplicates(subset=["date", "variable"], keep="first")
-    fcst_pivot = fcst_vintage.pivot(index="date", columns="variable", values="value")
-    fcst_pivot = fcst_pivot[fcst_pivot.index >= vintage]
-
-    # Build conditioning matrix: cpisa conditioned for 2 steps, gdpkp for 1
-    H = 4
+    # Build deterministic conditioning paths: quarterly_1 for two steps and
+    # quarterly_2 for one.
     y_columns = list(y_vintage.columns)
     constraint_mean = np.full((H, len(y_columns)), np.nan)
-    conditioning = {"cpisa": 1, "gdpkp": 0}
+    conditioning = {"quarterly_1": 1, "quarterly_2": 0}
     for var, steps_ahead in conditioning.items():
         adjusted = steps_ahead + 1
         col_idx = y_columns.index(var)
-        if var in fcst_pivot.columns:
-            constraint_mean[:adjusted, col_idx] = fcst_pivot[var].values[:adjusted]
+        constraint_mean[:adjusted, col_idx] = y_vintage[var].iloc[-1]
 
-    # --- Native bvar ---
-    prior = bv.NaturalConjugate(minnesota=True, soc=True, sur=True)
-    native_model = bv.BVAR(
-        n_lags=5, model=prior, stationary=True, optimisation_method="ml"
-    )
-    native_model.optimise_hyperparameters(y_vintage, nb_restart=5, random_state=0)
-    native_model.sample(
-        data=y_vintage,
-        N_draws=1000,
-        point_only=True,
-        progressbar=False,
-        random_state=0,
-    )
     native_model.forecast(
         H=H,
         constraint_mean=constraint_mean,
@@ -225,27 +183,32 @@ def test_bvar_native_conditional():
     )
     native_forecasts = np.mean(native_model.forecast_conditional, axis=0)[-H:]
 
-    # --- ForecastBVAR wrapper ---
-    wrapper = rt.models.ForecastBVAR(
-        stationary=True,
-        n_lags=5,
-        mode_only=True,
-        optim_random_state=0,
-        sampling_random_state=0,
-        forecast_random_state=0,
-    )
-    wrapper.fit(y=y_vintage)
-
     # make constraint_mean a DataFrame with proper dates
     constraint_mean_df = pd.DataFrame(
         constraint_mean,
         columns=y_vintage.columns,
-        index=pd.date_range(start=vintage, periods=H, freq="QE"),
+        index=pd.date_range(
+            start=y_vintage.index[-1] + pd.offsets.QuarterEnd(),
+            periods=H,
+            freq="QE",
+        ),
     )
     wrapper_forecasts = wrapper.forecast(steps=H, y=constraint_mean_df)
 
     np.testing.assert_allclose(
         native_forecasts, wrapper_forecasts.values, rtol=1e-5, atol=1e-5
+    )
+
+    # Other contract tests use this same kernel without its compilation overhead.
+    request.getfixturevalue("bvar_python_kernel")
+    pd.testing.assert_frame_equal(
+        wrapper.forecast(steps=H), compiled_unconditional, rtol=1e-12, atol=1e-12
+    )
+    pd.testing.assert_frame_equal(
+        wrapper.forecast(steps=H, y=constraint_mean_df),
+        wrapper_forecasts,
+        rtol=1e-12,
+        atol=1e-12,
     )
 
 

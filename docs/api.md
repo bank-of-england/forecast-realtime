@@ -66,27 +66,7 @@ current source.
       show_source: false
       show_root_heading: true
 
-::: forecast_realtime.ModelInputRequirements
-    options:
-      show_source: false
-      show_root_heading: true
-
-::: forecast_realtime.InputMetricMapping
-    options:
-      show_source: false
-      show_root_heading: true
-
-::: forecast_realtime.ResolvedTransformationPlan
-    options:
-      show_source: false
-      show_root_heading: true
-
-::: forecast_realtime.RawInputBundle
-    options:
-      show_source: false
-      show_root_heading: true
-
-::: forecast_realtime.PreparedModelInputs
+::: forecast_realtime.__version__
     options:
       show_source: false
       show_root_heading: true

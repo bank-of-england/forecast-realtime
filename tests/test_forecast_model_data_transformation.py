@@ -66,6 +66,8 @@ def test_model_owned_transformation_survives_copy_and_pickle():
 class _RecordingModel(ForecastModel):
     """Concrete subclass that records exactly what ``_fit``/``_forecast`` receive."""
 
+    _supports_target_conditioning = True
+
     def _fit(self, y, X=None, **kwargs):
         self.received_fit_y = y.copy()
         self.received_fit_X = X.copy() if X is not None else None
@@ -272,7 +274,7 @@ def test_forecast_reuses_fitted_frequency_mapping_for_regularisation(monkeypatch
         raise AssertionError("prediction must reuse fitted frequency mappings")
 
     monkeypatch.setattr(
-        "forecast_realtime.forecast_model.infer_variable_frequencies",
+        "forecast_realtime._model_data.infer_frequency_from_dates",
         fail_inference,
     )
     model.forecast(
@@ -296,9 +298,7 @@ def test_forecast_imputation_uses_stored_target_frequency():
     model = _RecordingModel(data_transformation={"target": "levels", "driver": "levels"})
     model.fit(y, X, frequency="Q", X_imputation="last")
 
-    assert model._fitted_model_configuration.data_transformation.X_frequency_mapping == {
-        "driver": "M"
-    }
+    assert model._raw_data.frequencies("X") == {"driver": "M"}
 
     model.forecast(
         steps=1,
@@ -392,8 +392,7 @@ def test_fit_defaults_missing_input_metric_mappings_to_levels():
 
     model.fit(y, frequency="M")
 
-    transformation = model._fitted_model_configuration.data_transformation
-    assert transformation.y_input_metric_mapping == {"gdp": "levels"}
+    assert model._raw_data.metrics("y") == {"gdp": "levels"}
     np.testing.assert_allclose(model.received_fit_y["gdp"].to_numpy(), [10.0, 11.0])
 
 
@@ -405,7 +404,7 @@ def test_direct_fit_without_pipeline_stores_level_input_defaults():
 
     transformation = model._fitted_model_configuration.data_transformation
     assert transformation.data_transformation is None
-    assert transformation.y_input_metric_mapping == {"gdp": "levels"}
+    assert model._raw_data.metrics("y") == {"gdp": "levels"}
 
 
 def test_direct_fit_rejects_derived_input_when_levels_are_requested_by_default():
@@ -430,8 +429,7 @@ def test_fit_persists_explicit_input_metric_mappings_and_uses_identity():
 
     model.fit(y, y_input_metrics={"gdp": "diff"}, frequency="M")
 
-    transformation = model._fitted_model_configuration.data_transformation
-    assert transformation.y_input_metric_mapping == {"gdp": "diff"}
+    assert model._raw_data.metrics("y") == {"gdp": "diff"}
     np.testing.assert_allclose(model.received_fit_y["gdp"].to_numpy(), y["gdp"])
 
 
@@ -919,12 +917,15 @@ def test_ols_forecast_rows_use_fitted_target_boundary_with_conditioning(
         index=pd.date_range("2020-04-30", periods=2, freq="ME"),
     )
 
-    model.forecast(steps=2, X=X_future, y=conditioning)
+    with pytest.raises(ValueError, match="does not support target conditioning"):
+        model.forecast(steps=2, X=X_future, y=conditioning)
+
+    model.forecast(steps=2, X=X_future)
 
     assert model.last_y_fit_date == pd.Timestamp("2020-03-31")
     assert list(
         model._select_forecast_rows(
-            pd.concat([X, X_future]), model.last_y_fit_date, 2, conditioning
+            pd.concat([X, X_future]), model.last_y_fit_date, 2, None
         ).index
     ) == list(X_future.index)
 
@@ -963,7 +964,10 @@ def test_tree_forecast_rows_use_fitted_target_boundary_with_conditioning(
         index=pd.date_range("2020-04-30", periods=2, freq="ME"),
     )
 
-    model.forecast(steps=2, X=X_future, y=conditioning)
+    with pytest.raises(ValueError, match="does not support target conditioning"):
+        model.forecast(steps=2, X=X_future, y=conditioning)
+
+    model.forecast(steps=2, X=X_future)
 
     assert model.last_y_fit_date == pd.Timestamp("2020-03-31")
     if forecast_strategy == "direct":

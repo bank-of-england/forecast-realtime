@@ -20,15 +20,23 @@ class ForecastRlm(RModel):
     ----------
     lags : int
         Number of autoregressive lags to include.
+    conditioning : dict | None
+        Optional model-owned conditioning configuration.
 
     """
 
-    def __init__(self, lags: int = 1, **kwargs):
+    def __init__(
+        self,
+        lags: int = 1,
+        conditioning: dict | None = None,
+        **kwargs,
+    ):
         if not isinstance(lags, int) or lags < 1:
             raise ValueError("lags must be a positive integer")
 
         super().__init__(
             script=_R_SCRIPT,
             lags=lags,
+            conditioning=conditioning,
             **kwargs,
         )

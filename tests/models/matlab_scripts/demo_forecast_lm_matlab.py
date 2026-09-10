@@ -44,7 +44,12 @@ def run_demo(*, n_vintages: int = 3, steps: int = 12) -> rt.RealTimeModel:
     rt.RealTimeModel
         The fitted real-time model, with results on ``.data``.
     """
-    forecast_data = fe.ForecastData(load_fer=True)
+    sample_data = rt.generate_synthetic_data(
+        N=2,
+        first_period="2015-01-31",
+        endpoint="2024-12-31",
+    )
+    forecast_data = fe.NowcastData(outturns_data=sample_data)
 
     # Take the last n_vintages vintage dates rather than hardcoding a window,
     # so the demo keeps working as the data moves forward.
@@ -54,9 +59,9 @@ def run_demo(*, n_vintages: int = 3, steps: int = 12) -> rt.RealTimeModel:
     model = MATLABModel(_MATLAB_SCRIPT, label="OLS MATLAB")
     rt_model = rt.RealTimeModel(data=forecast_data, models=model)
     rt_model.forecast(
-        y_variables=["cpisa"],
-        X_variables=["gdpkp"],
-        data_transformation={"cpisa": "pop", "gdpkp": "pop"},
+        y_variables=["quarterly_1"],
+        X_variables=["quarterly_2"],
+        data_transformation={"quarterly_1": "pop", "quarterly_2": "pop"},
         steps=steps,
         first_vintage=str(selected[0]),
         last_vintage=str(selected[-1]),

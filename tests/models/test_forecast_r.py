@@ -1,7 +1,5 @@
 """Tests for ForecastRlm (lm-based AR via R), including debug REPL flow."""
 
-import shutil
-import subprocess
 from unittest.mock import patch
 
 import numpy as np
@@ -10,28 +8,8 @@ import pytest
 
 from forecast_realtime.models import ForecastRlm
 
-
-def _r_arrow_available() -> bool:
-    """Return ``True`` when ``Rscript`` and the R ``arrow`` package are available."""
-    if shutil.which("Rscript") is None:
-        return False
-    try:
-        result = subprocess.run(
-            ["Rscript", "-e", "cat(requireNamespace('arrow', quietly=TRUE))"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        return "TRUE" in result.stdout
-    except Exception:
-        return False
-
-
 # Skip if Rscript is not on PATH or R 'arrow' package is not installed.
-pytestmark = pytest.mark.skipif(
-    not _r_arrow_available(),
-    reason="Rscript not found on PATH or R 'arrow' package not installed",
-)
+pytestmark = pytest.mark.usefixtures("r_arrow_available")
 
 
 @pytest.fixture

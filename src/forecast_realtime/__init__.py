@@ -1,16 +1,13 @@
-from .data_transformation import (
-    InputMetricMapping,
-    ModelInputRequirements,
-    PreparedModelInputs,
-    RawInputBundle,
-    ResolvedTransformationPlan,
-)
+from importlib.metadata import version
+
 from .external_model import ExternalModel, JuliaModel, MATLABModel, RModel
 from .forecast_model import ForecastContext, ForecastModel, ForecastResult
 from .forecast_tree import ForecastTree, TreeNode
 from .formula import Formula
 from .real_time_model import RealTimeModel
 from .sample_realtime_data import generate_synthetic_data
+
+__version__ = version("forecast_realtime")
 
 # Optional import - only load models if available
 try:
@@ -31,10 +28,6 @@ __all__ = [
     "MATLABModel",
     "JuliaModel",
     "generate_synthetic_data",
-    "ModelInputRequirements",
-    "InputMetricMapping",
-    "ResolvedTransformationPlan",
-    "RawInputBundle",
-    "PreparedModelInputs",
     "models",
+    "__version__",
 ]

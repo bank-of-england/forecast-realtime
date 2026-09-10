@@ -415,8 +415,9 @@ def _run_monthly_tree(panel, *, parallel):
     return realtime
 
 
-def test_monthly_tree_with_levels_and_logs_is_parallel_equivalent(
+def test_monthly_tree_with_levels_and_logs_survives_serialised_dispatch(
     sample_realtime_complete,
+    inline_executor,
 ):
     tree = _make_monthly_tree()
     pickle.dumps(tree)
@@ -575,7 +576,7 @@ def _conditioned_forecast_data(panel, metric, conditioning_panel=None):
 
 
 def _run_conditioned_pop(panel, conditioning_metric, conditioning_panel=None):
-    model = rt.models.ForecastOLS(
+    model = _ConditioningForecastOLS(
         label="conditioned_pop",
         data_transformation={"monthly_1": "pop"},
     )
@@ -593,6 +594,10 @@ def _run_conditioned_pop(panel, conditioning_metric, conditioning_panel=None):
         reconstruct_levels=False,
     )
     return realtime
+
+
+class _ConditioningForecastOLS(rt.models.ForecastOLS):
+    _supports_target_conditioning = True
 
 
 def test_monthly_pop_conditioning_matches_native_pop_conditioning(
@@ -646,7 +651,9 @@ def _run_ragged_bridge(panel, *, parallel):
     return realtime
 
 
-def test_ragged_bridge_ols_is_parallel_equivalent(sample_realtime_ragged):
+def test_ragged_bridge_ols_survives_serialised_dispatch(
+    sample_realtime_ragged, inline_executor
+):
     sequential = _run_ragged_bridge(sample_realtime_ragged, parallel=False)
     process_parallel = _run_ragged_bridge(sample_realtime_ragged, parallel=True)
     sequential_result = native_result(sequential, "ragged_bridge", "levels")

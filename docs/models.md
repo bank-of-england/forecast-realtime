@@ -5,10 +5,8 @@ Lags are supplied at fit/forecast time (`y_lags`/`X_lags`), not in the
 constructor.
 
 Optional models are imported when their public attribute is first accessed.
-Install the extra for the model you use, for example `pip install -e
-.[ridge]`, `pip install -e .[xgboost]` or `pip install -e .[bvar]`. If a
-required dependency is unavailable, attribute access raises
-`ModuleNotFoundError` naming the model, dependency and installation extra.
+Install the extra for the model you use, for example `pip install
+"forecast-realtime[ridge]"`.
 
 | Model | Description |
 |-------|-------------|
@@ -22,8 +20,16 @@ required dependency is unavailable, attribute access raises
 import forecast_evaluation as fe
 import forecast_realtime as rt
 
-forecast_data = fe.ForecastData(load_fer=True)
-ols = rt.models.ForecastOLS(label="ols", formula="cpisa ~ gdpkp")
+sample_data = rt.generate_synthetic_data(
+    N=2,
+    first_period="2015-01-31",
+    endpoint="2024-12-31",
+)
+forecast_data = fe.NowcastData(outturns_data=sample_data)
+ols = rt.models.ForecastOLS(
+    label="ols",
+    formula="quarterly_1 ~ quarterly_2",
+)
 ridge = rt.models.ForecastRidge(cv=5, scale=True)
 
 # Pass several models at once — each is run across every vintage
@@ -36,7 +42,12 @@ rt_model = rt.RealTimeModel(data=forecast_data, models=[ols, ridge])
 import forecast_evaluation as fe
 import forecast_realtime as rt
 
-forecast_data = fe.ForecastData(load_fer=True)
+sample_data = rt.generate_synthetic_data(
+    N=2,
+    first_period="2015-01-31",
+    endpoint="2024-12-31",
+)
+forecast_data = fe.NowcastData(outturns_data=sample_data)
 
 ridge_model = rt.models.ForecastRidge(label="Ridge", cv=5, scale=True)
 lasso_model = rt.models.ForecastLasso(label="LASSO", cv=5, scale=True)
@@ -44,12 +55,13 @@ lasso_model = rt.models.ForecastLasso(label="LASSO", cv=5, scale=True)
 rt_model = rt.RealTimeModel(data=forecast_data, models=[ridge_model, lasso_model])
 
 rt_model.forecast(
-    y_variables=["cpisa"],
-    X_variables=["gdpkp", "unemp"],
-    data_transformation={"cpisa": "pop", "gdpkp": "pop", "unemp": "pop"},
-    steps=12,
+    y_variables=["quarterly_1"],
+    X_variables=["quarterly_2"],
+    data_transformation={"quarterly_1": "pop", "quarterly_2": "pop"},
+    steps=2,
     y_lags=4,
-    first_vintage="2015-01-01",
+    first_vintage="2024-01-31",
+    last_vintage="2024-06-30",
     X_imputation="last",
 )
 

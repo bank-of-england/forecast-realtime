@@ -37,6 +37,8 @@ class TreeRegression(ForecastModel):
         Optional patsy-style formula selecting the regressors. Default None.
     data_transformation : dict[str, str] | None
         Optional model-owned raw-input transformation configuration.
+    conditioning : dict | None
+        Optional model-owned conditioning configuration.
     """
 
     def __init__(
@@ -47,12 +49,14 @@ class TreeRegression(ForecastModel):
         label: str | None = None,
         formula: str | None = None,
         data_transformation: dict[str, str] | None = None,
+        conditioning: dict | None = None,
     ):
         label = label if label is not None else self.__class__.__name__
         super().__init__(
             label=label,
             formula=formula,
             data_transformation=data_transformation,
+            conditioning=conditioning,
         )
         self.forecast_strategy = forecast_strategy
         self.steps = steps

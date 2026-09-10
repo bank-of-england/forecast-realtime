@@ -4,12 +4,10 @@ import pandas as pd
 import pytest
 from forecast_evaluation import ForecastData
 
+from forecast_realtime._model_data import _select_input_metrics
 from forecast_realtime._realtime_forecasting import ForecastRunResult
 from forecast_realtime.forecast_model import ForecastModel
-from forecast_realtime.real_time_model import (
-    RealTimeModel,
-    _select_input_metrics,
-)
+from forecast_realtime.real_time_model import RealTimeModel
 
 
 class _NoopModel(ForecastModel):
@@ -147,5 +145,6 @@ def test_realtime_selects_metrics_using_model_owned_mapping(monkeypatch):
 
     task = captured_tasks[0]
     assert task.data_transformation == {"gdp": "pop"}
-    assert task.input_metrics == {"gdp": "pop"}
-    assert task.common["outturns"]["metric"].unique().tolist() == ["pop"]
+    assert task.data.metrics("y") == {"gdp": "pop"}
+    selected = task.data.as_of(vintage).to_wide("y")
+    assert selected["gdp"].tolist() == [1.0, 2.0]

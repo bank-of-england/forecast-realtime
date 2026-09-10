@@ -55,6 +55,23 @@ class RFableModel(RModel):
     The response is named ``value`` inside R; regressor names retain their
     Python column names. The generic class is useful for fable models that do
     not need a dedicated Python convenience wrapper.
+
+    Parameters
+    ----------
+    spec : str
+        R model specification evaluated by fable.
+    index : str
+        Date-index conversion used by the R model. Default ``"auto"``.
+    allow_xreg : bool
+        Whether the model may use exogenous regressors. Default is ``True``.
+    label : str | None
+        Name used to identify the model's forecasts.
+    formula : str | None
+        Optional formula selecting the target and regressors.
+    data_transformation : dict[str, str] | None
+        Optional model-owned raw-input transformation configuration.
+    conditioning : dict | None
+        Optional model-owned conditioning configuration.
     """
 
     _handles_missing_values = False
@@ -73,7 +90,8 @@ class RFableModel(RModel):
         allow_xreg: bool = True,
         label: str | None = None,
         formula: str | None = None,
-        data_transformation=None,
+        data_transformation: dict[str, str] | None = None,
+        conditioning: dict | None = None,
         **params,
     ):
         if not isinstance(spec, str) or not spec.strip():
@@ -90,6 +108,7 @@ class RFableModel(RModel):
             spec=spec,
             index=index,
             allow_xreg=allow_xreg,
+            conditioning=conditioning,
             **params,
         )
         self.spec = spec
@@ -116,6 +135,8 @@ class RFableETS(RFableModel):
         Name used to identify the model's forecasts.
     formula : str | None
         Optional formula selecting the target and regressors.
+    conditioning : dict | None
+        Optional model-owned conditioning configuration.
     """
 
     def __init__(
@@ -128,6 +149,7 @@ class RFableETS(RFableModel):
         index: str = "auto",
         label: str | None = None,
         formula: str | None = None,
+        conditioning: dict | None = None,
         **kwargs,
     ):
         _validate_component(error, "error", ("A", "M"))
@@ -155,6 +177,7 @@ class RFableETS(RFableModel):
             allow_xreg=False,
             label=label,
             formula=formula,
+            conditioning=conditioning,
             **kwargs,
         )
         self.error = error
@@ -192,6 +215,8 @@ class RFableARIMA(RFableModel):
         Name used to identify the model's forecasts.
     formula : str | None
         Optional formula selecting the target and regressors.
+    conditioning : dict | None
+        Optional model-owned conditioning configuration.
     """
 
     _handles_missing_values = True
@@ -211,6 +236,7 @@ class RFableARIMA(RFableModel):
         index: str = "auto",
         label: str | None = None,
         formula: str | None = None,
+        conditioning: dict | None = None,
         **kwargs,
     ):
         if not isinstance(seasonal, bool):
@@ -243,6 +269,7 @@ class RFableARIMA(RFableModel):
             allow_xreg=xreg is not None,
             label=label,
             formula=formula,
+            conditioning=conditioning,
             **kwargs,
         )
         self.p = p

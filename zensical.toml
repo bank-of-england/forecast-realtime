@@ -4,25 +4,22 @@ site_description = "Use forecast-realtime for running forecasting models in real
 site_author = "Bank of England"
 copyright = "Copyright &copy; 2026 Bank of England"
 
-# Set the public documentation URL after deployment.
-# site_url = "https://www.example.com/"
-
-# Set repository links after the GitHub repository becomes public.
-# repo_url = "https://github.com/bank-of-england/forecast-realtime"
-# repo_name = "bank-of-england/forecast-realtime"
-# edit_uri = "edit/main/docs/"
+site_url = "https://bank-of-england.github.io/forecast-realtime/"
+repo_url = "https://github.com/bank-of-england/forecast-realtime"
+repo_name = "bank-of-england/forecast-realtime"
+edit_uri = "edit/main/docs/"
 
 nav = [
   { "Home" = "index.md" },
   { "API Reference" = "api.md" },
   { "Guides" = [
+    { "Importing data" = "importing_data.md" },
     { "Usage" = "usage.md" },
     { "Models" = "models.md" },
     { "Forecast trees" = "forecast_tree.md" },
     { "Adding a model" = "adding_a_model.md" },
     { "Forecasting strategy" = "forecasting_strategy.md" },
     { "Dummy strategy" = "dummies_strategy.md" },
-    { "Input metric transformations" = "input_metric_transformation_plan.md" },
   ] },
   { "Examples" = [
     { "Demo models" = "notebooks/demo_models.md" },

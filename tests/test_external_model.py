@@ -66,6 +66,10 @@ class NoOutputExternalModel(FakeExternalModel):
             super()._run(cmd)
 
 
+class ConditioningExternalModel(FakeExternalModel):
+    _supports_target_conditioning = True
+
+
 class OutputVariantExternalModel(FakeExternalModel):
     """Fake process whose forecast output can exercise validation failures."""
 
@@ -120,6 +124,7 @@ class TestCacheDirIsolation:
         model.fit(quarterly_data)
 
         assert model.cache_dir != first
+        assert not first.exists()
 
     def test_deepcopies_do_not_share_a_directory(self):
         """RealTimeModel deep-copies the model for every vintage."""
@@ -208,7 +213,7 @@ class TestParallelFits:
 
 class TestExternalContracts:
     def test_forecast_conditioning_y_is_written_to_cache(self, quarterly_data):
-        model = FakeExternalModel("dummy.R")
+        model = ConditioningExternalModel("dummy.R")
         model.fit(quarterly_data)
         future_dates = pd.date_range(
             quarterly_data.index[-1] + pd.offsets.QuarterEnd(), periods=2, freq="QE"

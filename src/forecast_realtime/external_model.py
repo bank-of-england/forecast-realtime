@@ -106,6 +106,8 @@ class ExternalModel(ForecastModel):
     subprocess_timeout : float | None
         Maximum number of seconds allowed for an external process. ``None``
         disables the timeout.
+    conditioning : dict | None
+        Optional model-owned conditioning configuration.
 
     Examples
     --------
@@ -125,6 +127,7 @@ class ExternalModel(ForecastModel):
         formula: str | None = None,
         data_transformation: dict[str, str] | None = None,
         subprocess_timeout: float | None = None,
+        conditioning: dict | None = None,
         **params,
     ):
         if debug not in (None, "fit", "forecast"):
@@ -149,6 +152,7 @@ class ExternalModel(ForecastModel):
             label=label,
             formula=formula,
             data_transformation=data_transformation,
+            conditioning=conditioning,
         )
         self.script = str(script)
         self.debug = debug
@@ -158,8 +162,23 @@ class ExternalModel(ForecastModel):
 
     def _new_cache_dir(self) -> None:
         """Create the temporary cache directory for this model instance."""
+        if getattr(self, "_owns_tmpdir", False):
+            self._tmpdir.cleanup()
         self._tmpdir = tempfile.TemporaryDirectory()
+        self._owns_tmpdir = True
         self.cache_dir = Path(self._tmpdir.name)
+
+    def __getstate__(self) -> dict:
+        """Return copy state without transferring cache-directory ownership."""
+        state = self.__dict__.copy()
+        state["_owns_tmpdir"] = False
+        return state
+
+    def _commit_fit(self, candidate: "ExternalModel") -> None:
+        """Publish a fit after explicitly cleaning the superseded cache."""
+        if getattr(self, "_owns_tmpdir", False):
+            self._tmpdir.cleanup()
+        super()._commit_fit(candidate)
 
     @property
     def params_path(self) -> str:
@@ -482,6 +501,8 @@ class MATLABModel(ExternalModel):
         Optional model-owned raw-input transformation configuration.
     subprocess_timeout : float | None
         Maximum number of seconds allowed for the MATLAB process.
+    conditioning : dict | None
+        Optional model-owned conditioning configuration.
     """
 
     _RUNNER_DIR = str(Path(__file__).parent / "runners")
@@ -495,6 +516,7 @@ class MATLABModel(ExternalModel):
         formula: str | None = None,
         data_transformation: dict[str, str] | None = None,
         subprocess_timeout: float | None = None,
+        conditioning: dict | None = None,
         **params,
     ):
         super().__init__(
@@ -504,6 +526,7 @@ class MATLABModel(ExternalModel):
             formula=formula,
             data_transformation=data_transformation,
             subprocess_timeout=subprocess_timeout,
+            conditioning=conditioning,
             **params,
         )
         self._script_dir = str(Path(script).resolve().parent)

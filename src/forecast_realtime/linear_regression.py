@@ -37,6 +37,8 @@ class LinearRegression(ForecastModel):
         Whether to remove rows containing missing values before fitting.
     align_start_dates : bool
         Whether to align the starts of the target and regressor series.
+    conditioning : dict | None
+        Optional model-owned conditioning configuration.
     """
 
     _handles_mixed_frequencies = False
@@ -53,6 +55,7 @@ class LinearRegression(ForecastModel):
         data_transformation: dict[str, str] | None = None,
         drop_nans: bool = False,
         align_start_dates: bool = True,
+        conditioning: dict | None = None,
     ):
         label = label if label is not None else self.__class__.__name__
         super().__init__(
@@ -60,6 +63,7 @@ class LinearRegression(ForecastModel):
             formula=formula,
             data_transformation=data_transformation,
             align_start_dates=align_start_dates,
+            conditioning=conditioning,
         )
         self.fit_intercept = fit_intercept
         self.model = None

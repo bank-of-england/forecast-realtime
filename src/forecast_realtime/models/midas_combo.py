@@ -36,6 +36,8 @@ class ForecastMIDASCombo(ForecastModel):
         Whether to aggregate decomposition components. Default is ``False``.
     data_transformation : dict[str, str] | None
         Optional model-owned raw-input transformation configuration.
+    conditioning : dict | None
+        Optional model-owned conditioning configuration.
     """
 
     _handles_mixed_frequencies = True
@@ -52,12 +54,14 @@ class ForecastMIDASCombo(ForecastModel):
         formula: str | None = None,
         aggregate_decomp: bool | None = False,
         data_transformation: dict[str, str] | None = None,
+        conditioning: dict | None = None,
     ) -> None:
 
         super().__init__(
             label=label,
             formula=formula,
             data_transformation=data_transformation,
+            conditioning=conditioning,
         )
         if not isinstance(combo_specs, ComboSpec):
             raise TypeError("combo_specs must be a ComboSpec instance")

@@ -66,20 +66,35 @@ class Formula:
         if y is None:
             return None
 
-        missing = [column for column in self.y_cols if column not in y.columns]
+        self._validate_y_columns(y.columns)
+        return y[self.y_cols]
+
+    def _validate_y_columns(self, columns) -> None:
+        """Check target names without materialising a frame."""
+        missing = [column for column in self.y_cols if column not in columns]
         if missing:
             if len(self.y_cols) == 1:
                 message = (
                     f"Formula y column '{self.y_cols[0]}' not found. "
-                    f"Available columns: {list(y.columns)}"
+                    f"Available columns: {list(columns)}"
                 )
             else:
                 message = (
                     f"Formula y columns {missing} not found. "
-                    f"Available columns: {list(y.columns)}"
+                    f"Available columns: {list(columns)}"
                 )
             raise ValueError(message)
-        return y[self.y_cols]
+
+    def input_columns(self, X_columns=None):
+        """Select raw input names in formula order, deferring generated design terms."""
+        selected_X = (
+            None
+            if X_columns is None
+            else list(X_columns)
+            if self.has_wildcard
+            else [column for column in self.X_cols if column in X_columns]
+        )
+        return list(self.y_cols), selected_X
 
     def extract_available_inputs(
         self, y: pd.DataFrame, X: pd.DataFrame | None
@@ -90,11 +105,8 @@ class Formula:
         left for :meth:`extract_X` to validate once the full design exists.
         """
         y = self.extract_y(y)
-        if X is None or self.has_wildcard:
-            return y, X
-
-        available_columns = [column for column in self.X_cols if column in X.columns]
-        return y, X[available_columns]
+        _, X_columns = self.input_columns(X.columns if X is not None else None)
+        return y, X[X_columns] if X is not None else None
 
     def extract_X(self, X: pd.DataFrame | None) -> pd.DataFrame | None:
         """Select X column(s) from DataFrame, expanding wildcards if needed.

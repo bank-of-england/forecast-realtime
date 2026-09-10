@@ -1,12 +1,6 @@
-"""Tests for the MIDAS-nowcast -> BVAR tree in ``examples/midas_bvar_tree.py``.
+"""Tests for the packaged MIDAS-nowcast -> BVAR example tree."""
 
-``ConditionalBVAR`` is example code rather than a packaged model, so it is
-loaded from the script by path (as ``conftest.py`` does for ``sample_data.py``).
-"""
-
-import importlib.util
 import warnings
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -16,18 +10,14 @@ from forecast_evaluation import compute_accuracy_statistics
 pytest.importorskip("bvar")
 pytest.importorskip("nowcast_midas")
 
+from forecast_realtime.examples.midas_bvar_tree import ConditionalBVAR
 from forecast_realtime.forecast_tree import ForecastTree, TreeNode
 from forecast_realtime.models import ForecastBVAR, ForecastMIDAS
 
-_EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "midas_bvar_tree.py"
-_spec = importlib.util.spec_from_file_location("midas_bvar_tree", _EXAMPLE)
-_example = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_example)
-
-ConditionalBVAR = _example.ConditionalBVAR
-
 STEPS = 4
 HORIZONS = [0, 1, 2, 3]
+
+pytestmark = pytest.mark.usefixtures("bvar_python_kernel")
 
 
 def _make_data(seed=0, n_quarters=60):
@@ -71,6 +61,7 @@ def _make_leaves():
 def _make_bvar(cls=ConditionalBVAR, **kwargs):
     return cls(
         n_lags=2,
+        nb_restart=0,
         mode_only=True,
         progressbar=False,
         n_samples=200,
@@ -87,11 +78,13 @@ def _make_tree(**bvar_kwargs):
     return ForecastTree(spec=spec, label="midas_bvar")
 
 
-def test_tree_forecast_has_bvar_shape():
-    """The tree returns the BVAR's multivariate forecast."""
+def test_conditional_bvar_tree_forecast_integration():
+    """The tree routes MIDAS nowcasts into a full-sample BVAR forecast."""
     y, X = _make_data()
     tree = _make_tree()
     tree.fit(y, X=X)
+
+    pd.testing.assert_frame_equal(tree.spec.transform.y, y)
 
     forecast = tree.forecast(steps=STEPS, X=X)
 
@@ -99,14 +92,6 @@ def test_tree_forecast_has_bvar_shape():
     assert len(forecast) == STEPS
     assert isinstance(forecast.index, pd.DatetimeIndex)
     assert forecast.notna().all().all()
-
-
-def test_conditioning_takes_values_from_midas_nowcasts():
-    """Each MIDAS nowcast constrains its own variable at the matching date."""
-    y, X = _make_data()
-    tree = _make_tree()
-    tree.fit(y, X=X)
-    tree.forecast(steps=STEPS, X=X)
 
     transform = tree.spec.transform
     conditioning = transform.conditioning_
@@ -127,6 +112,23 @@ def test_conditioning_takes_values_from_midas_nowcasts():
 
     # Two leaves x the three nowcast horizons that fall beyond the fit sample.
     assert overlaps == 6
+
+    constrained = conditioning.notna().to_numpy()
+    assert constrained.any()
+
+    plain = _make_bvar(cls=ForecastBVAR)
+    plain.fit(y)
+    conditional_forecast = plain.forecast(steps=STEPS, y=conditioning)
+    unconditional_forecast = plain.forecast(steps=STEPS)
+
+    pd.testing.assert_frame_equal(forecast, conditional_forecast, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(
+        forecast.to_numpy()[constrained], conditioning.to_numpy()[constrained]
+    )
+
+    # Guards against the conditioning silently being a no-op.
+    assert not np.allclose(forecast.to_numpy(), unconditional_forecast.to_numpy())
+    assert conditioning.iloc[-1].isna().all()
 
 
 def test_realtime_tree_matches_midas_at_constrained_horizon(forecast_data):
@@ -253,55 +255,6 @@ def test_pop_conditioning_matches_the_bvar_fit_scale():
         pd.testing.assert_series_equal(
             transform.conditioning_[variable], expected, check_names=False
         )
-
-
-def test_matches_bvar_conditioned_directly():
-    """Routing children through X equals conditioning a plain BVAR through y."""
-    y, X = _make_data()
-    tree = _make_tree()
-    tree.fit(y, X=X)
-    tree_forecast = tree.forecast(steps=STEPS, X=X)
-
-    conditioning = tree.spec.transform.conditioning_
-
-    plain = _make_bvar(cls=ForecastBVAR)
-    plain.fit(y)
-    plain_forecast = plain.forecast(steps=STEPS, y=conditioning)
-
-    pd.testing.assert_frame_equal(tree_forecast, plain_forecast, rtol=1e-5, atol=1e-5)
-
-
-def test_conditioning_binds_and_changes_the_forecast():
-    """Constrained entries are reproduced exactly, and they move the BVAR path."""
-    y, X = _make_data()
-    tree = _make_tree()
-    tree.fit(y, X=X)
-    forecast = tree.forecast(steps=STEPS, X=X)
-
-    conditioning = tree.spec.transform.conditioning_
-    constrained = conditioning.notna().to_numpy()
-    assert constrained.any()
-
-    np.testing.assert_allclose(
-        forecast.to_numpy()[constrained], conditioning.to_numpy()[constrained]
-    )
-
-    unconditional = _make_bvar(cls=ForecastBVAR)
-    unconditional.fit(y)
-    unconditional_forecast = unconditional.forecast(steps=STEPS)
-
-    # Guards against the conditioning silently being a no-op.
-    assert not np.allclose(forecast.to_numpy(), unconditional_forecast.to_numpy())
-    assert conditioning.iloc[-1].isna().all()
-
-
-def test_bvar_is_fitted_on_the_full_sample():
-    """Leaf fitted values must not truncate the BVAR's estimation sample."""
-    y, X = _make_data()
-    tree = _make_tree()
-    tree.fit(y, X=X)
-
-    pd.testing.assert_frame_equal(tree.spec.transform.y, y)
 
 
 def test_nowcast_of_unobserved_quarter_conditions_the_bvar():
