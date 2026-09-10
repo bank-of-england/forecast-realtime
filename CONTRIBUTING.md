@@ -29,8 +29,8 @@ pre-commit install
 
 The hooks run:
 
-- Ruff linting, with automatic fixes where possible
-- Ruff formatting
+- Ruff linting
+- Ruff formatting checks, including Python blocks in Markdown
 - API documentation generation in `docs/api.md`
 - Notebook documentation freshness checks
 - NumPy-style docstring checks with `pydoclint`

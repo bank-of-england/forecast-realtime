@@ -120,15 +120,15 @@ horizon shared while allowing each specification to be compared fairly:
 
 ```python
 models = [
-  rt.models.ForecastBVAR(label="baseline", conditioning={}),
-  rt.models.ForecastBVAR(
-    label="source_a_first_period",
-    conditioning={"y": {"gdp": {"source": "A", "periods": 1}}},
-  ),
-  rt.models.ForecastBVAR(
-    label="source_b_first_three_periods",
-    conditioning={"y": {"gdp": {"source": "B", "periods": 3}}},
-  ),
+    rt.models.ForecastBVAR(label="baseline", conditioning={}),
+    rt.models.ForecastBVAR(
+        label="source_a_first_period",
+        conditioning={"y": {"gdp": {"source": "A", "periods": 1}}},
+    ),
+    rt.models.ForecastBVAR(
+        label="source_b_first_three_periods",
+        conditioning={"y": {"gdp": {"source": "B", "periods": 3}}},
+    ),
 ]
 rt_model = rt.RealTimeModel(data=forecast_data, models=models)
 rt_model.forecast(y_variables=["gdp"], steps=4)
