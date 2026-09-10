@@ -104,13 +104,62 @@ rt_model.forecast(
     data_transformation={"cpisa": "levels", "oil": "levels", "fx": "levels"},
     steps=11,
     X_variables=["oil", "fx"],
-    X_steps_ahead={"oil": 11, "fx": 11},
+    X_steps_ahead={"oil": 10, "fx": 10},
     X_sources={"oil": "futures", "fx": "consensus"},
 )
 ```
 
 Conditioning (`y_*`) and regressor paths (`X_*`) can be used together: the `X`
 arguments feed the design matrix, while the `y` arguments condition the target.
+
+### Model-owned conditioning
+
+When several models in one real-time run need different conditioning sources,
+put the policy on each model. This keeps the source data, vintages and forecast
+horizon shared while allowing each specification to be compared fairly:
+
+```python
+models = [
+  rt.models.ForecastBVAR(label="baseline", conditioning={}),
+  rt.models.ForecastBVAR(
+    label="source_a_first_period",
+    conditioning={"y": {"gdp": {"source": "A", "periods": 1}}},
+  ),
+  rt.models.ForecastBVAR(
+    label="source_b_first_three_periods",
+    conditioning={"y": {"gdp": {"source": "B", "periods": 3}}},
+  ),
+]
+rt_model = rt.RealTimeModel(data=forecast_data, models=models)
+rt_model.forecast(y_variables=["gdp"], steps=4)
+```
+
+Here `periods` is a positive count: `1` constrains the first forecast period
+and `3` constrains the first three. A model setting of `None` (or an omitted
+setting) inherits the run-level `y_sources`/`X_sources` fallback. A non-empty
+setting replaces that fallback as a whole; it is not merged by role or
+variable. An explicit `{}` disables external conditioning for both roles.
+Omitting a role from a replacement policy also selects no external source for
+that role, while ordinary published observations, future X availability and
+the configured X imputation remain available.
+
+Conditioning does not introduce per-model vintage ranges or output horizons:
+those remain shared run controls.
+
+The legacy run-level arguments retain their inclusive, zero-based meaning:
+`y_steps_ahead={"gdp": 0}` selects one period and `2` selects three. An omitted
+mapping and an explicit empty mapping are distinct, including for X paths, so
+do not collapse them with truthiness. A legacy horizon of `None` still selects
+its source without imposing an explicit target constraint.
+
+Conditioning policies select source paths only during realtime orchestration.
+Direct `model.forecast(y=..., X=...)` and `model.predict(...)` calls continue to
+use the frames supplied by the caller: they do not look up sources or
+clip those frames with the model's policy. Models that cannot enforce target
+conditioning reject an explicit future y constraint; historical rows, empty
+frames and all-NaN future paths do not constitute a constraint. See
+[Adding a New Model](adding_a_model.md) for the author contract and context
+migration.
 
 ## Forecast horizons
 
@@ -122,7 +171,8 @@ arguments feed the design matrix, while the `y` arguments condition the target.
 - `first_forecast_horizon` (an int, or a per-variable dict) is deprecated. It
   is retained only as a calendar-relative fitting/output cutoff for
   compatibility; omit it for the default latest-target fit.
-- Conditioning and regressor horizons must not exceed `steps`.
+- Legacy conditioning and regressor horizons must be less than `steps`;
+  model-owned `periods` must not exceed `steps`.
 
 ## Data transformations and level reconstruction
 

@@ -233,6 +233,34 @@ an unmatched variable, or a horizon beyond them — stays `NaN` and is left
 unconstrained. `conditioning_steps` narrows this further, constraining only the
 first *n* horizons (above, the nowcast quarter only).
 
+### Conditioning on trees
+
+A conditioning policy belongs on the `ForecastTree` as a whole. External target
+conditioning is routed to the root only:
+
+- the root transform must be a `ForecastModel` with
+  `_supports_target_conditioning = True`; a callable root or a supporting child
+  does not provide the capability;
+- target entries are validated against the root model's target requirements;
+  leaves and intermediate nodes receive published observations but not the
+  tree's explicit target constraints;
+- every contained model must leave `conditioning` as `None`, including the
+  root transform, leaves and nested transforms. An explicit `{}` is still a
+  contained policy and is rejected;
+- tree-level X policies select raw source inputs required by consumers. They do
+  not select or replace component-generated regressors.
+
+Nested target routing and arbitrary selection of a supporting child are not
+supported. A tree with a regression root therefore rejects target conditioning
+even if one of its children is a supporting BVAR. Direct tree calls use the
+same root-only routing rule for explicit future y paths.
+
+The `ConditionalBVAR` example has a separate `conditioning_steps` setting. It
+clips paths assembled from child nowcasts; it is not a source policy.
+Combining it with an explicit target constraint that extends beyond that
+limit is rejected rather than silently shortening the explicit constraint.
+Child-only conditioning behaviour is otherwise unchanged.
+
 The paths the BVAR actually used are kept for inspection:
 
 ```python

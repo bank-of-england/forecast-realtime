@@ -66,6 +66,8 @@ def test_model_owned_transformation_survives_copy_and_pickle():
 class _RecordingModel(ForecastModel):
     """Concrete subclass that records exactly what ``_fit``/``_forecast`` receive."""
 
+    _supports_target_conditioning = True
+
     def _fit(self, y, X=None, **kwargs):
         self.received_fit_y = y.copy()
         self.received_fit_X = X.copy() if X is not None else None
@@ -915,12 +917,15 @@ def test_ols_forecast_rows_use_fitted_target_boundary_with_conditioning(
         index=pd.date_range("2020-04-30", periods=2, freq="ME"),
     )
 
-    model.forecast(steps=2, X=X_future, y=conditioning)
+    with pytest.raises(ValueError, match="does not support target conditioning"):
+        model.forecast(steps=2, X=X_future, y=conditioning)
+
+    model.forecast(steps=2, X=X_future)
 
     assert model.last_y_fit_date == pd.Timestamp("2020-03-31")
     assert list(
         model._select_forecast_rows(
-            pd.concat([X, X_future]), model.last_y_fit_date, 2, conditioning
+            pd.concat([X, X_future]), model.last_y_fit_date, 2, None
         ).index
     ) == list(X_future.index)
 
@@ -959,7 +964,10 @@ def test_tree_forecast_rows_use_fitted_target_boundary_with_conditioning(
         index=pd.date_range("2020-04-30", periods=2, freq="ME"),
     )
 
-    model.forecast(steps=2, X=X_future, y=conditioning)
+    with pytest.raises(ValueError, match="does not support target conditioning"):
+        model.forecast(steps=2, X=X_future, y=conditioning)
+
+    model.forecast(steps=2, X=X_future)
 
     assert model.last_y_fit_date == pd.Timestamp("2020-03-31")
     if forecast_strategy == "direct":

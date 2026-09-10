@@ -13,6 +13,8 @@ from forecast_realtime.forecast_tree import ForecastTree, TreeNode
 class _RecordingModel(ForecastModel):
     """Small pickleable model whose preparation inputs remain observable."""
 
+    _supports_target_conditioning = True
+
     fit_calls = []
     prepare_calls = []
 

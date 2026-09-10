@@ -64,6 +64,11 @@ def __init__(
     the metric used by this model. It takes precedence over the call-level
     `data_transformation` mapping. Forecasts use the same metric as their target
     input; `RealTimeModel` reconstructs levels where possible.
+- **`conditioning`**: optional model-owned conditioning policy. Each `y` or `X`
+    entry names a source and a positive `periods` count. `None` inherits the
+    run-level fallback; a non-empty mapping replaces it; `{}` disables
+    externally supplied conditioning. The policy affects realtime source
+    selection only, not direct calls with explicit `y` and `X` frames.
 
 > **Lag features are not constructor parameters.** `y_lags` and `X_lags` are passed to `ForecastModel.fit()` (or `RealTimeModel.forecast()`), which builds the lagged design matrix before calling `_fit()`. Do not handle lag construction in `__init__` or `_fit()`.
 
@@ -157,6 +162,42 @@ pd.DataFrame(
 ```
 
 The base class validates the returned shape and the number of target columns. A returned DataFrame must supply a `DatetimeIndex`; array-like results receive the standard forecast dates when the base class wraps them.
+
+### Target conditioning capability
+
+Target conditioning is an explicit model capability. Set
+`_supports_target_conditioning = True` only when the model's forecasting logic
+actually enforces non-missing future values supplied through `y`; accepting a
+`y` parameter is not enough. The base value is `False`, so unsupported models
+reject explicit future target constraints in both realtime and direct
+forecast/predict calls. Historical values, empty frames and all-NaN future
+paths remain valid inputs.
+
+This declaration is required for custom and external models as well as Python
+models. External wrappers must forward the public `conditioning` constructor
+argument to `ForecastModel`, but must not pass it as an estimator or script
+parameter. Source policies do not create constrained forecasting for a
+model that has not opted in.
+
+### `ForecastContext` migration
+
+Public `forecast()` and `predict()` overrides that inspect `ForecastContext`
+must keep explicit constraints and published observations separate:
+
+- `context.y_conditioning` contains only explicit caller-supplied target
+    constraints, with `y_conditioning_input_metrics` for their input units.
+- `context.y_published` contains published target observations retained for the
+    forecast, with `y_published_input_metrics` for their input units.
+
+Use `y_published` when an override needs ordinary published observations. Do
+not read those observations from `y_conditioning` or merge the two frames at
+the context boundary; the preparation pipeline combines them after validation.
+This preserves explicit constraints even when a later transformation produces
+NaNs.
+
+The package's generated API reference documents the Python signatures. The
+external ecosystem's API/skill manifest is maintained outside this repository;
+update it as part of the release handoff rather than adding a local copy here.
 
 ---
 

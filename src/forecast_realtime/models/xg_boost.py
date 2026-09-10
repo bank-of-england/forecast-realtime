@@ -34,6 +34,8 @@ class XGBoost(TreeRegression):
         Optional patsy-style formula selecting the regressors.
     data_transformation : dict[str, str] | None
         Optional model-owned raw-input transformation configuration.
+    conditioning : dict | None
+        Optional model-owned conditioning configuration.
     """
 
     def __init__(
@@ -50,6 +52,7 @@ class XGBoost(TreeRegression):
         label: str | None = None,
         formula: str | None = None,
         data_transformation: dict[str, str] | None = None,
+        conditioning: dict | None = None,
     ):
         super().__init__(
             forecast_strategy=forecast_strategy,
@@ -58,6 +61,7 @@ class XGBoost(TreeRegression):
             label=label,
             formula=formula,
             data_transformation=data_transformation,
+            conditioning=conditioning,
         )
         self.n_estimators = n_estimators
         self.max_depth = max_depth

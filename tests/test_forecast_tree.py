@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from forecast_realtime.forecast_model import ForecastModel
+from forecast_realtime.forecast_model import ForecastContext, ForecastModel
 from forecast_realtime.forecast_tree import ForecastTree, TreeNode
 
 
@@ -61,6 +61,8 @@ class RecordingStubForecastModel(ForecastModel):
 
 class RecordingTransformModel(ForecastModel):
     """ForecastModel transform that records fit/forecast inputs."""
+
+    _supports_target_conditioning = True
 
     def __init__(self, label, data_transformation=None):
         super().__init__(label=label, data_transformation=data_transformation)
@@ -136,6 +138,8 @@ class FitKwargsSpyModel(ForecastModel):
 
 class RecordingPipelineLeaf(ForecastModel):
     """Leaf that records the (already-transformed) y/X it receives."""
+
+    _supports_target_conditioning = True
 
     def __init__(self, label, data_transformation=None):
         super().__init__(label=label, data_transformation=data_transformation)
@@ -1374,8 +1378,17 @@ def test_forecasttree_leaf_forecast_transforms_history_and_conditioning_once():
     tree = ForecastTree(spec=spec)
 
     tree.fit(y_hist, frequency="M", data_transformation={"target": "levels"})
-    tree.forecast(
-        steps=2, y=y_cond, frequency="M", data_transformation={"target": "levels"}
+    context = ForecastContext(
+        y_history=y_hist,
+        X_history=None,
+        y_published=y_cond,
+        forecast_origin=y_hist.index[-1],
+    )
+    tree.predict(
+        context,
+        steps=2,
+        frequency="M",
+        data_transformation={"target": "levels"},
     )
 
     forecast_y = diff_leaf.forecast_calls[0]["y"]

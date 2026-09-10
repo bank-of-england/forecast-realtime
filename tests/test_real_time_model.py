@@ -512,6 +512,8 @@ def test_nowcast_overlap_uses_forecast_as_the_differencing_base():
     """
 
     class ConditioningEchoModel(ForecastModel):
+        _supports_target_conditioning = True
+
         def _fit(self, y, X=None, **kwargs):
             return self
 
@@ -2205,6 +2207,7 @@ class _SpyModel(ForecastModel):
     captured_y: list = []
     captured_X: list = []
     captured_fit_y: list = []
+    _supports_target_conditioning = True
 
     def _fit(self, y, X=None, **kwargs):
         _SpyModel.captured_fit_y.append(y.copy())
@@ -2220,11 +2223,15 @@ class _SpyModel(ForecastModel):
 
 
 @pytest.mark.parametrize(
-    "conditioning_source, expect_conditioning_applied",
-    [("nowcast", True), ("other_source", False)],
+    "conditioning_source, expected_error, expect_conditioning_applied, known_source",
+    [
+        ("nowcast", None, True, False),
+        ("other_source", "unknown conditioning source", False, False),
+        ("other_source", None, False, True),
+    ],
 )
 def test_y_conditioning_forecast_source_filter(
-    conditioning_source, expect_conditioning_applied
+    conditioning_source, expected_error, expect_conditioning_applied, known_source
 ):
     """``y_sources`` only lets matching-source conditioning values reach the
     model; a mismatched source is filtered out and conditioning is skipped."""
@@ -2251,6 +2258,14 @@ def test_y_conditioning_forecast_source_filter(
             "forecast_horizon": [0, 1],
         }
     )
+    if known_source:
+        conditioning = pd.concat(
+            [
+                conditioning,
+                conditioning.iloc[[0]].assign(variable="other", source="nowcast"),
+            ],
+            ignore_index=True,
+        )
     data = fe.NowcastData(
         outturns_data=outturns,
         forecasts_data=conditioning,
@@ -2261,7 +2276,7 @@ def test_y_conditioning_forecast_source_filter(
     _SpyModel.captured_X = []
     model = rt.RealTimeModel(data=data, models=_SpyModel())
 
-    model.forecast(
+    forecast = dict(
         y_variables=["target"],
         y_steps_ahead={"target": 1},
         y_sources={"target": "nowcast"},
@@ -2271,6 +2286,11 @@ def test_y_conditioning_forecast_source_filter(
         first_vintage=str(vintage.date()),
         last_vintage=str(vintage.date()),
     )
+    if expected_error is not None:
+        with pytest.raises(ValueError, match=expected_error):
+            model.forecast(**forecast)
+        return
+    model.forecast(**forecast)
 
     seen_y = _SpyModel.captured_y[0]
     conditioning_reached_model = seen_y["target"].isin([50.0, 60.0]).any()
@@ -2278,11 +2298,15 @@ def test_y_conditioning_forecast_source_filter(
 
 
 @pytest.mark.parametrize(
-    "conditioning_source, expect_conditioning_applied",
-    [("nowcast_source", True), ("other_source", False)],
+    "conditioning_source, expected_error, expect_conditioning_applied, known_source",
+    [
+        ("nowcast_source", None, True, False),
+        ("other_source", "unknown conditioning source", False, False),
+        ("other_source", None, False, True),
+    ],
 )
 def test_X_conditioning_forecast_source_filter(
-    conditioning_source, expect_conditioning_applied
+    conditioning_source, expected_error, expect_conditioning_applied, known_source
 ):
     """``X_sources`` only lets matching-source regressor forecasts reach the
     model; a mismatched source is filtered out and conditioning is skipped."""
@@ -2309,13 +2333,21 @@ def test_X_conditioning_forecast_source_filter(
             "forecast_horizon": [0, 1],
         }
     )
+    if known_source:
+        conditioning = pd.concat(
+            [
+                conditioning,
+                conditioning.iloc[[0]].assign(variable="target", source="nowcast_source"),
+            ],
+            ignore_index=True,
+        )
     data.add_forecasts(conditioning, metric="levels")
 
     _SpyModel.captured_y = []
     _SpyModel.captured_X = []
     model = rt.RealTimeModel(data=data, models=_SpyModel())
 
-    model.forecast(
+    forecast = dict(
         y_variables=["target"],
         X_variables=["driver"],
         X_steps_ahead={"driver": 1},
@@ -2326,6 +2358,11 @@ def test_X_conditioning_forecast_source_filter(
         first_vintage=str(vintage.date()),
         last_vintage=str(vintage.date()),
     )
+    if expected_error is not None:
+        with pytest.raises(ValueError, match=expected_error):
+            model.forecast(**forecast)
+        return
+    model.forecast(**forecast)
 
     seen_X = _SpyModel.captured_X[0]
     conditioning_reached_model = seen_X["driver"].isin([500.0, 600.0]).any()
@@ -3400,6 +3437,7 @@ class _PipelineSpyModel(ForecastModel):
     """
 
     captured: dict = {}
+    _supports_target_conditioning = True
 
     def _fit(self, y, X=None, **kwargs):
         return self

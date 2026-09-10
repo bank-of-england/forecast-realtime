@@ -116,6 +116,8 @@ class ModelData:
         X_input_metrics=None,
         y_conditioning_input_metrics=None,
         X_conditioning_input_metrics=None,
+        y_published=None,
+        y_published_input_metrics=None,
     ):
         """Copy direct inputs without inventing release dates or dropping NaNs."""
         frames = {
@@ -123,6 +125,7 @@ class ModelData:
             ("X", "history"): (X, X_input_metrics),
             ("y", "conditioning"): (y_conditioning, y_conditioning_input_metrics),
             ("X", "conditioning"): (X_conditioning, X_conditioning_input_metrics),
+            ("y", "published"): (y_published, y_published_input_metrics),
         }
         paths = {}
         for (role, kind), (frame, metrics) in frames.items():
@@ -134,8 +137,7 @@ class ModelData:
                 list(frame.columns)
                 if kind == "history"
                 else list(metrics or frame.columns),
-                f"{role}_{'conditioning_' if kind == 'conditioning' else ''}"
-                "input_metrics",
+                f"{role}_{kind + '_' if kind != 'history' else ''}input_metrics",
             )
             series = []
             for column in frame.columns:
@@ -487,6 +489,16 @@ class ModelData:
         )
         return self._from_paths(paths)
 
+    def without_target_conditioning(self):
+        """Retain published observations and all non-target paths for tree children."""
+        return self._replace(
+            layouts={
+                key: value
+                for key, value in self._layouts.items()
+                if key != ("y", "conditioning")
+            }
+        )
+
     def with_input_metadata(
         self, source, *, fields=("source", "owner", "metric", "frequency")
     ):
@@ -671,6 +683,7 @@ class ModelData:
             ("context.X_history", context.X_history),
             ("y", context.y_conditioning),
             ("X", context.X_conditioning),
+            ("context.y_published", context.y_published),
         ):
             if frame is not None or role == "context.y_history":
                 cls.validate_frame(frame, role)
@@ -679,6 +692,12 @@ class ModelData:
             context.X_history,
             y_conditioning=context.y_conditioning,
             X_conditioning=context.X_conditioning,
+            y_published=context.y_published,
+            y_published_input_metrics=(
+                context.y_published_input_metrics
+                if context.y_published_input_metrics is not None
+                else fitted.metrics("y")
+            ),
             frequencies={**fitted.frequencies("y"), **fitted.frequencies("X")},
             y_input_metrics=fitted.metrics("y"),
             X_input_metrics=fitted.metrics("X"),
@@ -693,38 +712,6 @@ class ModelData:
                 else fitted.metrics("X")
             ),
         )
-
-    def for_context(self):
-        """Expose published and supplied future values in one labelled source unit."""
-        if not any(kind == "published" for _, kind in self._layouts):
-            return self
-        paths = dict(self._paths())
-        for role in ("y", "X"):
-            if (role, "published") not in paths:
-                continue
-            index, columns, published = paths.pop((role, "published"))
-            supplied_index, _, supplied = paths.get(
-                (role, "conditioning"), (index, columns, [])
-            )
-            index = index.union(supplied_index).sort_values()
-            published = {entry["variable"]: values for entry, values in published}
-            supplied = {entry["variable"]: (entry, values) for entry, values in supplied}
-            output = []
-            for entry, values in paths[role, "history"][2]:
-                variable = entry["variable"]
-                source, future = supplied.get(variable, (entry, None))
-                base = _overlay_values(values, published.get(variable))
-                trajectory = _transform_trajectory(
-                    base,
-                    future,
-                    source["metric"],
-                    entry["metric"],
-                    entry["frequency"],
-                    future_input_metric=source["metric"],
-                )
-                output.append((source, trajectory.reindex(index)))
-            paths[role, "conditioning"] = (index, columns, output)
-        return self._from_paths(paths)
 
     def resolve_frequencies(
         self, mapping, frequency=None, *, require_calendars=False, require_step=True

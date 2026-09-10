@@ -18,18 +18,37 @@ class ConditionalBVAR(ForecastBVAR):
     conditioning_steps : int | None
         Condition on the first ``conditioning_steps`` horizons only, leaving
         later ones unconstrained. Default None (use every horizon supplied).
+    conditioning : dict | None
+        Optional model-owned conditioning configuration.
     """
 
-    def __init__(self, conditioning_steps: int | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        conditioning_steps: int | None = None,
+        conditioning: dict | None = None,
+        **kwargs,
+    ) -> None:
         if conditioning_steps is not None and (
             type(conditioning_steps) is not int or conditioning_steps < 1
         ):
             raise ValueError("conditioning_steps must be a positive integer or None")
-        super().__init__(**kwargs)
+        super().__init__(conditioning=conditioning, **kwargs)
         self.conditioning_steps = conditioning_steps
 
     def _prepare_estimation_inputs(self, y, X):
         return y, None
+
+    def _validate_explicit_target_path(self, data, forecast_origin, steps):
+        active = super()._validate_explicit_target_path(data, forecast_origin, steps)
+        if active is not None and self.conditioning_steps is not None:
+            dates = self._conditioning_dates(data, forecast_origin, steps)
+            clipped = active.loc[active.index.isin(dates[self.conditioning_steps :])]
+            if clipped.notna().any().any():
+                raise ValueError(
+                    f"Model {self.label!r}: explicit target conditioning extends "
+                    "beyond conditioning_steps and would be shortened."
+                )
+        return active
 
     def _forecast(
         self,
