@@ -91,7 +91,7 @@ def test_model_fit_failure_does_not_discard_other_models(
     ("transformation", "expected_first", "expected_last"),
     [
         ("levels", [110.0, 110.0], [110.0, 121.0, 132.0]),
-        ("pop", [0.0], [10.0, (132.0 / 121.0 - 1) * 100]),
+        ("pop", [0.0], [0.1, 132.0 / 121.0 - 1]),
     ],
 )
 def test_realtime_fitting_uses_as_of_revisions_before_transformation(

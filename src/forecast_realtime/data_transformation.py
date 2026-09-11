@@ -28,7 +28,7 @@ def difference_by_vintage(data: pd.DataFrame, logarithmic: bool = False) -> pd.D
 
 
 def growth_by_vintage(data: pd.DataFrame, periods: int = 1) -> pd.DataFrame:
-    """Return percentage growth over ``periods`` steps for each vintage."""
+    """Return fractional growth (0.1 means 10%) over steps for each vintage."""
     if not data.groupby("vintage_date").ngroups:
         raise ValueError("No objects to concatenate")
     return (

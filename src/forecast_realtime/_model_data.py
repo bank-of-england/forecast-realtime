@@ -1159,8 +1159,8 @@ def _difference_series(values: pd.Series, logarithmic: bool = False) -> pd.Serie
 
 
 def _growth_series(values: pd.Series, periods: int) -> pd.Series:
-    """Return percentage growth over ``periods`` steps."""
-    return values.pct_change(periods=periods, fill_method=None) * 100.0
+    """Return fractional growth over ``periods`` steps (0.1 means 10%)."""
+    return values.pct_change(periods=periods, fill_method=None)
 
 
 def _reconstruct_additive(last_level: float, changes: pd.Series) -> pd.Series:

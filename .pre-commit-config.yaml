@@ -6,14 +6,24 @@ repos:
         entry: ruff check
         language: system  # Use the system Python environment
         types_or: [python, pyi, jupyter]
-      - id: ruff-format-check
+      - id: ruff-format
+        name: Ruff formatting
+        entry: ruff format
+        language: system  # Use the system Python environment
+        types_or: [python, pyi, jupyter, markdown]
+      - id: ruff-check
         name: Check Ruff formatting
-        entry: ruff format --check
+        entry: ruff check --fix
         language: system  # Use the system Python environment
         types_or: [python, pyi, jupyter, markdown]
 
   - repo: local
     hooks:
+      - id: conventional-pre-commit
+        name: Check Conventional Commit
+        entry: conventional-pre-commit
+        language: system
+        stages: [commit-msg]
       - id: generate-api-docs
         name: Generate API documentation
         entry: python scripts/generate_api_docs.py
