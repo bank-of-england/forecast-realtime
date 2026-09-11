@@ -42,6 +42,11 @@ rt_model.forecast(
 `y_lags=k` appends `_y_lag1 … _y_lagk`; `X_lags` appends `col_lag1 … col_lagk`
 per regressor.
 
+Regularised models leave retained target lags unpenalised by default. Set
+`penalise_ar=True` to shrink them. `cv` accepts an integer or a
+scikit-learn-compatible splitter; to choose a penalty manually, set `cv=None`
+and provide a fixed `alpha` on the model constructor.
+
 ## Outlier dummies
 
 Pass `dummies` to add one-off **point dummies** (value `1` on a single date, `0`
@@ -67,8 +72,10 @@ rt_model.forecast(
 
 Dummies are rebuilt from the `DatetimeIndex` at both fit and forecast time (no
 imputation), follow formula selection, and appear as ordinary components in the
-decomposition. For `ForecastRidge`/`ForecastLasso`/`ForecastElasticNet` they are
-left unpenalised and unscaled. See [dummies_strategy.md](dummies_strategy.md).
+decomposition. Regularised models always leave them unpenalised. FWL CV scores
+held-out design rows in original target units, not recursive multi-step
+backtests; choose a splitter that matches the forecasting task. See
+[dummies_strategy.md](dummies_strategy.md) and [models.md](models.md).
 
 ## Regressor imputation
 
