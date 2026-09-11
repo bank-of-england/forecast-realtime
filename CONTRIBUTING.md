@@ -25,10 +25,12 @@ Install the pre-commit hooks:
 
 ```bash
 pre-commit install
+pre-commit install --hook-type commit-msg
 ```
 
 The hooks run:
 
+- Conventional Commit message checks for Release Please
 - Ruff linting
 - Ruff formatting checks, including Python blocks in Markdown
 - API documentation generation in `docs/api.md`
