@@ -490,11 +490,11 @@ def test_fit_uses_explicit_transformation_frequency_for_each_raw_column():
 
     np.testing.assert_allclose(
         model.received_fit_y.loc[pd.Timestamp("2020-03-31"), "monthly"],
-        (114.0 / 102.0 - 1) * 100,
+        114.0 / 102.0 - 1,
     )
     np.testing.assert_allclose(
         model.received_fit_y.loc[pd.Timestamp("2020-03-31"), "quarterly"],
-        (110.0 / 100.0 - 1) * 100,
+        110.0 / 100.0 - 1,
     )
 
 
@@ -585,7 +585,7 @@ def test_fit_drops_leading_nan_row_for_pop_by_default():
 
     model.fit(y, frequency="M")
 
-    np.testing.assert_allclose(model.received_fit_y["gdp"].to_numpy(), [10.0, 10.0])
+    np.testing.assert_allclose(model.received_fit_y["gdp"].to_numpy(), [0.1, 0.1])
     assert list(model.received_fit_y.index) == list(y.index[1:])
 
 
@@ -613,7 +613,7 @@ def test_fit_drops_all_leading_nan_rows_for_yoy_by_default():
     assert len(model.received_fit_y) == 1
     assert not model.received_fit_y["cpi"].isna().any()
     np.testing.assert_allclose(
-        model.received_fit_y["cpi"].iloc[0], (values[12] / values[0] - 1) * 100
+        model.received_fit_y["cpi"].iloc[0], values[12] / values[0] - 1
     )
 
 
@@ -663,7 +663,7 @@ def test_fit_yoy_monthly_missing_calendar_period_preserves_valid_first_observati
     assert not model.received_fit_y["cpi"].isna().any()
     np.testing.assert_allclose(
         model.received_fit_y["cpi"].to_numpy(),
-        [(112.0 / 100.0 - 1) * 100, (113.0 / 101.0 - 1) * 100],
+        [112.0 / 100.0 - 1, 113.0 / 101.0 - 1],
     )
 
 
@@ -686,7 +686,7 @@ def test_fit_yoy_quarterly_leading_raw_nan_drops_full_undefined_prefix():
     assert not model.received_fit_y["gdp"].isna().any()
     np.testing.assert_allclose(
         model.received_fit_y["gdp"].to_numpy(),
-        [(106.0 / 102.0 - 1) * 100, (107.0 / 103.0 - 1) * 100],
+        [106.0 / 102.0 - 1, 107.0 / 103.0 - 1],
     )
 
 
@@ -832,7 +832,7 @@ def test_forecast_uses_mixed_target_frequencies_for_conditioning():
 
     np.testing.assert_allclose(
         model.received_forecast_y.loc[pd.Timestamp("2020-04-30"), "monthly"],
-        (115.0 / 103.0 - 1) * 100,
+        115.0 / 103.0 - 1,
     )
     assert np.isnan(
         model.received_forecast_y.loc[pd.Timestamp("2020-04-30"), "quarterly"]

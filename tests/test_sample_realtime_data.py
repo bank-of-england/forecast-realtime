@@ -129,7 +129,7 @@ def test_snapshots_have_expected_structure_ranges_and_historical_inclusion():
         pop = latest_variable[latest_variable["metric"] == "pop"].set_index("date")[
             "value"
         ]
-        expected = levels.pct_change(fill_method=None).dropna() * 100.0
+        expected = levels.pct_change(fill_method=None).dropna()
 
         assert frequency in ("M", "Q")
         assert variable

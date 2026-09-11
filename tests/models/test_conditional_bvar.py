@@ -241,12 +241,7 @@ def test_pop_conditioning_matches_the_bvar_fit_scale():
     )
 
     transform = tree.spec.transform
-    expected_y = (
-        y[["gdp", "cpi"]]
-        .pct_change(fill_method=None)
-        .mul(100.0)
-        .reindex(transform.y.index)
-    )
+    expected_y = y[["gdp", "cpi"]].pct_change(fill_method=None).reindex(transform.y.index)
     pd.testing.assert_frame_equal(transform.y, expected_y)
     assert transform.native_metric_mapping() == {"gdp": "pop", "cpi": "pop"}
 
