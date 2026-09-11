@@ -9,8 +9,10 @@ from ..schemas import minimal_decomposition_schema
 from .sample_regression import sample_regression_data
 
 
-def test_ridge_cv_uses_default_alphas_when_omitted():
-    """K-fold CV uses RidgeCV's candidate grid when alphas is omitted."""
+@pytest.mark.parametrize("y_lags", [0, 2])
+@pytest.mark.parametrize("alpha_scaling", ["sum", "mean"])
+def test_ridge_cv_uses_default_alphas_when_omitted(y_lags, alpha_scaling):
+    """Both CV paths use the same dense logarithmic default in the requested units."""
     y_train, X_train, _, _, _ = sample_regression_data(
         n_train=100,
         n_test=10,
@@ -19,12 +21,29 @@ def test_ridge_cv_uses_default_alphas_when_omitted():
         random_seed=123,
     )
 
-    model = rt.models.ForecastRidge(cv=5, scale=True)
-    model.fit(y_train, X=X_train)
+    grid = np.logspace(-4, 2, 100)
+    model = rt.models.ForecastRidge(cv=5, scale=True, alpha_scaling=alpha_scaling)
+    reference = rt.models.ForecastRidge(
+        cv=5, scale=True, alphas=grid, alpha_scaling=alpha_scaling
+    )
+    model.fit(y_train, X=X_train, y_lags=y_lags)
+    reference.fit(y_train, X=X_train, y_lags=y_lags)
 
     assert model.alpha is None
     assert model.alphas is None
-    assert model.alpha_ in (0.1, 1.0, 10.0)
+    np.testing.assert_array_equal(model._default_alphas, grid)
+    assert np.isclose(model.alpha_, grid, rtol=1e-14, atol=0).any()
+    assert model.alpha_ == reference.alpha_
+    np.testing.assert_allclose(model.beta_, reference.beta_)
+
+
+@pytest.mark.parametrize("y_lags", [0, 2])
+def test_ridge_explicit_grid_overrides_default(y_lags):
+    """Explicit candidates replace rather than extend the default grid."""
+    y, X, _, _, _ = sample_regression_data(n_train=60, n_test=4, random_seed=123)
+    model = rt.models.ForecastRidge(cv=3, alphas=[0.037], scale=True)
+    model.fit(y, X=X, y_lags=y_lags)
+    assert model.alpha_ == pytest.approx(0.037)
 
 
 def test_ridge_cv_applies_selected_penalty():
