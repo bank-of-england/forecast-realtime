@@ -170,7 +170,7 @@ def test_transform_inputs_identity_preserves_degenerate_wide_frames(
         ("logs", np.log([100.0, 110.0, 125.0])),
         ("diff", [np.nan, 10.0, 15.0]),
         ("log diff", [np.nan, np.log(1.1), np.log(125.0 / 110.0)]),
-        ("pop", [np.nan, 10.0, (125.0 / 110.0 - 1) * 100.0]),
+        ("pop", [np.nan, 0.1, 125.0 / 110.0 - 1]),
         ("yoy", [np.nan, np.nan, np.nan]),
     ],
 )
@@ -286,7 +286,7 @@ def test_transform_fit_inputs_pop():
         y, y_variables=["gdp"], frequency="M", frequencies={"gdp": "M"}
     )
 
-    expected = pd.Series(values).pct_change().to_numpy() * 100
+    expected = pd.Series(values).pct_change(fill_method=None).to_numpy()
     assert np.isnan(y_out["gdp"].iloc[0])
     np.testing.assert_allclose(y_out["gdp"].to_numpy()[1:], expected[1:])
 
@@ -306,7 +306,7 @@ def test_transform_fit_inputs_yoy_uses_quarterly_periods():
     )
 
     assert y_out["gdp"].iloc[:4].isna().all()
-    np.testing.assert_allclose(y_out["gdp"].iloc[4], (110.0 / 100.0 - 1) * 100)
+    np.testing.assert_allclose(y_out["gdp"].iloc[4], 110.0 / 100.0 - 1)
 
 
 def test_transform_fit_inputs_yoy_uses_monthly_periods():
@@ -321,7 +321,7 @@ def test_transform_fit_inputs_yoy_uses_monthly_periods():
     )
 
     assert y_out["cpi"].iloc[:12].isna().all()
-    np.testing.assert_allclose(y_out["cpi"].iloc[12], (values[12] / values[0] - 1) * 100)
+    np.testing.assert_allclose(y_out["cpi"].iloc[12], values[12] / values[0] - 1)
 
 
 def test_transform_fit_inputs_yoy_accepts_per_variable_frequencies():
@@ -346,11 +346,9 @@ def test_transform_fit_inputs_yoy_accepts_per_variable_frequencies():
     )
 
     assert y_out["monthly"].iloc[:12].isna().all()
-    np.testing.assert_allclose(y_out["monthly"].iloc[12], (112 / 100 - 1) * 100)
+    np.testing.assert_allclose(y_out["monthly"].iloc[12], 112 / 100 - 1)
     assert y_out["quarterly"].dropna().empty is False
-    np.testing.assert_allclose(
-        y_out["quarterly"].dropna().iloc[-1], (110 / 100 - 100 / 100) * 100
-    )
+    np.testing.assert_allclose(y_out["quarterly"].dropna().iloc[-1], 110 / 100 - 1)
 
 
 @pytest.mark.parametrize(
@@ -368,16 +366,16 @@ def test_transform_fit_inputs_yoy_accepts_per_variable_frequencies():
             np.arange(100.0, 113.0),
             pd.Timestamp("2020-02-29"),
             113.0,
-            (112.0 / 100.0 - 1) * 100,
-            (113.0 / 101.0 - 1) * 100,
+            112.0 / 100.0 - 1,
+            113.0 / 101.0 - 1,
         ),
         (
             pd.date_range("2019-03-31", periods=5, freq="QE"),
             [100.0, 102.0, 104.0, 106.0, 110.0],
             pd.Timestamp("2020-06-30"),
             112.0,
-            (110.0 / 100.0 - 1) * 100,
-            (112.0 / 102.0 - 1) * 100,
+            110.0 / 100.0 - 1,
+            112.0 / 102.0 - 1,
         ),
     ],
     ids=["monthly", "quarterly"],
@@ -428,9 +426,9 @@ def test_wide_pipeline_infers_source_calendar_without_frequency(
             (pd.Timestamp("2020-09-30"), 7.0),
             None,
             {"driver": "diff"},
-            [np.nan, 10.0, 10.0, 10.0],
+            [np.nan, 0.1, 0.1, 0.1],
             [np.nan, 5.0],
-            10.0,
+            0.1,
             7.0,
         ),
         (
@@ -439,13 +437,13 @@ def test_wide_pipeline_infers_source_calendar_without_frequency(
             [100.0, 105.0, 110.25, 121.275],
             pd.date_range("2020-01-31", periods=4, freq="ME"),
             [10.0, 12.0, 15.0, 18.0],
-            (pd.Timestamp("2021-03-31"), 10.0),
+            (pd.Timestamp("2021-03-31"), 0.1),
             (pd.Timestamp("2020-05-31"), 21.0),
             {"target": "pop"},
             None,
-            [np.nan, 5.0, 5.0, 10.0],
+            [np.nan, 0.05, 0.05, 0.1],
             [np.nan, 2.0, 3.0, 3.0],
-            10.0,
+            0.1,
             3.0,
         ),
     ],
@@ -526,11 +524,11 @@ def test_transform_fit_inputs_uses_per_variable_frequencies():
 
     np.testing.assert_allclose(
         y_out.loc[pd.Timestamp("2020-03-31"), "monthly"],
-        (114.0 / 102.0 - 1) * 100,
+        114.0 / 102.0 - 1,
     )
     np.testing.assert_allclose(
         y_out.loc[pd.Timestamp("2020-03-31"), "quarterly"],
-        (110.0 / 100.0 - 1) * 100,
+        110.0 / 100.0 - 1,
     )
 
 
@@ -550,7 +548,7 @@ def test_transform_fit_inputs_uses_per_variable_frequencies():
             {"gdp": "yoy"},
             "M",
             "Q",
-            [np.nan, 10.0],
+            [np.nan, 0.1],
         ),
         (
             pd.to_datetime(["2020-01-31"]),
@@ -613,11 +611,11 @@ def test_transform_fit_inputs_uses_per_variable_X_frequencies():
 
     np.testing.assert_allclose(
         X_out.loc[pd.Timestamp("2020-03-31"), "monthly"],
-        (114.0 / 102.0 - 1) * 100,
+        114.0 / 102.0 - 1,
     )
     np.testing.assert_allclose(
         X_out.loc[pd.Timestamp("2020-03-31"), "quarterly"],
-        (110.0 / 100.0 - 1) * 100,
+        110.0 / 100.0 - 1,
     )
 
 
@@ -647,10 +645,8 @@ def test_transform_forecast_inputs_uses_mixed_column_frequencies():
         frequencies={"monthly": "M", "quarterly": "Q"},
     )
 
-    np.testing.assert_allclose(conditioning_out["monthly"].iloc[0], (127 / 117 - 1) * 100)
-    np.testing.assert_allclose(
-        conditioning_out["quarterly"].iloc[0], (110 / 100 - 1) * 100
-    )
+    np.testing.assert_allclose(conditioning_out["monthly"].iloc[0], 127 / 117 - 1)
+    np.testing.assert_allclose(conditioning_out["quarterly"].iloc[0], 110 / 100 - 1)
 
 
 def test_transform_forecast_inputs_uses_explicit_column_frequencies():
@@ -688,11 +684,11 @@ def test_transform_forecast_inputs_uses_explicit_column_frequencies():
 
     np.testing.assert_allclose(
         conditioning_out.loc[pd.Timestamp("2020-04-30"), "monthly"],
-        (115.0 / 103.0 - 1) * 100,
+        115.0 / 103.0 - 1,
     )
     np.testing.assert_allclose(
         conditioning_out.loc[pd.Timestamp("2020-06-30"), "quarterly"],
-        (110.0 / 102.0 - 1) * 100,
+        110.0 / 102.0 - 1,
     )
 
 
@@ -732,7 +728,7 @@ def test_transform_forecast_inputs_uses_explicit_X_frequencies():
 
     np.testing.assert_allclose(
         future_out.loc[pd.Timestamp("2020-04-30"), "monthly"],
-        (115.0 / 103.0 - 1) * 100,
+        115.0 / 103.0 - 1,
     )
     assert np.isnan(future_out.loc[pd.Timestamp("2020-04-30"), "quarterly"])
 
@@ -792,7 +788,7 @@ def test_transform_fit_inputs_month_start_yoy_preserves_anchor():
     )
 
     assert y_out["cpi"].iloc[:12].isna().all()
-    np.testing.assert_allclose(y_out["cpi"].iloc[12], (112.0 / 100.0 - 1) * 100)
+    np.testing.assert_allclose(y_out["cpi"].iloc[12], 112.0 / 100.0 - 1)
 
 
 def test_transform_fit_inputs_month_start_yoy_gap_is_undefined():
@@ -834,7 +830,7 @@ def test_transform_fit_inputs_quarter_start_yoy_preserves_anchor():
     )
 
     assert y_out["gdp"].iloc[:4].isna().all()
-    np.testing.assert_allclose(y_out["gdp"].iloc[4], (110.0 / 100.0 - 1) * 100)
+    np.testing.assert_allclose(y_out["gdp"].iloc[4], 110.0 / 100.0 - 1)
 
 
 def test_transform_fit_inputs_quarter_start_yoy_gap_is_undefined():
@@ -859,7 +855,7 @@ def test_transform_fit_inputs_pop_treats_missing_month_as_undefined():
     )
 
     assert np.isnan(y_out["gdp"].iloc[0])
-    np.testing.assert_allclose(y_out["gdp"].iloc[1], 10.0)
+    np.testing.assert_allclose(y_out["gdp"].iloc[1], 0.1)
     assert np.isnan(y_out["gdp"].iloc[2])
 
 
@@ -877,7 +873,7 @@ def test_transform_fit_inputs_yoy_missing_month_uses_calendar_not_position():
     )
 
     dec_2020 = y_out["gdp"].loc[pd.Timestamp("2020-12-31")]
-    correct = (123.0 / 111.0 - 1) * 100.0  # Dec-2020 (123) vs Dec-2019 (111)
+    correct = 123.0 / 111.0 - 1  # Dec-2020 (123) vs Dec-2019 (111)
     np.testing.assert_allclose(dec_2020, correct)
 
 
@@ -893,7 +889,7 @@ def test_transform_fit_inputs_yoy_missing_quarter_uses_calendar_not_position():
     )
 
     q4_2020 = y_out["gdp"].loc[pd.Timestamp("2020-12-31")]
-    correct = (107.0 / 103.0 - 1) * 100.0  # 2020-Q4 (107) vs 2019-Q4 (103)
+    correct = 107.0 / 103.0 - 1  # 2020-Q4 (107) vs 2019-Q4 (103)
     np.testing.assert_allclose(q4_2020, correct)
 
 
@@ -1045,7 +1041,7 @@ def test_transform_forecast_inputs_combines_levels_history_with_native_future():
     y_history = pd.DataFrame(
         {"gdp": [100.0, 110.0]}, index=_dates("2020-01-31", "2020-02-29")
     )
-    y_conditioning = pd.DataFrame({"gdp": [20.0]}, index=_dates("2020-03-31"))
+    y_conditioning = pd.DataFrame({"gdp": [0.2]}, index=_dates("2020-03-31"))
     pipeline = DataTransformationPipeline({"gdp": "pop"})
 
     y_hist_out, y_cond_out, _, _ = pipeline.transform_forecast_inputs(
@@ -1057,8 +1053,8 @@ def test_transform_forecast_inputs_combines_levels_history_with_native_future():
         y_conditioning_input_metrics={"gdp": "pop"},
     )
 
-    np.testing.assert_allclose(y_hist_out["gdp"].to_numpy(), [np.nan, 10.0])
-    np.testing.assert_allclose(y_cond_out["gdp"].to_numpy(), [20.0])
+    np.testing.assert_allclose(y_hist_out["gdp"].to_numpy(), [np.nan, 0.1])
+    np.testing.assert_allclose(y_cond_out["gdp"].to_numpy(), [0.2])
 
 
 def test_transform_forecast_inputs_diff_treats_missing_boundary_month_as_undefined():

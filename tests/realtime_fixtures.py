@@ -58,10 +58,8 @@ def generate_synthetic_data(
 
     levels = source.assign(metric="levels")
     pop = source.sort_values(["frequency", "variable", "date"], kind="stable").copy()
-    pop["value"] = (
-        pop.groupby(["frequency", "variable"], sort=False)["value"]
-        .pct_change(fill_method=None)
-        .mul(100.0)
+    pop["value"] = pop.groupby(["frequency", "variable"], sort=False)["value"].pct_change(
+        fill_method=None
     )
     pop = pop.dropna(subset=["value"]).assign(metric="pop")
     transformed = pd.concat([levels, pop], ignore_index=True)

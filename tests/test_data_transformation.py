@@ -13,6 +13,7 @@ import pickle
 import numpy as np
 import pandas as pd
 import pytest
+from forecast_evaluation import ForecastData
 
 from forecast_realtime.data_transformation import DataTransformationPipeline
 
@@ -124,7 +125,66 @@ def test_apply_pop_treats_missing_quarter_as_undefined():
 
     pop_rows = outturns_out[outturns_out["metric"] == "pop"]
     assert list(pop_rows["date"]) == [pd.Timestamp("2020-06-30")]
-    np.testing.assert_allclose(pop_rows["value"].iloc[0], 5.0)
+    np.testing.assert_allclose(pop_rows["value"].iloc[0], 0.05)
+
+
+@pytest.mark.parametrize(
+    "frequency, date_frequency, year_periods", [("M", "ME", 12), ("Q", "QE", 4)]
+)
+@pytest.mark.parametrize("metric", ["pop", "yoy"])
+@pytest.mark.parametrize("growth", [0.1, -0.05], ids=["increase", "decrease"])
+def test_fractional_growth_matches_forecast_evaluation(
+    frequency, date_frequency, year_periods, metric, growth
+):
+    """Long and wide growth outputs must match forecast evaluation."""
+    periods = 1 if metric == "pop" else year_periods
+    dates = pd.date_range(
+        "2019-01-01", periods=2 * periods + 2, freq=date_frequency
+    ).as_unit("ns")
+    values = 100.0 * (1.0 + growth) ** (np.arange(len(dates)) / periods)
+    history_size = periods + 1
+    vintage = dates[history_size - 1]
+    levels = _levels_frame("gdp", dates, [vintage] * len(dates), values)
+    levels["frequency"] = frequency
+    history = levels.iloc[:history_size].copy()
+    future = (
+        levels.iloc[history_size:]
+        .copy()
+        .assign(source="growth_regression", forecast_horizon=np.arange(1, periods + 2))
+    )
+    pipeline = DataTransformationPipeline({"gdp": metric})
+
+    long_history, long_future = pipeline.apply(
+        outturns=history, forecasts=future, y_variables=["gdp"], X_variables=None
+    )
+    reference = ForecastData(outturns_data=history, forecasts_data=future)
+    columns = ["date", "value"]
+    for actual, expected in [
+        (long_history, reference.outturns),
+        (long_future, reference.forecasts),
+    ]:
+        actual_growth = actual.loc[actual["metric"].eq(metric), columns].sort_values(
+            "date"
+        )
+        expected_growth = expected.loc[
+            expected["metric"].eq(metric), columns
+        ].sort_values("date")
+        np.testing.assert_allclose(actual_growth["value"], growth)
+        pd.testing.assert_frame_equal(
+            actual_growth.reset_index(drop=True), expected_growth.reset_index(drop=True)
+        )
+
+    wide = pd.DataFrame({"gdp": values}, index=dates)
+    wide_history, wide_future, _, _ = pipeline.transform_forecast_inputs(
+        wide.iloc[:history_size],
+        y_conditioning=wide.iloc[history_size:],
+        y_variables=["gdp"],
+        frequencies={"gdp": frequency},
+    )
+    assert wide_history["gdp"].iloc[:periods].isna().all()
+    np.testing.assert_allclose(wide_history["gdp"].iloc[periods:], growth)
+    native_future = pipeline.filter(long_future, ["gdp"]).sort_values("date")
+    np.testing.assert_allclose(wide_future["gdp"], native_future["value"])
 
 
 def test_apply_differences_overlapping_outturn_and_forecast_at_same_date():

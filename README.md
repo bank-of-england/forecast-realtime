@@ -37,7 +37,7 @@ The first five generated outturn rows are:
 2015-01-31         M monthly_1 101.577869   2024-01-31 levels
 2015-01-31         M monthly_2 101.256092   2024-01-31 levels
 2015-02-28         M monthly_1 101.293703   2024-01-31 levels
-2015-02-28         M monthly_1  -0.279752   2024-01-31    pop
+2015-02-28         M monthly_1  -0.002798   2024-01-31    pop
 2015-02-28         M monthly_2  98.456195   2024-01-31 levels
 ```
 
