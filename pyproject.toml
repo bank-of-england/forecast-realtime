@@ -39,6 +39,7 @@ dependencies = [
 # checks need, so ``pip install -e ".[dev]"`` is all that is required.
 dev = [
     "forecast_realtime[docs,notebooks,models]",
+    "conventional-pre-commit>=4.4.0",
     "pre_commit >= 4.6.0",
     "pytest >= 9.0.3",
     "pytest-cov",
