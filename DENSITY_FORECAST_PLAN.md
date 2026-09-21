@@ -1,36 +1,34 @@
-# Density Forecast Implementation Plan
+# Density Forecast Plan
 
-Status: proposed; no production changes implemented.
+Status: proposed. No production changes have been made.
 
-## Objective
+## Decision
 
-Add predictive quantiles to `ForecastModel.forecast()`, `predict()` and
-`RealTimeModel.forecast()` without changing existing point forecasts. Use
-`ForecastOLS` for fast analytical and end-to-end tests. Keep BVAR coverage to one
-small native integration test, supported by inexpensive adapter tests.
+Add predictive quantiles to `ForecastModel.forecast()`, `predict()`, and
+`RealTimeModel.forecast()` as a separate output mode. Point and quantile
+results are not mixed in the stored realtime results:
 
-## Verified Opera Contracts
+- `quantiles=False` keeps the current point-forecast behaviour and stores point
+   forecasts in `data.forecasts`.
+- `quantiles=True` or a supplied probability sequence stores only native-metric
+   quantile rows in `runner.quantiles`, including a `quantile` column. It does
+   not store point rows in the same result.
 
-The Opera `bvar`, `forecast-evaluation` and `forecast-realtime` skills were read
-alongside the relevant local source.
+The model may calculate a point forecast internally during a density request,
+but realtime does not publish that point result alongside the quantiles.
+Level reconstruction is disabled automatically for density requests.
 
-- BVAR defaults to quantiles `[0.16, 0.5, 0.84]`. Its formatted output has columns
-  `date, quantile, variable, value`.
-- BVAR forecast arrays contain effective history followed by the requested future
-  periods. Select only the forecast tail when constructing realtime results.
-- BVAR applies forecast transformations to individual draws before calculating
-  quantiles. `point_only=True` produces a deterministic path, not predictive
-  uncertainty.
-- `DensityForecastData` stores density rows separately from point rows and accepts
-  a numeric `quantile` column. Its mean-from-quantiles conversion is unimplemented;
-  retain the model's point forecast rather than deriving it from a quantile grid.
-- `SimulationData` identifies input paths using `draw` and `scenario` by default.
-  Those identifiers are not posterior or predictive draw identifiers.
+Quantiles are the public density result. The library will not expose or store
+predictive draws. Models may calculate quantiles analytically or use joint paths
+inside an adapter before discarding them.
 
-## Public API and Results
+The first release supports quantiles for a model's native forecast metric. It
+rejects density requests that would require realtime to derive a metric from
+quantiles at several uncertain future dates.
 
-Add keyword-only `quantiles=False | True | Sequence[float]`, preserving existing
-positional arguments, including the tree's positional `context` argument.
+## Public Contract
+
+Add a keyword-only `quantiles` argument:
 
 ```python
 result = model.forecast(steps=8, quantiles=True)
@@ -38,219 +36,199 @@ result = model.forecast(steps=8, quantiles=[0.05, 0.5, 0.95])
 runner.forecast(y_variables=["target"], steps=8, quantiles=True)
 ```
 
-- `False` preserves current behaviour and avoids density-specific work.
-- `True` selects `(0.16, 0.5, 0.84)`.
-- Explicit probabilities must be finite, distinct and strictly between zero and
-  one. Reject empty sequences and Boolean entries; normalise valid probabilities
-  into ascending order. Evaluation accepts endpoints, but analytical Student-t
-  quantiles there are infinite.
-- `ForecastResult` remains a point-forecast DataFrame. Add `result.quantiles` with
-  columns `date, variable, quantile, value`, or `None` for point-only calls.
-- Validate complete date/target/probability coverage, unique keys, finite values
-  and non-crossing quantiles. Point forecasts need not equal the median.
-- `runner.quantiles` contains the corresponding long realtime table with source,
-  metric, frequency, vintage and horizon metadata.
-- Reject unsupported density requests before realtime tasks run. Decomposition
-  remains a decomposition of the point forecast, not of each quantile.
+`quantiles=False` keeps current behaviour. `quantiles=True` requests the default
+probabilities `(0.16, 0.5, 0.84)`. A supplied sequence must contain distinct,
+finite probabilities strictly between zero and one. Reject empty sequences and
+Boolean entries. Sort valid probabilities before use.
 
-## Model Execution Contract
+For direct model calls, `ForecastResult` remains the point-forecast DataFrame
+with a `quantiles` attribute containing `date`, `variable`, `quantile`, and
+`value`, or `None` for a point-only request. At the realtime boundary, the
+requested output mode is exclusive: `runner.quantiles` stores the equivalent
+quantile rows, including source, metric, frequency, vintage, and horizon, while
+point-only runs continue to use `data.forecasts`.
 
-Allow density-capable `_forecast()` implementations to return an enriched
-`ForecastResult` containing point forecasts, quantiles and an optional private
-joint predictive draw payload. Existing array/DataFrame returns remain valid for
-point-only requests. Extend the shared finaliser to preserve and validate the
-payload rather than discarding it when wrapping the result.
+`reconstruct_levels` applies only to point mode. When `quantiles` is true or a
+sequence is supplied, realtime disables level reconstruction regardless of the
+`reconstruct_levels` value. Quantiles remain in the model's native forecast
+metric; realtime never derives level quantiles from marginal quantile curves.
 
-Use one forecast call for point and density output. Avoid a second fit, a second
-BVAR simulation or a mutable cache of the last density result. Preserve public
-`predict()` and `forecast()` overrides through the existing dispatch adapters.
+Validate complete date-variable-probability coverage, unique keys, finite
+values, and non-crossing quantiles. The point forecast need not equal the median.
+Keep decomposition as a decomposition of the point forecast only; reject
+`decomp=True` for quantile-only realtime runs until both output modes can be
+published together.
 
-Represent joint draws with a documented `(draw, step, target)` ordering aligned
-to the point forecast's dates and targets. Keep this internal initially; do not
-introduce a general distribution framework or a public sample-storage API.
+Update the `forecast()` and `predict()` docstrings to document the exclusive
+output modes and add this TODO: point and quantile results cannot currently be
+published together. Supporting both will require predictive draws (or an
+equivalent joint-path representation) and a flag stating whether those draws
+preserve temporal dependence.
 
-## Fast ForecastOLS Densities
+## Model Contract
 
-Extend the existing `ForecastOLS`, rather than introducing a test-only model or
-replacing its NumPy coefficient solver. Keep OLS uncertainty calculations out of
-Ridge, Lasso and ElasticNet unless those models later implement their own methods.
+A density-capable `_forecast()` returns point forecasts and quantiles in an
+enriched `ForecastResult`; realtime selects one output mode when publishing the
+result. Existing array and DataFrame returns remain valid for point forecasts.
+The shared finaliser preserves and validates quantiles.
 
-### Analytical quantiles
+Use one forecast call to produce points and quantiles. Do not refit, run a second
+BVAR simulation, or cache the last density result. Preserve the existing
+`forecast()` and `predict()` dispatch behaviour.
 
-Initially support intercept-only and fixed-regressor OLS with no target lags,
-using the existing recursive strategy without recursive target feedback. Future
-regressors are treated as known; imputed or supplied regressor paths do not add
-regressor uncertainty to these densities.
+Models use one of two internal approaches:
 
-For a full-column-rank design with independent Gaussian, constant-variance errors:
+1. **Direct quantiles.** The model calculates the requested probabilities without
+   generating paths. `ForecastOLS` uses this approach.
+2. **Native path summarisation.** A backend generates joint paths, applies a
+   transformation it supports, and calculates quantiles before returning control
+   to the adapter. BVAR uses this approach.
+
+Do not add a shared draw payload or public sample-storage API. A future feature
+that needs realtime to transform arbitrary predictive paths should introduce a
+private path capability with its own contract.
+
+## ForecastOLS
+
+Extend `ForecastOLS`; do not add density support to Ridge, Lasso, or ElasticNet.
+
+Initially support intercept-only and fixed-regressor OLS without target lags.
+Treat future regressors as known. Imputed and supplied regressor paths add no
+regressor uncertainty.
+
+For a full-rank design with independent Gaussian, constant-variance errors:
 
 $$
 \nu = n-k, \qquad
 s^2 = \frac{\sum_{i=1}^{n}(y_i-x_i^\top\hat\beta)^2}{\nu}, \qquad
 Q_p(y_*\mid x_*) = x_*^\top\hat\beta
-  + t_\nu^{-1}(p)\,s\sqrt{1+x_*^\top(X^\top X)^{-1}x_*}.
++ t_\nu^{-1}(p)\,s\sqrt{1+x_*^\top(X^\top X)^{-1}x_*}.
 $$
 
-Here `n` is the number of retained estimation observations and `k` is the number
-of design columns, including the intercept when fitted. The `1 +` includes future
-observation noise; omitting it gives uncertainty in the conditional mean instead.
+Here, `n` is the number of retained estimation observations and `k` is the
+number of design columns, including an intercept when fitted. The leading `1`
+includes future observation noise.
 
-Capture the actual fitted design, residual variance and covariance factor in
-consistent units. Respect formulas, retained dummies, missing-row selection and
-scaling. Use stable linear algebra rather than an explicit matrix inverse.
-Require positive residual degrees of freedom and full column rank for density
-requests; leave existing point-only rank-deficient fits unchanged. Permit a
-zero-residual-variance fit to produce a degenerate predictive distribution.
+Capture the fitted design, residual variance, and covariance factor in consistent
+units. Respect formulas, retained dummies, missing-row selection, and scaling.
+Use stable linear algebra, not an explicit inverse. Density requests require a
+full-rank design and positive residual degrees of freedom. Point-only forecasts
+retain their current behaviour for rank-deficient fits. A zero residual variance
+produces a degenerate distribution.
 
-Calculate quantiles directly with SciPy's Student-t inverse CDF. This is fast,
-deterministic and needs neither posterior sampling nor optimisation. The density
-path must not refit coefficients; uncertainty statistics may be computed lazily
-from the retained estimation design.
+Calculate OLS quantiles with SciPy's Student-t inverse CDF. Do not refit the
+model to calculate uncertainty.
 
-### Joint draws for transformation tests
+Reject OLS density requests for target-lag recursion and direct strategies in
+this release. Both require a joint multi-horizon uncertainty model.
 
-Provide optional seeded joint predictive draws when the realtime transformation
-path requires them. Under the same Gaussian regression assumptions, draw one
-variance and one coefficient vector per path, then fresh observation errors for
-each future period:
+## BVAR
 
-$$
-\sigma_d^2 = \nu s^2 / \chi^2_{\nu,d}, \qquad
-\beta_d\mid\sigma_d^2 \sim
-N\left(\hat\beta,\sigma_d^2(X^\top X)^{-1}\right), \qquad
-y_{d,h}=x_h^\top\beta_d+\epsilon_{d,h}.
-$$
+The BVAR backend already generates joint forecast paths. Its forecast arrays
+contain effective history followed by the requested horizon. The adapter selects
+the forecast tail for realtime results.
 
-This gives the usual Student-t predictive marginals under the reference-prior
-Gaussian regression model. Sharing coefficients and variance within a path
-preserves their contribution to cross-horizon dependence. Independently sampling
-each marginal Student-t distribution would lose that dependence.
+BVAR applies supported forecast transformations to each joint path before it
+calculates quantiles. Its formatted result has `date`, `quantile`, `variable`,
+and `value` columns. The adapter should use this behaviour, return the requested
+quantiles, and discard the paths. `point_only=True` produces one deterministic
+path, so density requests must reject it.
 
-Use a private NumPy generator and explicit draw-count and seed controls when
-sampling is requested. Ordinary analytical quantiles should require no draws.
-Use a few hundred draws for orchestration tests that compare identical seeded
-paths; do not use such tests to claim accurate tail estimation. Compute expected
-transformed quantiles from those same paths instead of imposing fragile Monte
-Carlo accuracy tolerances.
+Keep `forecasts_type` as the choice between a point mean and median. Reject a
+density request when BVAR does not support the requested transformation. Realtime
+must never derive joint behaviour from marginal quantile curves.
 
-Initially reject target-lag recursion and direct-strategy density requests.
-Recursive densities need simulated lag feedback; direct densities need
-horizon-specific uncertainty estimates and an explicit joint dependence model.
+Correct the wrapper's burn-in default before testing conditional densities.
+`ForecastBVAR` requests `N_draws=5000` but retains `n_samples=1000`; the backend
+caps the forecast draw count at the retained count. Preserve an omitted `N_burn`
+as `None` so the backend derives burn-in from the effective count. Reject invalid
+explicit burn-in values.
 
-## BVAR Adapter
+## Realtime Boundary
 
-Reuse the conditional or unconditional draws from the existing backend call.
-Calculate point summaries and quantiles from the same draws, keep only the
-requested future rows and preserve native joint paths for reconstruction.
-Leave `forecasts_type` controlling the point mean or median.
+Pass density options through `ForecastTask` run controls and return quantiles in
+`ForecastRunResult`. Do not pass orchestration options to model fitting.
 
-Reject density requests with `mode_only=True`. Validate that sampling leaves
-enough retained draws to describe uncertainty.
+Apply the same forecast calendar, publication masks, horizon cut-offs, source
+labels, and native metric mappings used for point forecasts. Summarise BVAR paths
+inside the worker so that full arrays do not cross process boundaries.
 
-Fix the relevant burn-in default before testing conditional densities:
-`ForecastBVAR` currently defaults to `n_samples=1000`, `N_draws=5000` and an
-explicit `N_burn=2500`. Native forecasting caps draws at the stored posterior
-count, making that conditional burn-in invalid. Preserve an omitted burn-in as
-`None` so the backend can resolve it against the effective count; reject invalid
-explicit settings rather than silently changing them.
+Point and quantile publication are mutually exclusive. In point mode, retain the
+existing level-reconstruction path and write `data.forecasts`. In quantile mode,
+skip level reconstruction and `data.add_forecasts`; write only native-metric
+quantile rows, with the `quantile` column, to `runner.quantiles`. Never
+reconstruct paths from quantile curves. In simulation runs, append the
+configured input simulation identifiers to `runner.quantiles`; these identify
+input scenarios, not predictive paths.
 
-## Density Ingestion Bug
+Reject density requests for transformations that the model or backend cannot
+produce directly in its native metric. Realtime must not derive a metric from
+quantiles at several uncertain future dates.
 
-There are two separate correctness issues in the current local
-`forecast_evaluation.data.DensityForecastData` implementation:
+Defer forecast-tree densities until the project defines cross-model dependence.
+Do not combine matching marginal quantiles as if they were joint draws.
 
-1. `_add_density_forecasts()` copies input values and unconditionally assigns
-   `metric="levels"`. Inputs labelled `pop` or `yoy` are therefore misrepresented.
-2. `_prepare_density_forecasts()` calculates percentage changes along each
-   marginal quantile curve. A ratio of marginal quantiles is generally not a
-   quantile of the ratio; the joint distribution across dates is required.
+## `forecast-evaluation` Boundary
 
-For example, consider two equally likely level paths across two dates:
-`(100, 200)` and `(200, 100)`. Both dates have the same marginal distribution, so
-every same-probability quantile curve is flat and the current conversion gives
-zero growth. Actual path growth is either `+100%` or `-50%`.
+`DensityForecastData` currently has two separate defects:
 
-The distinction does not prohibit every quantile transformation. A strictly
-increasing pointwise transformation, such as exponentiation, preserves quantile
-order. Growth relative to a known positive historical level also has a fixed
-denominator. Growth between two uncertain future levels does not.
+1. `_add_density_forecasts()` overwrites the supplied metric with `levels`.
+2. `_prepare_density_forecasts()` calculates growth along marginal quantile
+   curves. A ratio of marginal quantiles is generally not a quantile of a ratio.
 
-### Required evaluation integration change
+For example, two equally likely level paths, `(100, 200)` and `(200, 100)`, have
+flat marginal quantile curves. The current conversion reports zero growth, though
+the path growth is either `+100%` or `-50%`.
 
-Plan a separate, tested change in `forecast-evaluation` to preserve explicitly
-supplied metrics and stop automatically manufacturing density metrics from
-marginal quantile paths. It should accept precomputed metric-specific quantiles
-without requiring private-table mutation. Do not treat `compute_levels=False` as
-a workaround: the current density ingestion path still constructs derived rows.
+The first release keeps authoritative density rows in `runner.quantiles` and does
+not use derived-density ingestion. A later `forecast-evaluation` change should
+preserve supplied metrics, accept precomputed metric-specific quantiles, and stop
+manufacturing derived density rows. `compute_levels=False` is not a workaround.
 
-Realtime should transform coherent paths using history available at each vintage
-and only then calculate quantiles. Do not use `sample_from_density()` to recreate
-the original paths: marginal quantiles do not identify their dependence.
+Do not use `sample_from_density()` to recreate paths. Marginal quantiles do not
+identify their temporal dependence.
 
-Until corrected ingestion is available, keep authoritative density rows in
-`runner.quantiles` and do not publish misleading derived metrics. Afterwards,
-use `add_density_forecasts()` where the caller's data object supports it, while
-continuing to store model point forecasts independently through `add_forecasts()`.
-Preserve the caller's data object and declare any required dependency version.
+## Tests
 
-## Realtime, Transformations and Simulations
+Use OLS for general density tests and keep native BVAR coverage small.
 
-- Carry density options in `ForecastTask` run controls and quantile output in
-  `ForecastRunResult`; do not forward orchestration options into model fitting.
-- Apply the same dates, publication masks, per-variable horizon cutoffs, source
-  labels and native metric mappings as point forecasts.
-- Reconstruct complete predictive paths before trimming intermediate horizons
-  needed by cumulative transformations. Never reconstruct quantile curves.
-- Summarise draws inside workers so full BVAR arrays need not cross process
-  boundaries. Retain native quantiles when reconstruction is disabled.
-- Leave existing point forecasts unchanged: a transformed point forecast need
-  not equal the mean or median of the transformed predictive distribution.
-- In simulation runs, append the configured input simulation identifiers to
-  `runner.quantiles`. Keep those identities distinct from predictive draw axes.
-  Retain path-local calendars, filters and models; do not replace panel objects.
-- Defer forecast-tree densities until cross-model dependence has a defined
-  contract. Do not combine corresponding marginal quantiles as joint draws.
+1. Compare OLS prediction intervals with `statsmodels.get_prediction()`, covering
+   intercept-only fits, scaling, formulas, and dummies.
+2. Test invalid probabilities, insufficient observations, rank failures, and
+   unchanged point forecasts.
+3. Test result validation, multiple vintages, publication masks, horizon
+   cut-offs, repeat calls, decomposition, and native-metric simulations with
+   small OLS fixtures.
+4. Test quantile-mode output selection: level reconstruction is disabled, the
+   stored rows retain the native metric and `quantile` column, and point rows
+   are not published. Confirm rejected density requests leave point forecasts
+   and caller data unchanged.
+5. Test sequential and spawned parallel runs with OLS, including one small real
+   process-pool case.
+6. Add one BVAR integration test with two variables, one lag, short history, few
+   posterior draws, `nb_restart=0`, fixed seeds, and no progress bars. Compare
+   wrapper quantiles with the backend's formatted output for unconditional and
+   conditional forecasts, including one BVAR-supported transformation.
+7. Test BVAR selection, burn-in forwarding, mode-only rejection, and draw shapes
+   with synthetic backend outputs.
+8. In `forecast-evaluation`, test preserved native metrics, no invented derived
+   densities, exclusive quantile storage, and unchanged state after rejection.
 
-## Test Strategy
+## Delivery
 
-OLS is the primary density test model. Reuse existing test modules and fixtures;
-avoid multiplying expensive native-model runs across general contract tests.
+1. Add the request and result contract with analytical OLS quantiles.
+2. Add realtime collection, validation, and rejection of unsupported transformed
+   densities.
+3. Add the BVAR adapter and burn-in correction.
+4. Update API, usage, and model-author documentation.
+5. Add private joint-path support and `forecast-evaluation` ingestion only when
+   publishing points and quantiles together becomes a concrete requirement. The
+   joint-path contract must state whether temporal dependence is preserved.
 
-1. Add exact OLS checks against `statsmodels.get_prediction()` observation
-   intervals, including intercept-only fits, scaling, formulas and dummies.
-   Check invalid probabilities, sample-size/rank failures and unchanged points.
-2. Use small OLS fixtures for result validation, multiple vintages, publication
-   masking, cutoffs, repeat calls, decomposition coexistence and simulation paths.
-3. Test draw-wise reconstruction with deterministic paths, including the
-   counterexample above and a two-step differenced series. Add one seeded OLS
-   integration through the real transformation path.
-4. Test sequential and spawned parallel equality with OLS. Keep one small real
-   process-pool case and use existing lightweight execution fixtures elsewhere.
-5. Add one small native BVAR integration test: two variables, one lag, short
-   history and horizon, few posterior draws, `nb_restart=0`, fixed seeds and no
-   progress bars. Reuse one fit for unconditional and conditional calls; compare
-   wrapper quantiles to native draws and formatted output without refitting.
-6. Test BVAR adapter selection, burn-in forwarding, mode-only rejection and draw
-   shape handling with synthetic backend outputs, without sampling or compiling
-   native kernels. Do not use BVAR for generic realtime or simulation tests.
-7. In `forecast-evaluation`, test preservation of supplied metrics, no invented
-   derived densities, coexistence with points and unchanged state on rejection.
-
-## Delivery Order and Verification
-
-1. Add the request/result contract and analytical OLS densities with focused tests.
-2. Add OLS joint paths and realtime density collection, transformation and
-   simulation coverage.
-3. Add the BVAR adapter and burn-in correction with one small native integration.
-4. Correct density ingestion in `forecast-evaluation`, then enable and test public
-   storage integration against a compatible version.
-5. Update API and usage documentation, model-author guidance and Opera skills.
-
-Run focused tests with `pytest -n auto` in the `forecast-realtime` conda environment
-after each slice, then the full suite and the repository's lint, formatting,
-docstring and documentation checks. Use the `forecast-evaluation` environment for
-that package's separate changes and tests. Record unsupported density modes
-explicitly rather than silently falling back to point forecasts.
+After each slice, run focused tests with `pytest -n auto` in the
+`forecast-realtime` conda environment. Then run the full suite and the
+repository's lint, formatting, docstring, and documentation checks. Use the
+`forecast-evaluation` environment for its separate work.
 
 Suggested commit messages, without committing:
 
