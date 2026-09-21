@@ -8,8 +8,9 @@ from numbers import Integral
 
 import numpy as np
 import pandas as pd
-from forecast_evaluation import ForecastData
 from tqdm import tqdm
+
+from forecast_evaluation import ForecastData, SimulationData
 
 from ._model_data import ModelData, infer_long_variable_frequencies
 from ._realtime_forecasting import ForecastRunResult, ForecastTask
@@ -198,18 +199,18 @@ class RealTimeModel:
         models: ForecastModel | list[ForecastModel] = None,
     ):
         """
-        Initialise RealTimeModel with a ForecastData object.
+        Initialise RealTimeModel with ordinary data or simulation paths.
 
         Args:
-            data : ForecastData
-                An instance of the ForecastData class
+            data : ForecastData or SimulationData
+                Ordinary data or a collection of independently fitted paths.
             models : ForecastModel or list[ForecastModel]
                 A single forecasting model or a list of models. Labels come from each
                 model's `label` attribute, or from its class name when no label is set.
                 Labels become the `source` in forecasts.
         """
-        if not isinstance(data, ForecastData):
-            raise TypeError("data must be an instance of ForecastData")
+        if not isinstance(data, (ForecastData, SimulationData)):
+            raise TypeError("data must be an instance of ForecastData or SimulationData")
 
         if models is None:
             raise TypeError("'models' argument is required")
@@ -395,6 +396,34 @@ class RealTimeModel:
             **kwargs : dict
                 Additional keyword arguments to pass.
         """
+        if isinstance(self.data, SimulationData):
+            return self._forecast_simulations(
+                y_variables=y_variables,
+                step_frequency=step_frequency,
+                data_transformation=data_transformation,
+                label=label,
+                steps=steps,
+                first_forecast_horizon=first_forecast_horizon,
+                X_variables=X_variables,
+                y_steps_ahead=y_steps_ahead,
+                y_sources=y_sources,
+                X_steps_ahead=X_steps_ahead,
+                X_sources=X_sources,
+                y_lags=y_lags,
+                X_lags=X_lags,
+                dummies=dummies,
+                first_vintage=first_vintage,
+                last_vintage=last_vintage,
+                reconstruct_levels=reconstruct_levels,
+                parallel=parallel,
+                batch_size=batch_size,
+                max_workers=max_workers,
+                decomp=decomp,
+                X_imputation=X_imputation,
+                drop_transformation_nans=drop_transformation_nans,
+                **kwargs,
+            )
+
         if type(steps) is not int or steps < 1:
             raise ValueError("steps must be a positive integer")
 
@@ -662,6 +691,57 @@ class RealTimeModel:
         self.X_lags = copy.deepcopy(X_lags)
         self.dummies = copy.deepcopy(dummies)
         self.kwargs = copy.deepcopy(kwargs)
+        return self
+
+    def _forecast_simulations(self, **options):
+        """Reuse the single-panel vintage loop with path-local data and models."""
+        first = options.get("first_vintage")
+        last = options.get("last_vintage")
+        first = pd.Timestamp(first) if first is not None else None
+        last = pd.Timestamp(last) if last is not None else None
+        if first is not None and last is not None and first > last:
+            raise ValueError("first_vintage must be before or equal to last_vintage")
+
+        outputs = {"native_forecasts": [], "decompositions": []}
+        starts = []
+        ends = []
+        for key, panel in self.data.iter_panels():
+            path = dict(zip(self.data.simulation_ids, key))
+            vintages = panel._raw_outturns["vintage_date"].dropna()
+            if first is not None:
+                vintages = vintages[vintages >= first]
+            if last is not None:
+                vintages = vintages[vintages <= last]
+            if vintages.empty:
+                continue
+            path_options = options | {
+                "first_vintage": vintages.min(),
+                "last_vintage": vintages.max(),
+            }
+            try:
+                runner = RealTimeModel(panel, models=copy.deepcopy(self.models))
+                runner.forecast(**path_options)
+            except Exception as error:
+                raise RuntimeError(
+                    f"Forecast failed for simulation path {path}: {error}"
+                ) from error
+            for attribute, frames in outputs.items():
+                frame = getattr(runner, attribute)
+                if frame is not None:
+                    frames.append(frame.assign(**path))
+            starts.append(runner.first_vintage)
+            ends.append(runner.last_vintage)
+
+        for attribute, frames in outputs.items():
+            setattr(
+                self, attribute, pd.concat(frames, ignore_index=True) if frames else None
+            )
+        self.first_vintage = min(starts) if starts else first
+        self.last_vintage = max(ends) if ends else last
+        self.y_lags = copy.deepcopy(options["y_lags"])
+        self.X_lags = copy.deepcopy(options["X_lags"])
+        self.dummies = copy.deepcopy(options["dummies"])
+        self.kwargs = copy.deepcopy(options)
         return self
 
     @staticmethod
@@ -1404,7 +1484,6 @@ def _compute_revision_decompositions(
 def example_ridge():
 
     import forecast_evaluation as fe
-
     import forecast_realtime as rt
 
     sample_data = rt.generate_synthetic_data(
@@ -1440,7 +1519,6 @@ def example_ridge():
 def example_bvar():
 
     import forecast_evaluation as fe
-
     import forecast_realtime as rt
 
     sample_data = rt.generate_synthetic_data(
