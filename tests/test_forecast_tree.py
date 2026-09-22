@@ -110,15 +110,7 @@ class CommitRecordingModel(RecordingTransformModel):
 
 
 class FitKwargsSpyModel(ForecastModel):
-    """ForecastModel transform recording the exact kwargs its *public*
-    ``fit()``/``forecast()`` receive, before delegating to the base class.
-
-    Unlike recording ``_fit``/``_forecast``, this captures named parameters
-    (``data_transformation``/``frequency``/``X_imputation``/
-    ``drop_transformation_nans``) too, since the base ``ForecastModel``
-    consumes those as explicit parameters and never forwards them into
-    ``_fit``/``_forecast``'s own ``**kwargs``.
-    """
+    """Spy on fit and prediction options before preparation consumes them."""
 
     def __init__(self, label, data_transformation=None):
         super().__init__(label=label, data_transformation=data_transformation)
@@ -130,9 +122,9 @@ class FitKwargsSpyModel(ForecastModel):
         self.fit_kwargs_calls.append(dict(kwargs))
         return super().fit(y, X=X, **kwargs)
 
-    def forecast(self, steps=1, X=None, y=None, **kwargs):
+    def _predict_data(self, data, **kwargs):
         self.forecast_kwargs_calls.append(dict(kwargs))
-        return super().forecast(steps=steps, X=X, y=y, **kwargs)
+        return super()._predict_data(data, **kwargs)
 
     def _fit(self, y, X=None, **kwargs):
         self.fit_calls.append({"y": y.copy(), "X": X.copy(), "kwargs": dict(kwargs)})

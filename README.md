@@ -105,8 +105,12 @@ print(rt_model.data.forecasts.head().to_string(index=False))
 ```
 
 Direct calls to a fitted model's `forecast()` or `predict()` return a
-DataFrame-compatible `ForecastResult`. Point results use the long columns
-`date`, `variable`, and `value`; quantile results add `quantile`. Realtime
+DataFrame-compatible `ForecastResult`. Its constructor validates and orders
+the result at construction. Point results use the long columns `date`,
+`variable`, and `value` and may use custom dates; quantile results add
+`quantile` and require an explicit requested calendar. The original result
+retains `.forecast`, `.forecast_origin`, and `.decomposition`; slicing or
+copying it returns an ordinary DataFrame without result metadata. Realtime
 publication tables, such as `rt_model.data.forecasts`, keep their existing
 storage contract.
 

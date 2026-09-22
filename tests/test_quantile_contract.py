@@ -9,7 +9,6 @@ from forecast_realtime.forecast_model import (
     ForecastModel,
     ForecastResult,
     _normalise_quantiles,
-    _validate_quantile_result,
 )
 
 
@@ -87,17 +86,17 @@ class _OriginInclusiveMultiModel(ForecastModel):
         return pd.DataFrame(rows)
 
 
-class _OverrideQuantileOLS(rt.models.ForecastOLS):
-    """Corrupt a public prediction result after the base implementation."""
+class _CorruptQuantileForecastOLS(rt.models.ForecastOLS):
+    """Corrupt raw quantile output from the forecast hook."""
 
     corruption = None
 
-    def predict(self, context, *args, **kwargs):
-        result = super().predict(context, *args, **kwargs)
-        if kwargs.get("quantiles", False) is False or self.corruption is None:
-            return result
+    def _forecast(self, *args, quantiles=None, **kwargs):
+        forecast = super()._forecast(*args, quantiles=quantiles, **kwargs)
+        if quantiles is None or self.corruption is None:
+            return forecast
 
-        forecast = result.forecast.copy()
+        forecast = forecast.copy()
         probabilities = sorted(forecast["quantile"].unique())
         first_date = forecast["date"].iloc[0]
         first_variable = forecast["variable"].iloc[0]
@@ -121,7 +120,7 @@ class _OverrideQuantileOLS(rt.models.ForecastOLS):
             forecast = forecast.iloc[1:].reset_index(drop=True)
         else:
             raise AssertionError(f"Unknown corruption: {self.corruption}")
-        return ForecastResult(forecast, forecast_origin=result.forecast_origin)
+        return forecast
 
 
 def _realtime_outturns():
@@ -319,13 +318,20 @@ def test_normalise_quantiles_sorts_sequences_and_defaults():
     assert _normalise_quantiles([0.84, 0.16, 0.5]) == (0.16, 0.5, 0.84)
 
 
-def test_validate_quantile_result_reorders_complete_keys():
+def test_forecast_result_reorders_complete_quantile_keys():
     dates, variables, probabilities, expected = _quantile_rows()
     shuffled = expected.sample(frac=1, random_state=7)
 
-    result = _validate_quantile_result(shuffled, dates, variables, probabilities)
+    result = ForecastResult(
+        shuffled,
+        expected_columns=variables,
+        steps=len(dates),
+        forecast_origin=pd.Timestamp("2020-12-31"),
+        quantiles=probabilities,
+        forecast_dates=dates,
+    )
 
-    pd.testing.assert_frame_equal(result, expected)
+    pd.testing.assert_frame_equal(result.forecast, expected)
 
 
 @pytest.mark.parametrize(
@@ -340,7 +346,7 @@ def test_validate_quantile_result_reorders_complete_keys():
         ("extra", "quantile"),
     ],
 )
-def test_validate_quantile_result_rejects_invalid_key_coverage(operation, dimension):
+def test_forecast_result_rejects_invalid_quantile_key_coverage(operation, dimension):
     dates, variables, probabilities, rows = _quantile_rows()
     if operation == "missing":
         missing_values = {
@@ -362,25 +368,88 @@ def test_validate_quantile_result_rejects_invalid_key_coverage(operation, dimens
         invalid = pd.concat([rows, extra], ignore_index=True)
 
     with pytest.raises(ValueError, match="Quantile"):
-        _validate_quantile_result(invalid, dates, variables, probabilities)
+        ForecastResult(
+            invalid,
+            expected_columns=variables,
+            steps=len(dates),
+            forecast_origin=pd.Timestamp("2020-12-31"),
+            quantiles=probabilities,
+            forecast_dates=dates,
+        )
 
 
 @pytest.mark.parametrize("invalid_value", [np.nan, np.inf, -np.inf])
-def test_validate_quantile_result_rejects_nonfinite_values(invalid_value):
+def test_forecast_result_rejects_nonfinite_quantile_values(invalid_value):
     dates, variables, probabilities, rows = _quantile_rows()
     rows.loc[0, "value"] = invalid_value
 
     with pytest.raises(ValueError, match="finite"):
-        _validate_quantile_result(rows, dates, variables, probabilities)
+        ForecastResult(
+            rows,
+            expected_columns=variables,
+            steps=len(dates),
+            forecast_origin=pd.Timestamp("2020-12-31"),
+            quantiles=probabilities,
+            forecast_dates=dates,
+        )
 
 
-def test_validate_quantile_result_rejects_crossing_values():
+def test_forecast_result_rejects_crossing_quantile_values():
     dates, variables, probabilities, rows = _quantile_rows()
     rows.loc[rows["quantile"] == probabilities[0], "value"] = 2.0
     rows.loc[rows["quantile"] == probabilities[-1], "value"] = 1.0
 
     with pytest.raises(ValueError, match="must not cross"):
-        _validate_quantile_result(rows, dates, variables, probabilities)
+        ForecastResult(
+            rows,
+            expected_columns=variables,
+            steps=len(dates),
+            forecast_origin=pd.Timestamp("2020-12-31"),
+            quantiles=probabilities,
+            forecast_dates=dates,
+        )
+
+
+def test_forecast_result_rejects_quantile_decomposition():
+    dates, variables, probabilities, rows = _quantile_rows()
+
+    with pytest.raises(ValueError, match="decomp=True"):
+        ForecastResult(
+            rows,
+            expected_columns=variables,
+            steps=len(dates),
+            forecast_origin=pd.Timestamp("2020-12-31"),
+            decomposition=pd.DataFrame(),
+            quantiles=probabilities,
+            forecast_dates=dates,
+        )
+
+
+@pytest.mark.parametrize(
+    ("forecast_dates", "error_type", "message"),
+    [
+        (pd.Index(["2021-01-31", "2021-02-28"]), TypeError, "DatetimeIndex"),
+        (
+            pd.date_range("2021-02-28", periods=2, freq="ME"),
+            ValueError,
+            "cover every",
+        ),
+    ],
+)
+def test_forecast_result_requires_exact_quantile_calendar(
+    forecast_dates, error_type, message
+):
+    dates, variables, probabilities, rows = _quantile_rows()
+
+    with pytest.raises(error_type, match=message):
+        ForecastResult(
+            rows,
+            expected_columns=variables,
+            steps=len(dates),
+            forecast_origin=pd.Timestamp("2020-12-31"),
+            quantiles=probabilities,
+            forecast_dates=forecast_dates,
+        )
 
 
 def test_ols_density_defaults_are_sorted_and_point_mode_remains_separate():
@@ -933,12 +1002,12 @@ def test_realtime_density_sequential_matches_spawned_parallel_execution():
     ],
 )
 @pytest.mark.parametrize("parallel", [False, True])
-def test_realtime_rejects_invalid_public_predict_density_result(
+def test_realtime_rejects_invalid_raw_quantile_forecast(
     corruption, message, parallel, inline_executor
 ):
     probabilities = [0.1, 0.5, 0.9]
     data = _realtime_data()
-    model = _OverrideQuantileOLS(label="override")
+    model = _CorruptQuantileForecastOLS(label="override")
     runner = rt.RealTimeModel(data=data, models=model)
 
     runner.forecast(**_realtime_options(first_forecast_horizon=1))
@@ -964,20 +1033,3 @@ def test_realtime_rejects_invalid_public_predict_density_result(
 
     pd.testing.assert_frame_equal(runner.quantiles, quantiles_before)
     pd.testing.assert_frame_equal(data.forecasts, point_before)
-
-
-def test_realtime_accepts_valid_public_predict_density_override():
-    runner = rt.RealTimeModel(
-        data=_realtime_data(),
-        models=_OverrideQuantileOLS(label="override"),
-    )
-    runner.forecast(
-        **_realtime_options(
-            first_forecast_horizon=1,
-            quantiles=[0.1, 0.5, 0.9],
-        )
-    )
-
-    assert runner.quantiles is not None
-    assert not runner.quantiles.empty
-    assert set(runner.quantiles["quantile"]) == {0.1, 0.5, 0.9}

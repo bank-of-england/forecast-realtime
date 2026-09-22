@@ -91,7 +91,7 @@ The base class provides this validation:
 - `fit()` checks that `y` (and `X`, if supplied) is a `pd.DataFrame`, builds the
   lagged design matrix and dummies, then stores `self.y` after fitting.
 - `forecast()` and `predict()` check that `steps` is a positive integer and
-  return a validated, DataFrame-compatible `ForecastResult`.
+  construct a `ForecastResult`, whose constructor validates the result.
 
 `_fit()` and `_forecast()` always receive `y` and `X` as pandas DataFrames.
 See [adding_a_model.md](adding_a_model.md) for the full interface.
@@ -111,10 +111,11 @@ date, variable, quantile, value
 ```
 
 Rows are ordered by date, fitted target order, and probability when present.
-`forecast_origin` and `decomposition` remain result metadata, while
-`result.forecast` returns the same long payload as an ordinary DataFrame. To
-use a point result as a conventional date-by-variable matrix, pivot it
-explicitly:
+Point results may use custom dates. Quantile results require an explicit
+requested calendar. The original result retains `.forecast`,
+`.forecast_origin`, and `.decomposition`, while slices and copies return
+ordinary DataFrames without result metadata. To use a point result as a
+conventional date-by-variable matrix, pivot it explicitly:
 
 ```python
 point_matrix = point_result.pivot(

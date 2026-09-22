@@ -90,17 +90,20 @@ one complete vintage batch per model to retain revision continuity. Run tests in
 the `forecast-realtime` conda environment with `pytest -n auto`; this work
 does not add a runtime dependency.
 
-The approved public result change applies to direct `ForecastModel.forecast()`
-and `predict()` calls. Point results are validated `ForecastResult` objects with
-a `RangeIndex` and the long columns `date`, `variable`, and `value`; quantile
-results add `quantile`. This change does not alter model hooks: `_fit()`,
-`_forecast()`, and `_forecast_decomp()` keep their existing array and wide
-DataFrame contracts. Fitting inputs, conditioning inputs, fitted values,
-tree callables, and realtime storage remain stable as well. Public
-`forecast()` and `predict()` overrides must return the validated long contract;
-framework dispatch checks override results at its boundaries. A direct call to
-an override that bypasses `super()` bypasses those checks, so the override
-author owns that validation.
+Direct `ForecastModel.forecast()` and `predict()` calls return validated
+`ForecastResult` objects. The constructor validates and orders the long
+payload, which has a `RangeIndex` and the columns `date`, `variable`, and
+`value`; quantile results add `quantile`. Point forecasts may use custom dates;
+quantile forecasts require an explicit requested calendar. The original result
+retains `.forecast`, `.forecast_origin`, and `.decomposition`, while slices and
+copies return ordinary DataFrames without result metadata.
+
+This change does not alter model hooks: `_fit()`, `_forecast()`, and
+`_forecast_decomp()` keep their existing array and wide DataFrame contracts.
+The existing preparation hooks remain supported as well. Fitting inputs,
+conditioning inputs, fitted values, tree callables, and realtime storage remain
+stable. Replacing public `forecast()` or the internal `predict()` orchestration
+is not a supported model extension point.
 
 ## 4. Code
 

@@ -972,7 +972,7 @@ def _loop_through_vintages(
         )
         forecast_data = model_vintage._raw_data.with_conditioning(future)
         prediction_options = {} if quantiles is False else {"quantiles": quantiles}
-        model_result = model_vintage._predict_from_data(
+        model_result = model_vintage._predict_data(
             forecast_data,
             forecast_origin=model_vintage.last_y_fit_date,
             steps=steps,
@@ -1243,7 +1243,7 @@ def _level_contributions(
     # the vintage loop. Some model implementations cache forecast state even
     # when their public hook appears read-only.
     counterfactual_model = copy.deepcopy(model)
-    result = counterfactual_model._predict_from_data(
+    result = counterfactual_model._predict_data(
         data,
         forecast_origin=forecast_origin,
         steps=steps,

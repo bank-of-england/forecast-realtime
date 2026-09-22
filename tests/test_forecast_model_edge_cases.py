@@ -84,12 +84,14 @@ def test_long_point_result_preserves_hook_payload_and_metadata(include_origin):
     assert isinstance(result.index, pd.RangeIndex)
     assert result.forecast_origin == origin
     assert result.decomposition is None
-    for restored in [result.copy(), result.iloc[:2], pickle.loads(pickle.dumps(result))]:
-        assert restored.forecast_origin == origin
+    for frame in [result.copy(), result.iloc[:2]]:
+        assert type(frame) is pd.DataFrame
+        assert not hasattr(frame, "forecast_origin")
+        assert not hasattr(frame, "decomposition")
+    assert pickle.loads(pickle.dumps(result)).forecast_origin == origin
     assert type(result.forecast) is pd.DataFrame
 
 
-@pytest.mark.parametrize("method", ["forecast", "predict"])
 @pytest.mark.parametrize(
     "corruption, message",
     [
@@ -105,54 +107,51 @@ def test_long_point_result_preserves_hook_payload_and_metadata(include_origin):
         ("quantile", "Point forecasts must have columns"),
     ],
 )
-def test_public_point_overrides_validate_once(monkeypatch, method, corruption, message):
-    history = pd.DataFrame(
-        {"value": [1.0, 2.0, 3.0], "date": [4.0, 5.0, 6.0]},
-        index=pd.date_range("2020-01-31", periods=3, freq="ME"),
+def test_point_constructor_validates_and_orders_keys(corruption, message):
+    origin = pd.Timestamp("2020-03-31")
+    frame = (
+        pd.DataFrame(
+            {
+                "date": pd.date_range("2020-04-30", periods=2, freq="ME").repeat(2),
+                "variable": ["value", "date"] * 2,
+                "value": np.zeros(4),
+            }
+        )
+        .iloc[::-1]
+        .reset_index(drop=True)
     )
-    model = _DesignRecordingModel().fit(history)
-    original = getattr(ForecastModel, method)
-    calls = []
-
-    def override(self, *args, **kwargs):
-        calls.append(method)
-        result = original(self, *args, **kwargs)
-        frame = result.forecast.iloc[::-1].reset_index(drop=True)
-        if corruption == "missing":
-            frame = frame.iloc[1:]
-        elif corruption == "duplicate":
-            frame = pd.concat([frame, frame.iloc[[0]]])
-        elif corruption == "unknown":
-            frame.loc[0, "variable"] = "unknown"
-        elif corruption == "missing_date":
-            frame.loc[0, "date"] = pd.NaT
-        elif corruption == "string_date":
-            frame["date"] = frame["date"].astype(str)
-        elif corruption == "origin":
-            frame.loc[frame["date"] == frame["date"].min(), "date"] = history.index[-1]
-        elif corruption == "short":
-            frame = frame.iloc[:2]
-        elif corruption == "wide":
-            frame = _point_forecast_to_wide(frame)
-        elif corruption == "quantile":
-            frame["quantile"] = np.nan
-        return ForecastResult(frame, forecast_origin=result.forecast_origin)
-
-    monkeypatch.setattr(_DesignRecordingModel, method, override)
-    boundary = (
-        model._forecast_from_data if method == "forecast" else model._predict_from_data
-    )
-    options = {"forecast_origin": history.index[-1], "steps": 2}
+    if corruption == "missing":
+        frame = frame.iloc[1:]
+    elif corruption == "duplicate":
+        frame = pd.concat([frame, frame.iloc[[0]]])
+    elif corruption == "unknown":
+        frame.loc[0, "variable"] = "unknown"
+    elif corruption == "missing_date":
+        frame.loc[0, "date"] = pd.NaT
+    elif corruption == "string_date":
+        frame["date"] = frame["date"].astype(str)
+    elif corruption == "origin":
+        frame.loc[frame["date"] == frame["date"].min(), "date"] = origin
+    elif corruption == "short":
+        frame = frame.iloc[:2]
+    elif corruption == "wide":
+        frame = _point_forecast_to_wide(frame)
+    elif corruption == "quantile":
+        frame["quantile"] = np.nan
+    options = {
+        "forecast_origin": origin,
+        "steps": 2,
+        "expected_columns": ["value", "date"],
+    }
     if message:
         with pytest.raises((ValueError, TypeError), match=message):
-            boundary(model._raw_data, **options)
+            ForecastResult(frame, **options)
     else:
-        result = boundary(model._raw_data, **options)
+        result = ForecastResult(frame, **options)
         assert isinstance(result.index, pd.RangeIndex)
         assert result["variable"].tolist() == ["value", "date", "value", "date"]
         assert result["date"].is_monotonic_increasing
         np.testing.assert_array_equal(result["value"], np.zeros(4))
-    assert calls == [method]
 
 
 def test_long_decomposition_reconciles_by_date_and_target():
@@ -173,14 +172,9 @@ def test_long_decomposition_reconciles_by_date_and_target():
             "weight": 1.0,
         }
     )
-    model = _DesignRecordingModel().fit(
-        pd.DataFrame(
-            {"z": [1.0, 2.0, 3.0], "a": [4.0, 5.0, 6.0]},
-            index=pd.date_range("2019-11-30", periods=3, freq="ME"),
-        )
-    )
-    result = model._validate_result(
+    result = ForecastResult(
         forecast.iloc[::-1],
+        expected_columns=["z", "a"],
         decomposition=decomposition,
         forecast_origin=pd.Timestamp("2020-01-31"),
         steps=2,
@@ -189,6 +183,28 @@ def test_long_decomposition_reconciles_by_date_and_target():
     pd.testing.assert_frame_equal(result.decomposition, decomposition)
     with pytest.raises(ValueError, match="long point forecast"):
         _point_forecast_to_wide(result.assign(quantile=0.5))
+
+
+@pytest.mark.parametrize("include_origin", [False, True])
+def test_point_constructor_preserves_custom_dates_and_missing_values(include_origin):
+    origin = pd.Timestamp("2020-01-31")
+    forecast = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [origin if include_origin else "2020-02-07", "2020-04-13"]
+            ),
+            "variable": ["target", "target"],
+            "value": [1.0, np.nan],
+        }
+    )
+    result = ForecastResult(
+        forecast.iloc[::-1],
+        expected_columns=["target"],
+        steps=2,
+        forecast_origin=origin,
+        forecast_dates_include_origin=include_origin,
+    )
+    pd.testing.assert_frame_equal(result.forecast, forecast)
 
 
 def test_forecast_with_lagged_X_reuses_raw_prepared_history():
@@ -324,36 +340,21 @@ def _forecast_result(decomposition, expected_columns=None):
             for column in expected_columns
         ]
     )
-    model = _DesignRecordingModel().fit(
-        pd.DataFrame(
-            {column: [1.0, 2.0, 3.0] for column in expected_columns},
-            index=pd.date_range("2019-11-30", periods=3, freq="ME"),
-        )
-    )
-    return model._validate_result(
+    return ForecastResult(
         forecast,
+        expected_columns=expected_columns,
         decomposition=decomposition,
         forecast_origin=pd.Timestamp("2020-01-31"),
         steps=2,
     )
 
 
-def test_forecast_result_construction_preserves_arbitrary_pandas_payload():
-    origin = pd.Timestamp("2020-01-31")
-    decomposition = _valid_forecast_result_decomposition()
-    result = ForecastResult(
-        [[2.0], [1.0]],
-        columns=["value"],
-        index=[7, 3],
-        forecast_origin=origin,
-        decomposition=decomposition,
-    )
-    assert result.index.tolist() == [7, 3]
-    assert result["value"].tolist() == [2.0, 1.0]
+def test_forecast_result_pandas_operations_drop_metadata():
+    result = _forecast_result(_valid_forecast_result_decomposition())
     for frame in [result.copy(), result.iloc[:1], result[["value"]]]:
-        assert isinstance(frame, ForecastResult)
-        assert frame.forecast_origin == origin
-        pd.testing.assert_frame_equal(frame.decomposition, decomposition)
+        assert type(frame) is pd.DataFrame
+        assert not hasattr(frame, "forecast_origin")
+        assert not hasattr(frame, "decomposition")
 
 
 def test_forecast_result_validates_and_preserves_single_target_decomposition():
@@ -370,6 +371,16 @@ def test_forecast_result_validates_and_preserves_single_target_decomposition():
 @pytest.mark.parametrize(
     "mutate, error_type, error_message",
     [
+        (
+            lambda decomposition: decomposition.iloc[:0],
+            ValueError,
+            "at least one row",
+        ),
+        (
+            lambda decomposition: pd.concat([decomposition, decomposition], axis=1),
+            ValueError,
+            "columns must be unique",
+        ),
         (
             lambda decomposition: decomposition.drop(columns="contribution"),
             ValueError,
@@ -398,6 +409,46 @@ def test_forecast_result_validates_and_preserves_single_target_decomposition():
             ),
             ValueError,
             "must reconcile",
+        ),
+        (
+            lambda decomposition: decomposition.iloc[:2],
+            ValueError,
+            "every forecast horizon",
+        ),
+        (
+            lambda decomposition: decomposition.assign(forecast_horizon=0.5),
+            TypeError,
+            "must be integers",
+        ),
+        (
+            lambda decomposition: decomposition.assign(contribution=np.inf),
+            ValueError,
+            "contribution values must be finite",
+        ),
+        (
+            lambda decomposition: decomposition.assign(contribution=np.nan),
+            TypeError,
+            "contribution values must be numeric",
+        ),
+        (
+            lambda decomposition: decomposition.assign(weight=np.inf),
+            ValueError,
+            "weight values must be finite",
+        ),
+        (
+            lambda decomposition: decomposition.assign(weight="invalid"),
+            TypeError,
+            "weight values must be numeric",
+        ),
+        (
+            lambda decomposition: decomposition.assign(component=None),
+            TypeError,
+            "component values must be non-missing strings",
+        ),
+        (
+            lambda decomposition: decomposition.assign(variable="unknown"),
+            ValueError,
+            "unknown target",
         ),
     ],
 )

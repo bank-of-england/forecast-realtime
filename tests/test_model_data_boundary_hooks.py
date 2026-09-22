@@ -82,22 +82,6 @@ class _LogFitOverride(_RecordingModel):
         return super()._fit(y, X, **kwargs)
 
 
-class _ContextOverrideModel(_RecordingModel):
-    def __init__(self, *args, replacement=False, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.replacement = replacement
-
-    def predict(self, context, *args, **kwargs):
-        if self.replacement:
-            context = replace(
-                context,
-                y_conditioning=context.y_conditioning.assign(target=888.0),
-            )
-        else:
-            context.y_conditioning.loc[:, "target"] = 777.0
-        return super().predict(context, *args, **kwargs)
-
-
 def _monthly_y(values, start="2020-01-31"):
     return pd.DataFrame(
         {"target": values},
@@ -425,7 +409,7 @@ def test_tree_forecast_hook_preserves_context_and_conditioning(boundary, replace
     elif boundary == "predict":
         result = tree.predict(context, steps=2, decomp=True, marker="forwarded")
     else:
-        result = tree._predict_from_data(
+        result = tree._predict_data(
             ModelData.from_context(context, tree._raw_data),
             forecast_origin=context.forecast_origin,
             steps=2,
@@ -480,20 +464,6 @@ def test_tree_forecast_preserves_the_public_context_position(positional_context)
         conditioning.index.tolist()
     )
     assert leaf.received_forecast_y is None
-
-
-@pytest.mark.parametrize("replacement", [False, True])
-def test_public_predict_override_preserves_context_changes(replacement):
-    model = _ContextOverrideModel(replacement=replacement)
-    model.fit(_monthly_y([100.0, 110.0, 121.0]))
-    conditioning = _monthly_y([130.0], start="2020-04-30")
-
-    model.forecast(steps=1, y=conditioning)
-
-    assert model.received_forecast_y.loc[pd.Timestamp("2020-04-30"), "target"] == (
-        888.0 if replacement else 777.0
-    )
-    assert conditioning.loc[pd.Timestamp("2020-04-30"), "target"] == 130.0
 
 
 def test_forecast_context_exposes_published_paths_and_reconciles_native_conditioning():

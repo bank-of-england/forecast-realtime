@@ -56,20 +56,9 @@ def _future(history, values=(80.0, 90.0, 100.0)):
     )
 
 
-@pytest.mark.parametrize(
-    "boundary", ["forecast", "predict", "internal-predict", "internal-forecast"]
-)
-def test_raw_constraints_rejected_before_overrides_and_transformation(history, boundary):
-    class OverrideModel(RecordingModel):
-        def predict(self, context, **kwargs):
-            self.override_reached = True
-            return super().predict(context, **kwargs)
-
-        def forecast(self, *args, **kwargs):
-            self.forecast_reached = True
-            return super().forecast(*args, **kwargs)
-
-    model = OverrideModel(data_transformation={"target": "logs"}).fit(history)
+@pytest.mark.parametrize("boundary", ["forecast", "predict", "internal-data"])
+def test_raw_constraints_rejected_before_transformation(history, boundary):
+    model = RecordingModel(data_transformation={"target": "logs"}).fit(history)
     # A negative value would become NaN; validate the raw request first.
     constraint = _future(history, (-1.0,))
     context = ForecastContext(
@@ -81,18 +70,10 @@ def test_raw_constraints_rejected_before_overrides_and_transformation(history, b
         elif boundary == "predict":
             model.predict(context)
         else:
-            method = (
-                model._predict_from_data
-                if boundary == "internal-predict"
-                else model._forecast_from_data
-            )
-            method(
+            model._predict_data(
                 ModelData.from_context(context, model._raw_data),
                 forecast_origin=history.index[-1],
             )
-    if boundary.startswith("internal"):
-        assert not hasattr(model, "override_reached")
-        assert not hasattr(model, "forecast_reached")
 
 
 @pytest.mark.parametrize("path", ["history", "empty", "nan", "outside", "published"])

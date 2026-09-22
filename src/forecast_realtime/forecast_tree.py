@@ -804,15 +804,14 @@ class ForecastTree(ForecastModel):
     ) -> pd.DataFrame:
         """Produce each node's forecast bottom-up and return the root's.
 
-        Each leaf is forecast once via its public ``forecast()`` (re-applying
-        its own lag/dummy/formula config to the shared ``X``/``y``); each node
-        is then evaluated in dependency order. ``**kwargs`` are forwarded to
-        every leaf's ``forecast()``.
+        Each leaf prepares its shared inputs and constructs one validated result;
+        nodes are then evaluated in dependency order. ``**kwargs`` are forwarded
+        to each leaf's prediction path.
         """
         raw: dict[str, pd.DataFrame] = {}
         child_data = data.without_target_conditioning()
         for leaf in self.spec.all_leaves():
-            leaf_result = leaf._forecast_from_data(
+            leaf_result = leaf._predict_data(
                 child_data,
                 forecast_origin=forecast_origin,
                 steps=steps,
@@ -834,7 +833,7 @@ class ForecastTree(ForecastModel):
                 )
                 node_data = transform._raw_data.with_conditioning(future)
                 node_data = node_data.published_after(data, transform.last_y_fit_date)
-                transform_result = transform._forecast_from_data(
+                transform_result = transform._predict_data(
                     node_data,
                     forecast_origin=forecast_origin,
                     steps=steps,

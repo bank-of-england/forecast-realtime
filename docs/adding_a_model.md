@@ -142,8 +142,9 @@ Must return either a `pd.DataFrame` or an array-like object of shape `(steps, n_
     (or the call-level fallback). `RealTimeModel` handles back-transformation to
     levels automatically; model code must not back-transform its own output.
 
-The hook keeps this array or wide-DataFrame contract. `ForecastModel` validates
-and converts the point payload once at the public output boundary.
+The hook keeps this array or wide-DataFrame contract. `ForecastModel` converts
+the payload to the public long form, then constructs a `ForecastResult`, whose
+constructor performs the final validation.
 
 **Example output for `steps=4`, 1 variable:**
 
@@ -173,12 +174,29 @@ and `value`. Rows are ordered by date and fitted target order. The result keeps
 `forecast_origin` and `decomposition` as metadata, while `.forecast` returns
 the same long payload as an ordinary DataFrame.
 
-`ForecastResult` construction only wraps the DataFrame payload and attaches
-`forecast_origin` and `decomposition`; it does not validate or reorder the
-payload. Framework model dispatch owns validation: hook output is normalised and
-validated before construction, and public overrides are validated at the public
-output boundary. Ordinary pandas operations do not validate or reorder the
-contents.
+`ForecastResult` validates and orders the payload at construction. Its
+signature is:
+
+```python
+ForecastResult(
+    forecast,
+    *,
+    expected_columns,
+    steps,
+    forecast_origin,
+    decomposition=None,
+    quantiles=False,
+    forecast_dates=None,
+    forecast_dates_include_origin=False,
+)
+```
+
+Point results may use a custom calendar supplied by the hook, subject to the
+step count and forecast-origin rules. Quantile results require `forecast_dates`
+to provide the explicit requested calendar, and the constructor checks its
+exact coverage. The original result retains `.forecast`, `.forecast_origin`,
+and `.decomposition`; slices and copies return ordinary DataFrames without
+result metadata. Validation occurs at construction, not after later mutation.
 
 Use an explicit pivot when a downstream calculation needs a wide point matrix:
 
@@ -191,10 +209,10 @@ point_matrix = point_result.pivot(
 )
 ```
 
-Public `forecast()` and `predict()` overrides must return this validated long
-contract. A direct call to an override that bypasses `super()` bypasses
-framework dispatch validation, so the model author is responsible for returning
-the contract there.
+Model extensions implement `_fit()`, `_forecast()`, and the optional
+`_forecast_decomp()` hooks, together with the existing preparation hooks.
+Replacing public `forecast()` or the internal `predict()` orchestration is not
+a supported extension point.
 
 #### Quantile forecasts
 
@@ -213,7 +231,7 @@ date, variable, quantile, value
 
 Return one row for every requested date, fitted target variable, and
 probability. Values must be finite, and the quantiles for each date and
-variable must not cross. The shared finaliser checks the columns, complete
+variable must not cross. Result construction checks the columns, complete
 coverage, unique keys, finite values, and ordering, then wraps the table in a
 single `ForecastResult`. Do not return a point forecast alongside the quantile
 table.
@@ -244,18 +262,18 @@ argument to `ForecastModel`, but must not pass it as an estimator or script
 parameter. Source policies do not create constrained forecasting for a
 model that has not opted in.
 
-### `ForecastContext` migration
+### `ForecastContext` data
 
-Public `forecast()` and `predict()` overrides that inspect `ForecastContext`
-must keep explicit constraints and published observations separate:
+Preparation logic that inspects `ForecastContext` must keep explicit constraints
+and published observations separate:
 
 - `context.y_conditioning` contains only explicit caller-supplied target
     constraints, with `y_conditioning_input_metrics` for their input units.
 - `context.y_published` contains published target observations retained for the
     forecast, with `y_published_input_metrics` for their input units.
 
-Use `y_published` when an override needs ordinary published observations. Do
-not read those observations from `y_conditioning` or merge the two frames at
+Use `y_published` when preparation logic needs ordinary published observations.
+Do not read those observations from `y_conditioning` or merge the two frames at
 the context boundary; the preparation pipeline combines them after validation.
 This preserves explicit constraints even when a later transformation produces
 NaNs.
@@ -631,8 +649,8 @@ argument order mirrors `ForecastModel._fit` and `_forecast`, with `model`
 standing in for `self` and `params` for `**kwargs`.
 
 The external forecast function returns the model hook payload, so point output
-may remain an array or wide table here. The Python wrapper validates and
-converts it to the public long `ForecastResult` contract.
+may remain an array or wide table here. The Python wrapper converts it to the
+public long `ForecastResult` contract, whose constructor validates the result.
 
 The inputs follow the Python forecasting contract above. Supplied `X` can
 contain prepared history and conditioning, not just one row per forecast step.
