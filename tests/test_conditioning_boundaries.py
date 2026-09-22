@@ -163,7 +163,10 @@ def test_multilevel_tree_routes_constraints_only_to_root(history):
         y_published=published,
     )
     result = tree.predict(context, steps=3)
-    np.testing.assert_allclose(result, explicit)
+    np.testing.assert_allclose(
+        result.loc[result["variable"] == "target", "value"].to_numpy(),
+        explicit.to_numpy().ravel(),
+    )
     for child in (leaf, middle):
         pd.testing.assert_frame_equal(child.received_y.loc[published.index], published)
     assert list(root.received_X.columns) == ["middle"]
@@ -241,4 +244,4 @@ def test_context_round_trip_preserves_units_and_prepared_values(history):
         round_trip.transform({"target": "pop"}, combine=True).to_wide("y"),
     )
     changed = replace(context, y_conditioning=explicit.assign(target=7.0))
-    np.testing.assert_allclose(model.predict(changed, steps=3).iloc[1:], 7.0)
+    np.testing.assert_allclose(model.predict(changed, steps=3)["value"].iloc[1:], 7.0)

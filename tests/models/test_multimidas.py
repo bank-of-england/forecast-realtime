@@ -95,7 +95,7 @@ def test_multimidas_decomposition_reconstructs_forecast():
         decomp_sum = decomp_df.loc[
             decomp_df["forecast_horizon"] == h, "contribution"
         ].sum()
-        np.testing.assert_allclose(decomp_sum, forecast.iloc[h, 0], atol=1e-9)
+        np.testing.assert_allclose(decomp_sum, forecast["value"].iloc[h], atol=1e-9)
 
 
 def test_multimidas_decomposition_none_without_flag():

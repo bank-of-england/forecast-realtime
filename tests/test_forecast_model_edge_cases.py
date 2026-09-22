@@ -2,7 +2,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from forecast_realtime.forecast_model import ForecastModel, ForecastResult
+from forecast_realtime.forecast_model import (
+    ForecastModel,
+    ForecastResult,
+    _point_forecast_to_wide,
+)
 from forecast_realtime.models.ols import ForecastOLS
 
 
@@ -54,6 +58,134 @@ def _monthly_dates(origin, steps):
     return pd.date_range(origin, periods=steps + 1, freq="ME")[1:]
 
 
+@pytest.mark.parametrize("include_origin", [False, True])
+def test_long_point_result_preserves_hook_payload_and_metadata(include_origin):
+    import pickle
+
+    origin = pd.Timestamp("2020-01-31")
+    dates = pd.DatetimeIndex(
+        [origin if include_origin else pd.Timestamp("2020-02-07"), "2020-04-13"],
+        name="date",
+    )
+    payload = pd.DataFrame({"value": [1.0, np.nan], "date": [3.0, 4.0]}, index=dates)
+    model = _DesignRecordingModel().fit(
+        pd.DataFrame(
+            {"value": [1.0, 2.0, 3.0], "date": [4.0, 5.0, 6.0]},
+            index=pd.date_range("2019-11-30", periods=3, freq="ME"),
+        )
+    )
+    model._forecast_dates_include_origin = include_origin
+    result = model._finalise_forecast(payload, 2, origin)
+    wide = result.forecast.pivot(index="date", columns="variable", values="value")
+    pd.testing.assert_frame_equal(
+        wide[payload.columns].rename_axis(columns=None), payload
+    )
+    assert result["variable"].tolist() == ["value", "date", "value", "date"]
+    assert isinstance(result.index, pd.RangeIndex)
+    assert result.forecast_origin == origin
+    assert result.decomposition is None
+    for restored in [result.copy(), result.iloc[:2], pickle.loads(pickle.dumps(result))]:
+        assert restored.forecast_origin == origin
+    assert type(result.forecast) is pd.DataFrame
+
+
+@pytest.mark.parametrize("method", ["forecast", "predict"])
+@pytest.mark.parametrize(
+    "corruption, message",
+    [
+        ("none", None),
+        ("missing", "cover every date"),
+        ("duplicate", "complete and unique"),
+        ("unknown", "cover every date"),
+        ("missing_date", "complete and unique"),
+        ("string_date", "datetime dtype"),
+        ("origin", "strictly after"),
+        ("short", "2 dates"),
+        ("wide", "Point forecasts must have columns"),
+        ("quantile", "Point forecasts must have columns"),
+    ],
+)
+def test_public_point_overrides_validate_once(monkeypatch, method, corruption, message):
+    history = pd.DataFrame(
+        {"value": [1.0, 2.0, 3.0], "date": [4.0, 5.0, 6.0]},
+        index=pd.date_range("2020-01-31", periods=3, freq="ME"),
+    )
+    model = _DesignRecordingModel().fit(history)
+    original = getattr(ForecastModel, method)
+    calls = []
+
+    def override(self, *args, **kwargs):
+        calls.append(method)
+        result = original(self, *args, **kwargs)
+        frame = result.forecast.iloc[::-1].reset_index(drop=True)
+        if corruption == "missing":
+            frame = frame.iloc[1:]
+        elif corruption == "duplicate":
+            frame = pd.concat([frame, frame.iloc[[0]]])
+        elif corruption == "unknown":
+            frame.loc[0, "variable"] = "unknown"
+        elif corruption == "missing_date":
+            frame.loc[0, "date"] = pd.NaT
+        elif corruption == "string_date":
+            frame["date"] = frame["date"].astype(str)
+        elif corruption == "origin":
+            frame.loc[frame["date"] == frame["date"].min(), "date"] = history.index[-1]
+        elif corruption == "short":
+            frame = frame.iloc[:2]
+        elif corruption == "wide":
+            frame = _point_forecast_to_wide(frame)
+        elif corruption == "quantile":
+            frame["quantile"] = np.nan
+        return ForecastResult(frame, forecast_origin=result.forecast_origin)
+
+    monkeypatch.setattr(_DesignRecordingModel, method, override)
+    boundary = (
+        model._forecast_from_data if method == "forecast" else model._predict_from_data
+    )
+    options = {"forecast_origin": history.index[-1], "steps": 2}
+    if message:
+        with pytest.raises((ValueError, TypeError), match=message):
+            boundary(model._raw_data, **options)
+    else:
+        result = boundary(model._raw_data, **options)
+        assert isinstance(result.index, pd.RangeIndex)
+        assert result["variable"].tolist() == ["value", "date", "value", "date"]
+        assert result["date"].is_monotonic_increasing
+        np.testing.assert_array_equal(result["value"], np.zeros(4))
+    assert calls == [method]
+
+
+def test_long_decomposition_reconciles_by_date_and_target():
+    dates = pd.to_datetime(["2020-02-07", "2020-04-13"])
+    forecast = pd.DataFrame(
+        {
+            "date": dates.repeat(2),
+            "variable": ["z", "a"] * 2,
+            "value": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+    decomposition = pd.DataFrame(
+        {
+            "forecast_horizon": [1, 0, 1, 0],
+            "variable": ["a", "a", "z", "z"],
+            "component": "total",
+            "contribution": [4.0, 2.0, 3.0, 1.0],
+            "weight": 1.0,
+        }
+    )
+    result = ForecastResult(
+        forecast.iloc[::-1],
+        decomposition=decomposition,
+        forecast_origin=pd.Timestamp("2020-01-31"),
+        steps=2,
+        expected_columns=["z", "a"],
+    )
+    pd.testing.assert_frame_equal(result.forecast, forecast)
+    pd.testing.assert_frame_equal(result.decomposition, decomposition)
+    with pytest.raises(ValueError, match="long point forecast"):
+        _point_forecast_to_wide(result.assign(quantile=0.5))
+
+
 def test_forecast_with_lagged_X_reuses_raw_prepared_history():
     index = pd.date_range("2020-01-31", periods=8, freq="ME")
     y = pd.DataFrame({"target": np.arange(8.0)}, index=index)
@@ -87,7 +219,7 @@ def test_short_month_end_index_keeps_dummy_names_and_calendar_dates():
     )
     forecast = model.forecast(steps=1, X=future)
 
-    assert forecast.index[0] == pd.Timestamp("2020-03-31")
+    assert forecast["date"].iloc[0] == pd.Timestamp("2020-03-31")
 
 
 def test_dummy_names_use_target_frequency_for_mixed_design_index():
@@ -124,7 +256,7 @@ def test_array_forecast_starts_after_final_target_used_for_fitting():
     model = ForecastOLS().fit(y)
     forecast = model.forecast(steps=1)
 
-    assert forecast.index[0] == index[-1]
+    assert forecast["date"].iloc[0] == index[-1]
 
 
 @pytest.mark.parametrize(
@@ -178,16 +310,21 @@ def _valid_forecast_result_decomposition():
 
 
 def _forecast_result(decomposition, expected_columns=None):
+    expected_columns = expected_columns or ["target"]
+    dates = pd.date_range("2020-02-29", periods=2, freq="ME")
     forecast = pd.DataFrame(
-        {column: [1.0, 2.0] for column in (expected_columns or ["target"])},
-        index=pd.date_range("2020-02-29", periods=2, freq="ME"),
+        [
+            {"date": date, "variable": column, "value": value}
+            for value, date in zip([1.0, 2.0], dates, strict=True)
+            for column in expected_columns
+        ]
     )
     return ForecastResult(
         forecast,
         decomposition=decomposition,
         forecast_origin=pd.Timestamp("2020-01-31"),
         steps=2,
-        expected_columns=expected_columns or ["target"],
+        expected_columns=expected_columns,
     )
 
 

@@ -937,7 +937,7 @@ def test_realtime_ols_with_regressors(forecast_data):
     manual_forecasts = manual_model.forecast(steps=steps, X=X_forecast)
 
     # --- Compare ---
-    np.testing.assert_allclose(rt_ols, manual_forecasts.values.ravel(), atol=1e-10)
+    np.testing.assert_allclose(rt_ols, manual_forecasts["value"], atol=1e-10)
 
 
 def test_realtime_formula_selects_target_from_requested_variables(forecast_data):
@@ -1066,7 +1066,7 @@ def test_realtime_ols_dummy_absorbs_outlier(sample_outturns):
     manual_forecasts = manual_model.forecast(steps=steps, X=X_forecast)
 
     # --- Compare ---
-    np.testing.assert_allclose(rt_ols, manual_forecasts.values.ravel(), atol=1e-10)
+    np.testing.assert_allclose(rt_ols, manual_forecasts["value"], atol=1e-10)
 
 
 def test_realtime_ols_decomposition_with_regressors(forecast_data):
@@ -1149,22 +1149,34 @@ def test_realtime_ols_decomposition_with_regressors(forecast_data):
                     )
 
 
-def test_revision_counterfactual_does_not_mutate_fitted_model():
+@pytest.mark.parametrize("custom_calendar", [False, True])
+def test_revision_counterfactual_does_not_mutate_fitted_model(custom_calendar):
     """Counterfactual decomposition must not mutate the fitted model."""
+
+    class CalendarModel(_NativeMetricConstantModel):
+        def _forecast(self, steps, X=None, y=None, **kwargs):
+            values = super()._forecast(steps, X=X, y=y, **kwargs)
+            if custom_calendar:
+                return pd.DataFrame(
+                    values,
+                    columns=self.y.columns,
+                    index=pd.to_datetime(["2020-04-07", "2020-06-13"]),
+                )
+            return values
+
     dates = pd.date_range("2020-01-31", periods=3, freq="ME")
     y = pd.DataFrame({"target": [1.0, 2.0, 3.0]}, index=dates)
-    model = _NativeMetricConstantModel()
+    model = CalendarModel()
     model.fit(y, data_transformation={"target": "levels"}, frequency="M")
     forecast = model.forecast(steps=2, decomp=True)
     decomposition = forecast.decomposition
     forecast_origin = forecast.forecast_origin
 
-    _level_contributions(
+    contributions = _level_contributions(
         model,
         data=model._raw_data,
         forecast_origin=model.last_y_fit_date,
         steps=2,
-        dates=forecast.index,
         data_transformation={"target": "levels"},
         frequency="M",
         X_imputation=None,
@@ -1172,6 +1184,7 @@ def test_revision_counterfactual_does_not_mutate_fitted_model():
     )
 
     assert model.forecast(steps=2, decomp=True).decomposition is not decomposition
+    assert contributions["date"].tolist() == forecast["date"].tolist()
     assert model.forecast(steps=2).forecast_origin == forecast_origin
     pd.testing.assert_frame_equal(model._raw_y_history, y)
 
@@ -1426,7 +1439,7 @@ def test_first_forecast_horizon_one(forecast_data):
     manual_forecasts = manual_model.forecast(steps=1, X=y_wide[["monthly_a"]])
 
     np.testing.assert_allclose(
-        rt_ols["value"].values[0], manual_forecasts.values.ravel(), atol=1e-10
+        rt_ols["value"].values[0], manual_forecasts["value"], atol=1e-10
     )
 
 

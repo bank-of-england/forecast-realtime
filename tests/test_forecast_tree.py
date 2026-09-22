@@ -13,7 +13,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from forecast_realtime.forecast_model import ForecastContext, ForecastModel
+from forecast_realtime.forecast_model import (
+    ForecastContext,
+    ForecastModel,
+    _point_forecast_to_wide,
+)
 from forecast_realtime.forecast_tree import ForecastTree, TreeNode
 
 
@@ -636,11 +640,10 @@ def test_forecasttree_flat_forecast_applies_transform():
 
     fc = tree.forecast(steps=3)
 
-    assert list(fc.columns) == ["target"]
+    assert list(fc.columns) == ["date", "variable", "value"]
     assert len(fc) == 3
-    assert isinstance(fc.index, pd.DatetimeIndex)
     # 0.25 * 10 + 0.75 * 20 = 17.5
-    assert (fc["target"] == 17.5).all()
+    assert (fc["value"] == 17.5).all()
 
 
 def test_forecasttree_two_stage_nested_forecast():
@@ -664,7 +667,7 @@ def test_forecasttree_two_stage_nested_forecast():
     fc = tree.forecast(steps=2)
 
     # stage1 = 0.5*10 + 0.5*20 = 15; final = 0.5*15 + 0.5*30 = 22.5
-    assert (fc["target"] == 22.5).all()
+    assert (fc["value"] == 22.5).all()
     # Intermediate node forecasts are exposed for inspection.
     assert (tree.node_forecasts_["stage1"]["target"] == 15.0).all()
     assert (tree.node_forecasts_["final"]["target"] == 22.5).all()
@@ -743,9 +746,10 @@ def test_forecasttree_forecast_selects_target_from_multivariate_leaf():
 
     fc = tree.forecast(steps=2)
 
-    assert list(fc.columns) == ["cpi"]
-    assert list(fc.index) == list(pd.date_range("2020-07-31", periods=2, freq="ME"))
-    assert (fc["cpi"] == 5.0).all()
+    assert list(fc.columns) == ["date", "variable", "value"]
+    assert fc["date"].tolist() == list(pd.date_range("2020-07-31", periods=2, freq="ME"))
+    assert (fc["variable"] == "cpi").all()
+    assert (fc["value"] == 5.0).all()
 
 
 def test_forecasttree_two_stage_with_ols_matches_manual():
@@ -784,11 +788,12 @@ def test_forecasttree_two_stage_with_ols_matches_manual():
     manual_stage1 = 0.6 * fc1 + 0.4 * fc2
     manual_final = 0.5 * manual_stage1 + 0.5 * fc3
 
-    assert tree_fc.shape == (2, 1)
+    assert len(tree_fc) == 2
+    assert list(tree_fc.columns) == ["date", "variable", "value"]
     pd.testing.assert_series_equal(
         tree.node_forecasts_["stage1"]["gdp"], manual_stage1, check_names=False
     )
-    pd.testing.assert_series_equal(tree_fc["gdp"], manual_final, check_names=False)
+    np.testing.assert_allclose(tree_fc["value"], manual_final.to_numpy())
 
 
 # ---------------------------------------------------------------------- #
@@ -817,11 +822,13 @@ def test_forecasttree_model_transform_stacks_children():
 
     fc = tree.forecast(steps=2, X=X_full)
 
-    assert fc.shape == (2, 1)
-    assert list(fc.columns) == ["gdp"]
+    assert len(fc) == 2
+    assert list(fc.columns) == ["date", "variable", "value"]
     assert tree.y_name == "gdp"
     # The stacking transform's own forecast is the root node's output.
-    pd.testing.assert_frame_equal(tree.node_forecasts_["stack"], fc.forecast)
+    pd.testing.assert_frame_equal(
+        tree.node_forecasts_["stack"], _point_forecast_to_wide(fc, ["gdp"])
+    )
 
 
 def test_forecasttree_model_transform_needs_no_target():
@@ -846,7 +853,7 @@ def test_forecasttree_model_transform_needs_no_target():
 
     fc = tree.forecast(steps=2, X=X_full)
 
-    assert list(fc.columns) == ["gdp"]
+    assert list(fc.columns) == ["date", "variable", "value"]
     assert list(tree.y.columns) == ["gdp"]
 
 
@@ -1000,7 +1007,7 @@ def test_forecasttree_callable_root_uses_last_usable_fitted_output_origin():
 
     effective_origin = pd.Timestamp("2020-03-31")
     assert tree.last_y_fit_date == effective_origin
-    assert forecast.index.equals(pd.DatetimeIndex([pd.Timestamp("2020-04-30")]))
+    assert forecast["date"].tolist() == [pd.Timestamp("2020-04-30")]
     assert leaf.forecast_calls[0]["X"].loc[pd.Timestamp("2020-04-30"), "x1"] == 13.0
 
 
@@ -1020,7 +1027,7 @@ def test_forecasttree_model_root_uses_root_transform_origin():
 
     assert tree.last_y_fit_date == transform.last_y_fit_date
     assert tree.last_y_fit_date == pd.Timestamp("2020-03-31")
-    assert forecast.index.equals(pd.DatetimeIndex([pd.Timestamp("2020-04-30")]))
+    assert forecast["date"].tolist() == [pd.Timestamp("2020-04-30")]
 
 
 def test_forecasttree_callable_root_exposes_in_sample_fitted_values_after_fit():
@@ -1722,7 +1729,7 @@ def test_forecasttree_owned_mapping_uses_fitted_policy_after_mapping_mutates(
 
     forecast = tree.forecast(steps=1, frequency="M")
 
-    np.testing.assert_allclose(baseline["target"], [12.1])
+    np.testing.assert_allclose(baseline["value"], [12.1])
     pd.testing.assert_frame_equal(forecast, baseline)
 
 
@@ -1748,7 +1755,7 @@ def test_forecasttree_stacker_uses_captured_fit_policy_after_mapping_mutates(
 
     forecast = tree.forecast(steps=1, frequency="M")
 
-    np.testing.assert_allclose(forecast["target"].to_numpy(), [11.0])
+    np.testing.assert_allclose(forecast["value"].to_numpy(), [11.0])
     assert tree.native_metric_mapping() == {"target": "diff"}
 
 

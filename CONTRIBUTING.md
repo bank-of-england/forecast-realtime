@@ -90,6 +90,18 @@ one complete vintage batch per model to retain revision continuity. Run tests in
 the `forecast-realtime` conda environment with `pytest -n auto`; this work
 does not add a runtime dependency.
 
+The approved public result change applies to direct `ForecastModel.forecast()`
+and `predict()` calls. Point results are validated `ForecastResult` objects with
+a `RangeIndex` and the long columns `date`, `variable`, and `value`; quantile
+results add `quantile`. This change does not alter model hooks: `_fit()`,
+`_forecast()`, and `_forecast_decomp()` keep their existing array and wide
+DataFrame contracts. Fitting inputs, conditioning inputs, fitted values,
+tree callables, and realtime storage remain stable as well. Public
+`forecast()` and `predict()` overrides must return the validated long contract;
+framework dispatch checks override results at its boundaries. A direct call to
+an override that bypasses `super()` bypasses those checks, so the override
+author owns that validation.
+
 ## 4. Code
 
 The `main` branch holds released code and accepts changes only through pull requests. Start each change from the main repository's `dev` branch, then open a pull request from your fork back to `dev`. Changes can accumulate there until the maintainers are ready to release a new version of the package.

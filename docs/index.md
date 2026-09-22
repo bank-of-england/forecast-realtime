@@ -90,12 +90,39 @@ The base class provides this validation:
 
 - `fit()` checks that `y` (and `X`, if supplied) is a `pd.DataFrame`, builds the
   lagged design matrix and dummies, then stores `self.y` after fitting.
-- `forecast()` checks that `steps` is a positive integer and verifies the output
-  is a `pd.DataFrame` of shape `(steps, n_variables)` indexed by a
-  `DatetimeIndex` (one date per horizon).
+- `forecast()` and `predict()` check that `steps` is a positive integer and
+  return a validated, DataFrame-compatible `ForecastResult`.
 
 `_fit()` and `_forecast()` always receive `y` and `X` as pandas DataFrames.
 See [adding_a_model.md](adding_a_model.md) for the full interface.
+
+### Public forecast results
+
+Point results use a `RangeIndex` and exactly these columns:
+
+```text
+date, variable, value
+```
+
+Quantile results use the same `RangeIndex` and add `quantile`:
+
+```text
+date, variable, quantile, value
+```
+
+Rows are ordered by date, fitted target order, and probability when present.
+`forecast_origin` and `decomposition` remain result metadata, while
+`result.forecast` returns the same long payload as an ordinary DataFrame. To
+use a point result as a conventional date-by-variable matrix, pivot it
+explicitly:
+
+```python
+point_matrix = point_result.pivot(
+    index="date",
+    columns="variable",
+    values="value",
+)
+```
 
 ## RealTimeModel
 

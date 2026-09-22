@@ -393,7 +393,7 @@ def test_ols_density_defaults_are_sorted_and_point_mode_remains_separate():
 
     assert list(default["quantile"].drop_duplicates()) == [0.16, 0.5, 0.84]
     assert list(custom["quantile"].drop_duplicates()) == [0.16, 0.5, 0.84]
-    assert list(point.columns) == ["target"]
+    assert list(point.columns) == ["date", "variable", "value"]
     assert "quantile" not in point.columns
 
 
@@ -505,7 +505,7 @@ def test_regularised_models_support_density(model_name, model_kwargs):
     assert list(density.columns) == ["date", "variable", "quantile", "value"]
     assert np.isfinite(density["value"]).all()
     np.testing.assert_allclose(
-        density.loc[density["quantile"] == 0.5, "value"], point.iloc[:, 0]
+        density.loc[density["quantile"] == 0.5, "value"], point["value"]
     )
 
 
@@ -541,7 +541,9 @@ def test_ols_zero_residual_variance_produces_degenerate_quantiles():
     density = model.forecast(steps=len(future), X=future, quantiles=[0.1, 0.5, 0.9])
     values = density.pivot(index="date", columns="quantile", values="value")
 
-    np.testing.assert_allclose(values.to_numpy(), np.repeat(point.to_numpy(), 3, axis=1))
+    np.testing.assert_allclose(
+        values.to_numpy(), np.repeat(point["value"].to_numpy()[:, None], 3, axis=1)
+    )
 
 
 def test_ols_predict_accepts_an_explicit_forecast_context():

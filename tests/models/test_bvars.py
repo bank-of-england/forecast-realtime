@@ -12,6 +12,7 @@ import bvar as bv
 import forecast_evaluation as fe
 
 import forecast_realtime as rt
+from forecast_realtime.forecast_model import _point_forecast_to_wide
 
 
 class _SyntheticBVAR:
@@ -413,7 +414,10 @@ def test_bvar_matches_native_unconditional_and_conditional_forecasts(
     wrapper_forecasts = wrapper.forecast(steps=H)
 
     np.testing.assert_allclose(
-        native_forecasts, wrapper_forecasts.values, rtol=1e-5, atol=1e-5
+        native_forecasts,
+        _point_forecast_to_wide(wrapper_forecasts, variables).to_numpy(),
+        rtol=1e-5,
+        atol=1e-5,
     )
     compiled_unconditional = wrapper_forecasts.copy()
 
@@ -452,7 +456,10 @@ def test_bvar_matches_native_unconditional_and_conditional_forecasts(
     wrapper_forecasts = wrapper.forecast(steps=H, y=constraint_mean_df)
 
     np.testing.assert_allclose(
-        native_forecasts, wrapper_forecasts.values, rtol=1e-5, atol=1e-5
+        native_forecasts,
+        _point_forecast_to_wide(wrapper_forecasts, variables).to_numpy(),
+        rtol=1e-5,
+        atol=1e-5,
     )
 
     # Other contract tests use this same kernel without its compilation overhead.

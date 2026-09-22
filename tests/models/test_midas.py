@@ -70,7 +70,7 @@ def test_midas_native_fit_and_forecast():
     wrapper_forecasts = wrapper.forecast(steps=4)
 
     np.testing.assert_allclose(
-        native_forecasts, wrapper_forecasts.values, rtol=1e-5, atol=1e-5
+        native_forecasts.ravel(), wrapper_forecasts["value"], rtol=1e-5, atol=1e-5
     )
 
 
@@ -113,8 +113,9 @@ def test_midas_handles_missing_regressor_internally():
     forecast = model.forecast(steps=3, X=X)
 
     assert model._regressors["value"].isna().sum() == 1
-    assert forecast.shape == (3, 1)
-    assert forecast.notna().all().all()
+    assert len(forecast) == 3
+    assert list(forecast.columns) == ["date", "variable", "value"]
+    assert forecast["value"].notna().all()
 
 
 def test_midas_ignores_trailing_missing_regressor_dates():
@@ -193,7 +194,7 @@ def test_midas_decomposition_reconstructs_forecast():
         decomp_sum = decomp_df.loc[
             decomp_df["forecast_horizon"] == h, "contribution"
         ].sum()
-        np.testing.assert_allclose(decomp_sum, forecast.iloc[h, 0], atol=1e-9)
+        np.testing.assert_allclose(decomp_sum, forecast["value"].iloc[h], atol=1e-9)
 
 
 def test_midas_decomposition_none_without_flag():

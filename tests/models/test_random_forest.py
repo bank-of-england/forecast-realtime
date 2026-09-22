@@ -57,7 +57,7 @@ def test_rf_recursive_two_y_lags_uses_correct_period():
     lag2_position = list(model.X.columns).index("target_lag2")
     model.model = _LagEchoEstimator(lag2_position)
 
-    forecasts = model.forecast(steps=3, X=X_test).values.ravel()
+    forecasts = model.forecast(steps=3, X=X_test)["value"].to_numpy()
 
     expected = [
         y_train.iloc[-2, 0],  # two periods before T+1 is y[T-1]
@@ -94,7 +94,7 @@ def test_rf_direct_standardise_uses_horizon_specific_scalers():
         np.testing.assert_allclose(
             estimator.X_predict, X_scaler.transform(X_future.values)
         )
-        np.testing.assert_allclose(forecasts.iloc[horizon, 0], y_scaler.mean_[0])
+        np.testing.assert_allclose(forecasts["value"].iloc[horizon], y_scaler.mean_[0])
 
 
 def test_rf_direct_rejects_excessive_forecast_horizon():
@@ -118,8 +118,8 @@ def test_rf_recursive_two_y_lags_noiseless():
     model.fit(y_train, X=X_train, y_lags=2)
     forecasts = model.forecast(steps=len(y_test), X=X_test)
 
-    assert forecasts.shape == (len(y_test), 1)
-    np.testing.assert_allclose(forecasts.values, y_test.values, atol=0.5)
+    assert len(forecasts) == len(y_test)
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=0.5)
 
 
 def test_rf_recursive_noiseless():
@@ -148,9 +148,9 @@ def test_rf_recursive_noiseless():
     forecasts = model.forecast(steps=len(y_test), X=X_test)
 
     assert isinstance(forecasts, pd.DataFrame)
-    assert forecasts.shape == (len(y_test), 1)
-    assert isinstance(forecasts.index, pd.DatetimeIndex)
-    np.testing.assert_allclose(forecasts.values, y_test.values, atol=0.05)
+    assert len(forecasts) == len(y_test)
+    assert list(forecasts.columns) == ["date", "variable", "value"]
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=0.05)
 
 
 def test_rf_recursive_with_ar():
@@ -171,8 +171,8 @@ def test_rf_recursive_with_ar():
     forecasts = model.forecast(steps=len(y_test), X=X_test)
 
     assert isinstance(forecasts, pd.DataFrame)
-    assert forecasts.shape == (len(y_test), 1)
-    np.testing.assert_allclose(forecasts.values, y_test.values, atol=0.1)
+    assert len(forecasts) == len(y_test)
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=0.1)
 
 
 def test_rf_direct_h0():
@@ -197,8 +197,8 @@ def test_rf_direct_h0():
     model.fit(y_train, X=X_train)
     forecasts = model.forecast(steps=steps, X=X_test)
 
-    assert forecasts.shape == (steps, 1)
-    np.testing.assert_allclose(forecasts.iloc[0].values, y_test.iloc[0].values, atol=0.01)
+    assert len(forecasts) == steps
+    np.testing.assert_allclose(forecasts["value"].iloc[0], y_test.iloc[0, 0], atol=0.01)
 
 
 def test_rf_direct_h1():
@@ -223,9 +223,9 @@ def test_rf_direct_h1():
     model.fit(y_train, X=X_train)
     forecasts = model.forecast(steps=steps, X=X_test)
 
-    assert forecasts.shape == (steps, 1)
+    assert len(forecasts) == steps
     np.testing.assert_allclose(
-        forecasts.iloc[horizon].values, y_test.iloc[horizon].values, atol=0.01
+        forecasts["value"].iloc[horizon], y_test.iloc[horizon, 0], atol=0.01
     )
 
 
@@ -251,7 +251,7 @@ def test_rf_standardise_matches_unstandardised():
     model_std.fit(y_train, X=X_train)
     fc_std = model_std.forecast(steps=len(y_test), X=X_test)
 
-    np.testing.assert_allclose(fc_raw.values, fc_std.values, atol=0.01)
+    np.testing.assert_allclose(fc_raw["value"], fc_std["value"], atol=0.01)
 
 
 def test_rf_feature_importance():

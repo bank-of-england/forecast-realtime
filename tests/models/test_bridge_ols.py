@@ -49,8 +49,12 @@ def test_bridge_monthly_to_quarterly_mean_matches_manual_ols():
     bridge_forecast = bridge_model.forecast(steps=n_q - n_train, X=X_monthly)
 
     assert np.allclose(manual_model.beta_, bridge_model.beta_)
-    assert np.allclose(manual_forecast.values, bridge_forecast.values, atol=1e-8)
-    assert np.allclose(bridge_forecast.values.ravel(), y_test.values.ravel(), atol=1e-8)
+    np.testing.assert_allclose(
+        manual_forecast["value"], bridge_forecast["value"], atol=1e-8
+    )
+    np.testing.assert_allclose(
+        bridge_forecast["value"], y_test.to_numpy().ravel(), atol=1e-8
+    )
 
 
 def test_bridge_infers_frequency_per_column():
@@ -209,7 +213,7 @@ def test_bridge_quarterly_regressors_match_forecast_ols():
     bridge_forecast = bridge_model.forecast(steps=n_q - n_train, X=X)
 
     assert np.allclose(ols_model.beta_, bridge_model.beta_)
-    assert np.allclose(ols_forecast.values, bridge_forecast.values, atol=1e-8)
+    np.testing.assert_allclose(ols_forecast["value"], bridge_forecast["value"], atol=1e-8)
 
 
 def test_bridge_accepts_model_owned_data_transformation():
@@ -252,7 +256,7 @@ def test_bridge_decomposition_schema_and_reconstructs_forecast():
 
     for h in range(steps):
         decomp_sum = decomps.loc[decomps["forecast_horizon"] == h, "contribution"].sum()
-        np.testing.assert_allclose(decomp_sum, forecast.iloc[h, 0], atol=1e-8)
+        np.testing.assert_allclose(decomp_sum, forecast["value"].iloc[h], atol=1e-8)
 
 
 def test_bridge_formula_selects_aggregated_regressors():

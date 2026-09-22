@@ -77,9 +77,9 @@ def test_forecast_julia_ols(regression_data):
     fc = model.forecast(steps=4, X=_future_X(X, 4))
 
     assert isinstance(fc, pd.DataFrame)
-    assert fc.shape == (4, 1)
-    assert list(fc.columns) == ["gdp"]
-    assert not fc.isna().any().any()
+    assert len(fc) == 4
+    assert list(fc.columns) == ["date", "variable", "value"]
+    assert not fc["value"].isna().any()
 
 
 def test_forecast_julia_ols_uses_future_regressor_rows(regression_data):
@@ -89,11 +89,11 @@ def test_forecast_julia_ols_uses_future_regressor_rows(regression_data):
 
     model = JuliaModel(_OLS_JL_SCRIPT)
     model.fit(y, X=X)
-    baseline = model.forecast(steps=4, X=X_all).to_numpy()
+    baseline = model.forecast(steps=4, X=X_all)["value"].to_numpy()
 
     changed_X = X_all.copy()
     changed_X.iloc[-4:, :] += 100.0
-    changed = model.forecast(steps=4, X=changed_X).to_numpy()
+    changed = model.forecast(steps=4, X=changed_X)["value"].to_numpy()
 
     assert not np.allclose(baseline, changed)
 
@@ -113,4 +113,4 @@ def test_matches_numpy_ols(regression_data):
     model.fit(y, X=X)
     fc = model.forecast(steps=steps, X=X_future)
 
-    np.testing.assert_allclose(fc["gdp"].to_numpy(), expected, rtol=1e-6)
+    np.testing.assert_allclose(fc["value"].to_numpy(), expected, rtol=1e-6)

@@ -25,6 +25,7 @@ from forecast_realtime.forecast_model import (
     ForecastContext,
     ForecastModel,
     ForecastResult,
+    _point_forecast_to_wide,
 )
 
 TransformType = Callable[[dict[str, pd.DataFrame]], pd.DataFrame] | ForecastModel
@@ -804,7 +805,9 @@ class ForecastTree(ForecastModel):
                 steps=steps,
                 **kwargs,
             )
-            raw[leaf.label] = leaf_result.forecast
+            raw[leaf.label] = _point_forecast_to_wide(
+                leaf_result, leaf._fitted_model_configuration.y_columns
+            )
 
         nodes = self.spec.nodes()
         for node in nodes:
@@ -824,7 +827,9 @@ class ForecastTree(ForecastModel):
                     steps=steps,
                     **_node_transform_kwargs(kwargs, transform, fitted=True),
                 )
-                raw[node.name] = transform_result.forecast
+                raw[node.name] = _point_forecast_to_wide(
+                    transform_result, transform._fitted_model_configuration.y_columns
+                )
             else:
                 reduced = _reduce_components(components, self._node_targets[node.name])
                 raw[node.name] = transform(reduced)

@@ -106,7 +106,9 @@ def test_direct_daily_inputs_without_transformation_round_trip():
     model.fit(pd.DataFrame({"target": [1.0, 2.0, 3.0]}, index=index))
     result = model.forecast(steps=2)
 
-    assert result.index.equals(pd.date_range("2020-01-04", periods=2, freq="D"))
+    assert result["date"].equals(
+        pd.Series(pd.date_range("2020-01-04", periods=2, freq="D"))
+    )
 
 
 def test_period_index_direct_fit_and_forecast_but_not_explicit_transformation():
@@ -116,7 +118,9 @@ def test_period_index_direct_fit_and_forecast_but_not_explicit_transformation():
     model.fit(pd.DataFrame({"target": [1.0, 2.0, 3.0]}, index=index))
     result = model.forecast(steps=2)
 
-    assert result.index.equals(pd.DatetimeIndex(["2020-12-31", "2021-03-31"]))
+    assert result["date"].equals(
+        pd.Series(pd.DatetimeIndex(["2020-12-31", "2021-03-31"]))
+    )
 
     with pytest.raises(ValueError, match="DatetimeIndex"):
         _RecordingModel().fit(

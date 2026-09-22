@@ -294,7 +294,7 @@ def test_fable_arima_with_xreg(quarterly_series, tmp_path):
 
     model = rt.models.RFableARIMA(p=1, d=0, q=0, xreg="regressor", index="quarter")
     model.fit(quarterly_series, X)
-    wrapped = model.forecast(steps=steps, X=X)["target"].to_numpy()
+    wrapped = model.forecast(steps=steps, X=X)["value"].to_numpy()
 
     direct = _direct_fable_forecast_xreg(
         quarterly_series, X, model.spec, steps, tmp_path, "Q"

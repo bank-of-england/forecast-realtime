@@ -104,6 +104,12 @@ rt_model.forecast(
 print(rt_model.data.forecasts.head().to_string(index=False))
 ```
 
+Direct calls to a fitted model's `forecast()` or `predict()` return a
+DataFrame-compatible `ForecastResult`. Point results use the long columns
+`date`, `variable`, and `value`; quantile results add `quantile`. Realtime
+publication tables, such as `rt_model.data.forecasts`, keep their existing
+storage contract.
+
 ## Documentation
 
 - [docs/index.md](docs/index.md) — how `ForecastModel` and `RealTimeModel` work.

@@ -570,7 +570,7 @@ def test_forecast_uses_fitted_configuration_after_public_state_mutation():
 
     forecast = model.forecast(steps=1, y=conditioning)
 
-    assert forecast.index[0] == pd.Timestamp("2020-04-30")
+    assert forecast["date"].iloc[0] == pd.Timestamp("2020-04-30")
     np.testing.assert_allclose(
         model.received_forecast_y.loc[conditioning.index, "gdp"].to_numpy(),
         [9.0],

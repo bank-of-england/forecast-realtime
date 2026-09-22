@@ -984,11 +984,7 @@ def _loop_through_vintages(
             **kwargs,
         )
         model_forecast = model_result.forecast
-        forecast_dates = (
-            model_vintage._forecast_calendar(steps, model_vintage.last_y_fit_date)
-            if quantiles is not False
-            else None
-        )
+        forecast_dates = pd.DatetimeIndex(model_forecast["date"].drop_duplicates())
 
         # =======================
         # Forecast decomposition
@@ -1000,7 +996,7 @@ def _loop_through_vintages(
                 label_decomp += " - " + label
             row_decomp = _augment_level_decomp(
                 model_result.decomposition,
-                dates=model_forecast.index,
+                dates=forecast_dates,
                 vintage=vintage,
                 label=label_decomp,
                 y_variables=model_target_variables,
@@ -1021,7 +1017,6 @@ def _loop_through_vintages(
                         "data": forecast_data,
                         "forecast_origin": model_vintage.last_y_fit_date,
                     },
-                    current_dates=model_forecast.index,
                     prev_state=prev_vintage_state,
                     steps=steps,
                     data_transformation=data_transformation,
@@ -1038,7 +1033,6 @@ def _loop_through_vintages(
                 "model": model_vintage,
                 "data": forecast_data,
                 "forecast_origin": model_vintage.last_y_fit_date,
-                "forecast_index": model_forecast.index,
                 "decomp": row_decomp,
             }
             # =======================
@@ -1055,52 +1049,26 @@ def _loop_through_vintages(
                 UserWarning,
             )
 
-        # Build the per-vintage long table. Date comes straight from the
-        # model's returned index. forecast_evaluation defines the horizon
-        # relative to the final target observation used for fitting.
         forecast_df = model_forecast.copy()
-        output_variables = model_target_variables
-        if quantiles is not False:
-            if first_forecast_horizon is None:
-                published = (
-                    y_vintage.rename_axis("date")
-                    .reset_index()
-                    .melt(id_vars="date", var_name="variable", value_name="published")
-                )
-                forecast_df = forecast_df.merge(
-                    published, on=["date", "variable"], how="left"
-                )
-                forecast_df = forecast_df.loc[forecast_df.published.isna()].drop(
-                    columns="published"
-                )
-        elif first_forecast_horizon is None:
-            published = y_vintage.reindex(
-                index=forecast_df.index, columns=output_variables
-            ).notna()
-            forecast_df = forecast_df.mask(published)
-        if quantiles is False:
-            forecast_df = forecast_df.reset_index()
-        forecast_df["date"] = pd.to_datetime(forecast_df["date"]).dt.normalize()
-        forecast_df["vintage_date"] = vintage
         if model_vintage._forecast_dates_include_origin:
-            forecast_df["forecast_horizon"] = (
-                forecast_df["date"].map(
-                    dict(
-                        zip(
-                            pd.DatetimeIndex(forecast_dates).normalize(),
-                            range(len(forecast_dates)),
-                            strict=True,
-                        )
-                    )
-                )
-                if quantiles is not False
-                else np.arange(len(forecast_df))
+            forecast_df["forecast_horizon"] = forecast_df["date"].map(
+                dict(zip(forecast_dates, range(len(forecast_dates)), strict=True))
             )
         else:
             forecast_df["forecast_horizon"] = [
-                (pd.Period(d, freq=frequency) - last_observed_period).n - 1
-                for d in forecast_df["date"]
+                (pd.Period(date, freq=frequency) - last_observed_period).n - 1
+                for date in forecast_df["date"]
             ]
+        if first_forecast_horizon is None:
+            published = y_vintage.rename_axis(index="date", columns="variable").stack()
+            published_keys = published[published.notna()].index
+            forecast_df = forecast_df.loc[
+                ~pd.MultiIndex.from_frame(forecast_df[["date", "variable"]]).isin(
+                    published_keys
+                )
+            ].copy()
+        forecast_df["date"] = forecast_df["date"].dt.normalize()
+        forecast_df["vintage_date"] = vintage
 
         # save
         forecasts_list.append(forecast_df)
@@ -1114,17 +1082,6 @@ def _loop_through_vintages(
 
     # concatenate all forecasts into a single dataframe
     all_forecasts = pd.concat(forecasts_list, ignore_index=True)
-
-    # reorder columns to have date and vintage_date first
-    if quantiles is False:
-        all_forecasts = all_forecasts[
-            ["date", "vintage_date", "forecast_horizon"] + output_variables
-        ]
-        all_forecasts = all_forecasts.melt(
-            id_vars=["date", "vintage_date", "forecast_horizon"],
-            var_name="variable",
-            value_name="value",
-        )
 
     # Filter per-variable by the vintage-relative cutoff. The emitted
     # forecast_horizon is relative to last_observed_period, so it must not be
@@ -1259,7 +1216,6 @@ def _level_contributions(
     data,
     forecast_origin,
     steps,
-    dates,
     data_transformation,
     frequency,
     X_imputation,
@@ -1269,8 +1225,8 @@ def _level_contributions(
     """Counterfactual level decomposition for an already-fitted ``model``.
 
     Re-runs the model's own ``forecast(decomp=True)`` for a supplied raw
-    history and future conditioning path, then relabels the relative forecast
-    horizons onto the absolute target ``dates``. The fitted model is copied
+    history and future conditioning path, then maps the relative forecast
+    horizons onto its returned target dates. The fitted model is copied
     before its forecast context is installed, so forecast bookkeeping and
     model-specific caches cannot leak into another vintage.
 
@@ -1302,6 +1258,7 @@ def _level_contributions(
     if raw is None:
         return None
     out = raw[["forecast_horizon", "component", "contribution"]].copy()
+    dates = pd.DatetimeIndex(result["date"].drop_duplicates())
     out["date"] = dates[out["forecast_horizon"].to_numpy()]
     if "variable" in raw.columns:
         out["variable"] = raw["variable"].to_numpy()
@@ -1321,7 +1278,6 @@ def _compute_revision_decompositions(
     current_decomp,
     current_model,
     current_state,
-    current_dates,
     prev_state,
     steps,
     data_transformation,
@@ -1360,7 +1316,6 @@ def _compute_revision_decompositions(
     prev_decomp = prev_state["decomp"]
     prev_model = prev_state["model"]
     prev_origin = prev_state["forecast_origin"]
-    prev_dates = prev_state["forecast_index"]
     prev_vintage_date = prev_state["vintage_date"]
     current_vintage = current_decomp["vintage_date"].iloc[0]
     y_variables = sorted(set(current_decomp["variable"]) | set(prev_decomp["variable"]))
@@ -1386,7 +1341,6 @@ def _compute_revision_decompositions(
         current_state["data"],
         current_state["forecast_origin"],
         steps,
-        current_dates,
         data_transformation,
         frequency,
         X_imputation,
@@ -1398,7 +1352,6 @@ def _compute_revision_decompositions(
         prev_state["data"],
         prev_origin,
         steps,
-        prev_dates,
         data_transformation,
         frequency,
         X_imputation,

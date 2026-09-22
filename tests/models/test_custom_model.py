@@ -75,10 +75,16 @@ def test_custom_ols_uses_numpy_internally_and_array_output_is_wrapped():
     forecast = model.forecast(steps=3, X=X_future, decomp=True)
 
     expected = X_future.to_numpy() @ beta
-    expected_index = pd.DatetimeIndex(future_dates.to_numpy(), name="date")
+    expected_result = pd.DataFrame(
+        {
+            "date": future_dates,
+            "variable": "target",
+            "value": expected[:, 0],
+        }
+    )
     pd.testing.assert_frame_equal(
         forecast,
-        pd.DataFrame(expected, index=expected_index, columns=["target"]),
+        expected_result,
     )
 
     decomposition = forecast.decomposition

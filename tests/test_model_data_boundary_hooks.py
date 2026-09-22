@@ -355,7 +355,7 @@ def test_direct_fit_resolves_step_from_supplied_target_calendar(mapping, calenda
     assert model._fitted_model_configuration.data_transformation.frequency == calendar
     pd.testing.assert_frame_equal(model.fitted_values_.dropna(), y, check_freq=False)
     expected_date = (pd.Period(y.index[-1], freq=calendar) + 1).end_time.normalize()
-    assert result.index[0] == expected_date
+    assert result["date"].iloc[0] == expected_date
 
 
 def test_inferred_series_calendar_does_not_replace_the_forecast_step():
@@ -434,7 +434,7 @@ def test_tree_forecast_hook_preserves_context_and_conditioning(boundary, replace
         )
 
     assert tree.hook_calls == 1
-    assert result.index.equals(conditioning.index)
+    assert result["date"].drop_duplicates().tolist() == conditioning.index.tolist()
     expected_hook_y = conditioning.assign(target=777.0)
     expected_hook_X = X_conditioning.assign(feature=888.0)
     pd.testing.assert_frame_equal(tree.hook_y, expected_hook_y)
@@ -476,7 +476,9 @@ def test_tree_forecast_preserves_the_public_context_position(positional_context)
         else tree.forecast(steps=2, context=context)
     )
 
-    assert result.forecast.index.equals(conditioning.index)
+    assert result.forecast["date"].drop_duplicates().tolist() == (
+        conditioning.index.tolist()
+    )
     assert leaf.received_forecast_y is None
 
 
@@ -631,7 +633,9 @@ def test_mapping_free_daily_fit_and_forecast_remain_supported():
     result.fit(daily)
     forecast = result.forecast(steps=2)
 
-    assert forecast.index.equals(pd.date_range("2020-01-04", periods=2, freq="D"))
+    assert forecast["date"].equals(
+        pd.Series(pd.date_range("2020-01-04", periods=2, freq="D"))
+    )
 
 
 def test_public_model_signatures_and_context_shape_remain_stable():

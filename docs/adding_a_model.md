@@ -132,7 +132,7 @@ Produce multi-step-ahead forecasts using the fitted model. This method is called
 | `quantiles` | `tuple[float, ...]` or `None` | `None` requests the point payload. A tuple requests native-metric quantiles for the sorted probabilities supplied to the public call. |
 | `**kwargs` | | Additional keyword arguments. |
 
-**Output:**
+**Hook output:**
 
 Must return either a `pd.DataFrame` or an array-like object of shape `(steps, n_y_variables)`:
 - **Index:** a supplied `pd.DataFrame` must have its own `pd.DatetimeIndex` of length `steps`, one date per horizon. For an array-like result, the base class supplies standard dates from the effective forecast origin. By default, the first date is one period after that origin. Mixed-frequency models (e.g. MIDAS) can build a DataFrame with their own anchor dates.
@@ -141,6 +141,9 @@ Must return either a `pd.DataFrame` or an array-like object of shape `(steps, n_
 - Values must be in the metric declared by the model's `data_transformation`
     (or the call-level fallback). `RealTimeModel` handles back-transformation to
     levels automatically; model code must not back-transform its own output.
+
+The hook keeps this array or wide-DataFrame contract. `ForecastModel` validates
+and converts the point payload once at the public output boundary.
 
 **Example output for `steps=4`, 1 variable:**
 
@@ -161,6 +164,31 @@ pd.DataFrame(
     columns=["cpisa", "gdpkp"],
 )  # shape: (4, 2)
 ```
+
+#### Public point results
+
+Public `forecast()` and `predict()` calls return a DataFrame-compatible
+`ForecastResult` with a `RangeIndex` and the long columns `date`, `variable`,
+and `value`. Rows are ordered by date and fitted target order. The result keeps
+`forecast_origin` and `decomposition` as metadata, while `.forecast` returns
+the same long payload as an ordinary DataFrame.
+
+Use an explicit pivot when a downstream calculation needs a wide point matrix:
+
+```python
+point_result = model.forecast(steps=4)
+point_matrix = point_result.pivot(
+    index="date",
+    columns="variable",
+    values="value",
+)
+```
+
+Public `forecast()` and `predict()` overrides must return this validated long
+contract. Framework dispatch validates an override result at its existing
+boundaries. A direct call to an override that bypasses `super()` bypasses that
+dispatch validation, so the model author is responsible for returning the
+contract there.
 
 #### Quantile forecasts
 
@@ -187,6 +215,10 @@ table.
 The quantile table uses the model's native forecast metric. A model may compute
 quantiles analytically or summarise joint paths privately, but predictive draws
 are not part of the public model contract and must not be returned or stored.
+
+The public quantile `ForecastResult` keeps a `RangeIndex` and the same column
+order shown above. It contains only the requested quantile rows, not a point
+forecast alongside them.
 
 The base class validates the returned shape and the number of target columns. A returned DataFrame must supply a `DatetimeIndex`; array-like results receive the standard forecast dates when the base class wraps them.
 
@@ -591,6 +623,10 @@ language, but this does not sandbox the script or its parameters. Fable
 `forecast(model, steps, X, y, params)` returns a data frame or matrix. The
 argument order mirrors `ForecastModel._fit` and `_forecast`, with `model`
 standing in for `self` and `params` for `**kwargs`.
+
+The external forecast function returns the model hook payload, so point output
+may remain an array or wide table here. The Python wrapper validates and
+converts it to the public long `ForecastResult` contract.
 
 The inputs follow the Python forecasting contract above. Supplied `X` can
 contain prepared history and conditioning, not just one row per forecast step.

@@ -121,6 +121,26 @@ Models that determine publication availability and forecast dates from raw X
 data themselves, such as the MIDAS family, use this setting. The flag does not
 enable imputation unless `X_imputation` is also supplied.
 
+## Direct model results
+
+For a fitted model, `forecast()` and `predict()` return a validated,
+DataFrame-compatible `ForecastResult`. Point results are long tables with a
+`RangeIndex` and the columns `date`, `variable`, and `value`. Quantile results
+add `quantile`. The `.forecast` property returns the same payload as an
+ordinary long DataFrame; `forecast_origin` and `decomposition` remain metadata
+on the result.
+
+Use an explicit pivot when downstream code needs a point matrix:
+
+```python
+point_result = model.forecast(steps=4)
+point_matrix = point_result.pivot(
+    index="date",
+    columns="variable",
+    values="value",
+)
+```
+
 ## Data transformations
 
 `data_transformation` maps each variable to the space the model is estimated in.

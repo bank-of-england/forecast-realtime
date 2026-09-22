@@ -192,8 +192,27 @@ class _FitDesignState:
     last_y_fit_date: pd.Timestamp | pd.Period
 
 
+def _point_forecast_to_wide(forecast, variables=None):
+    """Restore a point matrix for internal consumers that require one."""
+    if list(forecast.columns) != ["date", "variable", "value"]:
+        raise ValueError("A long point forecast with date, variable, value is required.")
+    if variables is None:
+        variables = forecast["variable"].drop_duplicates().tolist()
+    return (
+        pd.DataFrame(forecast)
+        .pivot(index="date", columns="variable", values="value")
+        .reindex(columns=variables)
+        .rename_axis(columns=None)
+    )
+
+
 class ForecastResult(pd.DataFrame):
-    """DataFrame-compatible forecast with explicit prediction metadata."""
+    """Long forecast table with origin and decomposition metadata.
+
+    Point results contain ``date``, ``variable`` and ``value``. Quantile results
+    also contain ``quantile`` before ``value``. Rows use a RangeIndex and follow
+    date, fitted target and ascending probability order; steps count dates.
+    """
 
     _metadata = ["decomposition", "forecast_origin"]
 
@@ -243,26 +262,44 @@ class ForecastResult(pd.DataFrame):
         forecast_origin: pd.Timestamp,
         forecast_dates_include_origin: bool,
     ) -> None:
-        """Validate the shape, target and date contract of this forecast."""
-        if len(self) != steps:
-            raise ValueError(f"Forecast must have {steps} rows, got {len(self)}")
-        if list(self.columns) != expected_columns:
+        """Validate complete point keys without treating missing values as absent."""
+        if list(self.columns) != ["date", "variable", "value"]:
             raise ValueError(
-                "Forecast columns must match the fitted target columns in order; "
-                f"expected {expected_columns}, got {list(self.columns)}"
+                "Point forecasts must have columns ['date', 'variable', 'value']."
             )
-        if not isinstance(self.index, pd.DatetimeIndex):
+        if not pd.api.types.is_datetime64_any_dtype(self["date"]):
+            raise TypeError("Forecast date must have a datetime dtype.")
+        keys = ["date", "variable"]
+        if self[keys].isna().any().any() or self.duplicated(keys).any():
+            raise ValueError("Point forecast keys must be complete and unique.")
+        dates = pd.DatetimeIndex(self["date"].drop_duplicates()).sort_values()
+        expected = pd.MultiIndex.from_product([dates, expected_columns], names=keys)
+        actual = pd.MultiIndex.from_frame(self[keys])
+        if len(actual) != len(expected) or not expected.isin(actual).all():
+            raise ValueError("Point forecasts must cover every date and fitted target.")
+        self._validate_calendar(
+            dates, steps, forecast_origin, forecast_dates_include_origin
+        )
+        ordered = pd.DataFrame(self).set_index(keys).reindex(expected).reset_index()
+        pd.DataFrame.__init__(self, ordered)
+
+    @staticmethod
+    def _validate_calendar(dates, steps, forecast_origin, forecast_dates_include_origin):
+        """Validate the date contract shared by hook payloads and long results."""
+        if len(dates) != steps:
+            raise ValueError(f"Forecast must have {steps} dates, got {len(dates)}")
+        if not isinstance(dates, pd.DatetimeIndex):
             raise TypeError("Forecast must be indexed by a DatetimeIndex.")
-        if self.index.hasnans:
+        if dates.hasnans:
             raise ValueError("Forecast index must not contain missing dates.")
-        if self.index.has_duplicates:
+        if dates.has_duplicates:
             raise ValueError("Forecast index must not contain duplicate dates.")
-        if not self.index.is_monotonic_increasing:
+        if not dates.is_monotonic_increasing:
             raise ValueError("Forecast index must be sorted in increasing order.")
 
         origin = pd.Timestamp(forecast_origin)
         invalid_dates = (
-            self.index < origin if forecast_dates_include_origin else self.index <= origin
+            dates < origin if forecast_dates_include_origin else dates <= origin
         )
         if invalid_dates.any():
             raise ValueError(
@@ -388,11 +425,11 @@ class ForecastResult(pd.DataFrame):
             .groupby(["forecast_horizon", "_variable"])["contribution"]
             .sum()
         )
-        forecast_values = self.to_numpy(dtype=float)
-        for horizon_value in range(steps):
-            for variable_index, variable in enumerate(expected_columns):
+        forecast_values = self.set_index(["date", "variable"])["value"]
+        for horizon_value, date in enumerate(self["date"].drop_duplicates()):
+            for variable in expected_columns:
                 total = totals.loc[(horizon_value, variable)]
-                forecast_value = forecast_values[horizon_value, variable_index]
+                forecast_value = forecast_values.loc[(date, variable)]
                 if not np.isclose(total, forecast_value, equal_nan=True):
                     raise ValueError(
                         "decomposition contributions must reconcile to the "
@@ -858,10 +895,6 @@ class ForecastModel(ABC):
                 forecast_origin=forecast_origin,
             )
 
-        if forecast.index.name != "date":
-            forecast = forecast.copy()
-            forecast.index.name = "date"
-
         decomposition = None
         if decomp:
             decomposition = self._forecast_decomp(
@@ -875,8 +908,25 @@ class ForecastModel(ABC):
             if configuration is not None
             else list(self.y.columns)
         )
+        if list(forecast.columns) != expected_columns:
+            raise ValueError(
+                "Forecast columns must match the fitted target columns in order; "
+                f"expected {expected_columns}, got {list(forecast.columns)}"
+            )
+        ForecastResult._validate_calendar(
+            forecast.index,
+            steps,
+            forecast_origin,
+            self._forecast_dates_include_origin,
+        )
         return ForecastResult(
-            forecast,
+            pd.DataFrame(
+                {
+                    "date": forecast.index.repeat(len(expected_columns)),
+                    "variable": np.tile(expected_columns, steps),
+                    "value": forecast.to_numpy().reshape(-1),
+                }
+            ),
             decomposition=decomposition,
             forecast_origin=forecast_origin,
             steps=steps,
@@ -1373,7 +1423,12 @@ class ForecastModel(ABC):
         quantiles: bool | list[float] = False,
         **kwargs,
     ) -> ForecastResult:
-        """Return point forecasts, or native-metric quantiles when requested."""
+        """Return long point forecasts, or native-metric quantiles when requested.
+
+        Public overrides must return the same ForecastResult contract. Framework
+        dispatch validates overrides; direct calls bypassing super() are the
+        model author's responsibility. Point hooks remain arrays or wide tables.
+        """
         if quantiles is not False:
             kwargs["quantiles"] = quantiles
         if not getattr(self, "_is_fitted", False):
@@ -1423,8 +1478,12 @@ class ForecastModel(ABC):
         *,
         quantiles: bool | list[float] = False,
         **kwargs,
-    ) -> pd.DataFrame:
-        """Return point forecasts or native-metric quantiles from a forecast context."""
+    ) -> ForecastResult:
+        """Return long point forecasts or native-metric quantiles from a context.
+
+        Public overrides have the same result and validation responsibilities as
+        forecast(). The context and model hooks retain their wide input format.
+        """
         if not getattr(self, "_is_fitted", False):
             raise AttributeError("Model has not been fitted yet; call fit() first.")
         data = ModelData.from_context(context, self._raw_data)
@@ -1447,26 +1506,39 @@ class ForecastModel(ABC):
             result = self.predict(
                 ForecastContext._from_data(data, forecast_origin), **kwargs
             )
-            probabilities = _normalise_quantiles(kwargs.get("quantiles", False))
-            if probabilities is not None:
-                configuration = self._fitted_model_configuration
-                _validate_quantile_result(
-                    result.forecast,
-                    self._forecast_calendar(kwargs.get("steps", 1), forecast_origin),
-                    list(configuration.y_columns),
-                    probabilities,
-                )
-            return result
+            return self._validate_public_result(result, forecast_origin, **kwargs)
         return self._predict_data(data, forecast_origin=forecast_origin, **kwargs)
 
     def _forecast_from_data(self, data, *, forecast_origin, **kwargs):
         """Retain the public forecast override used by tree components."""
         self._validate_explicit_target_path(data, forecast_origin, kwargs.get("steps", 1))
         if type(self).forecast is not ForecastModel.forecast:
-            return self.forecast(
+            result = self.forecast(
                 context=ForecastContext._from_data(data, forecast_origin), **kwargs
             )
+            return self._validate_public_result(result, forecast_origin, **kwargs)
         return self._predict_from_data(data, forecast_origin=forecast_origin, **kwargs)
+
+    def _validate_public_result(self, result, forecast_origin, **kwargs):
+        """Validate public overrides without repeating fitting or prediction."""
+        if not isinstance(result, ForecastResult):
+            raise TypeError("Public prediction overrides must return a ForecastResult.")
+        steps = kwargs.get("steps", 1)
+        probabilities = _normalise_quantiles(kwargs.get("quantiles", False))
+        if probabilities is not None:
+            if kwargs.get("decomp", False) or result.decomposition is not None:
+                raise ValueError("decomp=True is not supported for quantile forecasts.")
+            return self._finalise_forecast(
+                result.forecast, steps, forecast_origin, quantiles=probabilities
+            )
+        return ForecastResult(
+            result.forecast,
+            decomposition=result.decomposition,
+            forecast_origin=forecast_origin,
+            steps=steps,
+            expected_columns=list(self._fitted_model_configuration.y_columns),
+            forecast_dates_include_origin=self._forecast_dates_include_origin,
+        )
 
     def _conditioning_dates(self, data, forecast_origin, steps):
         """Use the model's forecast calendar when inspecting explicit paths."""
