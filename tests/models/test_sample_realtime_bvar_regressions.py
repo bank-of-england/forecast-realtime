@@ -82,7 +82,7 @@ def _make_models():
         "mode_only": True,
         "progressbar": False,
         "N_draws": 100,
-        "N_burn": 50,
+        "N_burn": None,
         "optim_random_state": 0,
         "sampling_random_state": 0,
         "forecast_random_state": 0,

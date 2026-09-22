@@ -1,236 +1,149 @@
-# Density Forecast Plan
+## Long Point Output: Implementation Plan
 
-Status: proposed. No production changes have been made.
+Date: 2026-09-22. Status: planned, not implemented.
 
-## Decision
+The public point-output format may change. This section supersedes earlier
+requirements to keep public point results wide, but does not authorise combined
+point-and-quantile output or quantile reconstruction. Preserve existing
+working-tree changes; do not create a branch, commit or push.
 
-Add predictive quantiles to `ForecastModel.forecast()`, `predict()`, and
-`RealTimeModel.forecast()` as a separate output mode. Point and quantile
-results are not mixed in the stored realtime results:
+### Output Contract
 
-- `quantiles=False` keeps the current point-forecast behaviour and stores point
-   forecasts in `data.forecasts`.
-- `quantiles=True` or a supplied probability sequence stores only native-metric
-   quantile rows in `runner.quantiles`, including a `quantile` column. It does
-   not store point rows in the same result.
+`ForecastModel.forecast()` and `predict()` will return a DataFrame-compatible
+`ForecastResult` with explicit columns and a RangeIndex in both modes:
 
-The model may calculate a point forecast internally during a density request,
-but realtime does not publish that point result alongside the quantiles.
-Level reconstruction is disabled automatically for density requests.
+- Point mode: `date`, `variable`, `value`.
+- Quantile mode: `date`, `variable`, `quantile`, `value`.
 
-Quantiles are the public density result. The library will not expose or store
-predictive draws. Models may calculate quantiles analytically or use joint paths
-inside an adapter before discarding them.
+Point results have no placeholder `quantile` column. Keep `forecast_origin`
+and `decomposition` as result metadata; `.forecast` returns the same long
+payload as an ordinary DataFrame. One call still returns one output mode.
+Order rows by date, then fitted target order, then ascending probability when
+present. `steps` counts distinct forecast dates, not rows.
 
-The first release supports quantiles for a model's native forecast metric. It
-rejects density requests that would require realtime to derive a metric from
-quantiles at several uncertain future dates.
+Keep `_forecast()` point hooks accepting their existing arrays or wide
+DataFrames. Keep fitting inputs, conditioning inputs, fitted values, external
+Parquet files and R/MATLAB/Julia runners unchanged. The shared model finaliser
+owns conversion to the public long format, not individual adapters or realtime.
+Do not add a public format switch or retain parallel wide and long payloads.
 
-## Public Contract
+### 1. Normalise and Validate Within ForecastModel
 
-Add a keyword-only `quantiles` argument:
+Owners: `ForecastResult`, `_finalise_forecast()`, `_predict_from_data()` and
+`_forecast_from_data()` in `src/forecast_realtime/forecast_model.py`.
 
-```python
-result = model.forecast(steps=8, quantiles=True)
-result = model.forecast(steps=8, quantiles=[0.05, 0.5, 0.95])
-runner.forecast(y_variables=["target"], steps=8, quantiles=True)
-```
+- Validate hook arrays and wide tables against the existing point contract
+   before conversion. Preserve custom model-returned calendars, including
+   origin-inclusive calendars; do not impose the density calendar on points.
+- Convert once at the output boundary. Validate long point keys against the
+   requested step count and fitted targets: unique date-variable pairs, complete
+   target coverage at every date, valid dates and the declared origin relation.
+- Preserve existing point-value semantics, including supported missing values.
+   Retain those rows during reshaping; missing values are not missing keys.
+   Do not silently impose the stricter density finite-value rule on point mode.
+- Reuse the quantile validator for density results. Validation remains owned
+   by `ForecastModel`; realtime consumes validated output.
+- Preserve public override dispatch. Require public `forecast()` and `predict()`
+   overrides to return the new long contract and validate their returned results
+   at the existing model dispatch boundaries. Never refit or forecast twice.
+   An arbitrary direct call to an override that bypasses `super()` cannot be
+   intercepted by these boundaries; document the override's responsibility.
+- Adapt decomposition reconciliation to labelled date-variable values rather
+   than positions in the long table. Keep decomposition's existing horizon and
+   component schema, metadata and reconciliation tolerance.
+- Keep DataFrame construction, slicing, copying and pickling functional;
+   pandas' internal `_constructor` calls must not require prediction arguments.
 
-`quantiles=False` keeps current behaviour. `quantiles=True` requests the default
-probabilities `(0.16, 0.5, 0.84)`. A supplied sequence must contain distinct,
-finite probabilities strictly between zero and one. Reject empty sequences and
-Boolean entries. Sort valid probabilities before use.
+First regression: pivot a long result from the same hook payload and compare
+it with the pre-change validated wide result. Cover multiple targets, custom
+dates, origin inclusion and missing point values. Check metadata separately.
 
-For direct model calls, `ForecastResult` remains the point-forecast DataFrame
-with a `quantiles` attribute containing `date`, `variable`, `quantile`, and
-`value`, or `None` for a point-only request. At the realtime boundary, the
-requested output mode is exclusive: `runner.quantiles` stores the equivalent
-quantile rows, including source, metric, frequency, vintage, and horizon, while
-point-only runs continue to use `data.forecasts`.
+### 2. Adapt Trees and Decomposition Consumers
 
-`reconstruct_levels` applies only to point mode. When `quantiles` is true or a
-sequence is supplied, realtime disables level reconstruction regardless of the
-`reconstruct_levels` value. Quantiles remain in the model's native forecast
-metric; realtime never derives level quantiles from marginal quantile curves.
+Owners: `src/forecast_realtime/forecast_tree.py` and the decomposition helpers
+in `src/forecast_realtime/real_time_model.py`.
 
-Validate complete date-variable-probability coverage, unique keys, finite
-values, and non-crossing quantiles. The point forecast need not equal the median.
-Keep decomposition as a decomposition of the point forecast only; reject
-`decomp=True` for quantile-only realtime runs until both output modes can be
-published together.
+- At tree component consumption, pivot validated long point results to wide
+   frames for existing callable transforms and stacking inputs. Preserve fitted
+   target order explicitly; do not rely on pivot's default column sorting.
+- Reuse one small private conversion helper where needed. It must reject
+   quantile payloads rather than aggregate probabilities into point values.
+- Keep tree callables, `leaf_forecasts_`, `node_forecasts_` and fitted values
+   wide. Finalise the public tree result as long exactly once, including nested
+   trees and model-valued roots. Forecast-tree densities remain unsupported.
+- Replace uses of a public result's `.index` as a forecast calendar with its
+   ordered distinct `date` values. Update current and counterfactual revision
+   decomposition paths; never interpret a long row position as a horizon.
 
-Update the `forecast()` and `predict()` docstrings to document the exclusive
-output modes and add this TODO: point and quantile results cannot currently be
-published together. Supporting both will require predictive draws (or an
-equivalent joint-path representation) and a flag stating whether those draws
-preserve temporal dependence.
+Acceptance: tree numerical results, callable inputs, decomposition totals and
+public override call counts remain unchanged apart from public output shape.
 
-## Model Contract
+### 3. Unify Realtime Publication
 
-A density-capable `_forecast()` returns point forecasts and quantiles in an
-enriched `ForecastResult`; realtime selects one output mode when publishing the
-result. Existing array and DataFrame returns remain valid for point forecasts.
-The shared finaliser preserves and validates quantiles.
+Owner: `_loop_through_vintages()` in `src/forecast_realtime/real_time_model.py`.
 
-Use one forecast call to produce points and quantiles. Do not refit, run a second
-BVAR simulation, or cache the last density result. Preserve the existing
-`forecast()` and `predict()` dispatch behaviour.
+- Consume long tables in both modes. Remove point-only `reset_index()` and
+   `melt()`, wide masking and target-column extraction after concatenation.
+- Assign horizons using the full validated calendar before filtering rows.
+   Origin-inclusive horizons use calendar positions; other horizons retain
+   their existing period-offset rule. All targets and probabilities at one
+   date receive the same horizon. Preserve vintage-relative cutoff semantics.
+- Use one date-variable publication mask, followed by shared metadata,
+   concatenation and cutoff handling. Check partial target publication and
+   complete-date removal in both modes.
+- Keep mode-specific storage: supported point metrics go to `data.forecasts`;
+   with reconstruction disabled, logs/differences remain in `native_forecasts`.
+   Quantiles go only to `runner.quantiles`. Existing point rows survive density
+   calls, and rejected density batches leave stored results unchanged.
+- Keep point reconstruction and decomposition behaviour unchanged. Quantile
+   mode still disables reconstruction and rejects decomposition. Do not route
+   marginal quantile curves through the point reconstruction code.
 
-Models use one of two internal approaches:
+Acceptance: sorted realtime point and quantile tables match the pre-refactor
+tables in values, dates, horizons, metrics and sources.
+The shared publication path needs no output-shape branch.
 
-1. **Direct quantiles.** The model calculates the requested probabilities without
-   generating paths. `ForecastOLS` uses this approach.
-2. **Native path summarisation.** A backend generates joint paths, applies a
-   transformation it supports, and calculates quantiles before returning control
-   to the adapter. BVAR uses this approach.
+### 4. Update Consumers and Documentation
 
-Do not add a shared draw payload or public sample-storage API. A future feature
-that needs realtime to transform arbitrary predictive paths should introduce a
-private path capability with its own contract.
+Update direct-call assertions in existing model, tree, external-model,
+forecast-contract and quantile tests. Adapt expected tables or use the explicit
+private wide adapter only where a numerical oracle genuinely expects a matrix.
+Do not weaken value, calendar, target-order or decomposition assertions.
 
-## ForecastOLS
+Update README examples, usage and model-author documentation, public docstrings,
+packaged examples and notebooks that index forecast results as wide tables.
+Include an explicit `pivot(index="date", columns="variable", values="value")`
+example for callers needing point matrices. Amend CONTRIBUTING's public-output
+stability guidance for this approved change; leave model-hook guidance intact.
+Regenerate API and notebook documentation. No external runner changes are needed.
 
-Extend `ForecastOLS`; do not add density support to Ridge, Lasso, or ElasticNet.
+### Verification and Delivery
 
-Initially support intercept-only and fixed-regressor OLS without target lags.
-Treat future regressors as known. Imputed and supplied regressor paths add no
-regressor uncertainty.
+Implement the model boundary first, then dependent consumers, then realtime
+simplification. Run the narrow regressions after each slice in the
+`forecast-realtime` conda environment with `pytest -n auto`.
 
-For a full-rank design with independent Gaussian, constant-variance errors:
+Reuse existing test modules for result validation, quantiles, trees, boundary
+hooks, realtime, reconstruction and external models. Cover multiple targets,
+reserved-looking target names such as `date` and `value`, missing point values,
+partial publication, custom calendars, decomposition, invalid public overrides,
+state preservation, inline parallel errors and real spawned-process parity.
+External-language tests may skip only when their runtimes are unavailable;
+Python-side adapter tests must still run.
 
-$$
-\nu = n-k, \qquad
-s^2 = \frac{\sum_{i=1}^{n}(y_i-x_i^\top\hat\beta)^2}{\nu}, \qquad
-Q_p(y_*\mid x_*) = x_*^\top\hat\beta
-+ t_\nu^{-1}(p)\,s\sqrt{1+x_*^\top(X^\top X)^{-1}x_*}.
-$$
+Before implementation, capture the current test baseline and sorted numerical
+outputs for representative direct, realtime and tree forecasts. Compare direct
+results after pivoting; compare stored realtime outputs without shape changes.
+Keep numerical snapshots unchanged. The previously reported BVAR demo snapshot
+failure remains a separate gate: reproduce and inspect it, and do not claim an
+isolated baseline comparison succeeded without recorded output and exit status.
 
-Here, `n` is the number of retained estimation observations and `k` is the
-number of design columns, including an intercept when fitted. The leading `1`
-includes future observation noise.
+Finish with the full suite, Ruff lint and formatting (including changed Markdown
+code blocks), pydoclint, API generation, notebook freshness and strict Zensical
+build, following `.pre-commit-config.yaml` and `CONTRIBUTING.md`. Report final
+test counts, skips, numerical parity and unresolved gates. Review the production
+diff to confirm shared publication logic was removed rather than duplicated.
 
-Capture the fitted design, residual variance, and covariance factor in consistent
-units. Respect formulas, retained dummies, missing-row selection, and scaling.
-Use stable linear algebra, not an explicit inverse. Density requests require a
-full-rank design and positive residual degrees of freedom. Point-only forecasts
-retain their current behaviour for rank-deficient fits. A zero residual variance
-produces a degenerate distribution.
+Suggested implementation commit message, without committing:
 
-Calculate OLS quantiles with SciPy's Student-t inverse CDF. Do not refit the
-model to calculate uncertainty.
-
-Reject OLS density requests for target-lag recursion and direct strategies in
-this release. Both require a joint multi-horizon uncertainty model.
-
-## BVAR
-
-The BVAR backend already generates joint forecast paths. Its forecast arrays
-contain effective history followed by the requested horizon. The adapter selects
-the forecast tail for realtime results.
-
-BVAR applies supported forecast transformations to each joint path before it
-calculates quantiles. Its formatted result has `date`, `quantile`, `variable`,
-and `value` columns. The adapter should use this behaviour, return the requested
-quantiles, and discard the paths. `point_only=True` produces one deterministic
-path, so density requests must reject it.
-
-Keep `forecasts_type` as the choice between a point mean and median. Reject a
-density request when BVAR does not support the requested transformation. Realtime
-must never derive joint behaviour from marginal quantile curves.
-
-Correct the wrapper's burn-in default before testing conditional densities.
-`ForecastBVAR` requests `N_draws=5000` but retains `n_samples=1000`; the backend
-caps the forecast draw count at the retained count. Preserve an omitted `N_burn`
-as `None` so the backend derives burn-in from the effective count. Reject invalid
-explicit burn-in values.
-
-## Realtime Boundary
-
-Pass density options through `ForecastTask` run controls and return quantiles in
-`ForecastRunResult`. Do not pass orchestration options to model fitting.
-
-Apply the same forecast calendar, publication masks, horizon cut-offs, source
-labels, and native metric mappings used for point forecasts. Summarise BVAR paths
-inside the worker so that full arrays do not cross process boundaries.
-
-Point and quantile publication are mutually exclusive. In point mode, retain the
-existing level-reconstruction path and write `data.forecasts`. In quantile mode,
-skip level reconstruction and `data.add_forecasts`; write only native-metric
-quantile rows, with the `quantile` column, to `runner.quantiles`. Never
-reconstruct paths from quantile curves. In simulation runs, append the
-configured input simulation identifiers to `runner.quantiles`; these identify
-input scenarios, not predictive paths.
-
-Reject density requests for transformations that the model or backend cannot
-produce directly in its native metric. Realtime must not derive a metric from
-quantiles at several uncertain future dates.
-
-Defer forecast-tree densities until the project defines cross-model dependence.
-Do not combine matching marginal quantiles as if they were joint draws.
-
-## `forecast-evaluation` Boundary
-
-`DensityForecastData` currently has two separate defects:
-
-1. `_add_density_forecasts()` overwrites the supplied metric with `levels`.
-2. `_prepare_density_forecasts()` calculates growth along marginal quantile
-   curves. A ratio of marginal quantiles is generally not a quantile of a ratio.
-
-For example, two equally likely level paths, `(100, 200)` and `(200, 100)`, have
-flat marginal quantile curves. The current conversion reports zero growth, though
-the path growth is either `+100%` or `-50%`.
-
-The first release keeps authoritative density rows in `runner.quantiles` and does
-not use derived-density ingestion. A later `forecast-evaluation` change should
-preserve supplied metrics, accept precomputed metric-specific quantiles, and stop
-manufacturing derived density rows. `compute_levels=False` is not a workaround.
-
-Do not use `sample_from_density()` to recreate paths. Marginal quantiles do not
-identify their temporal dependence.
-
-## Tests
-
-Use OLS for general density tests and keep native BVAR coverage small.
-
-1. Compare OLS prediction intervals with `statsmodels.get_prediction()`, covering
-   intercept-only fits, scaling, formulas, and dummies.
-2. Test invalid probabilities, insufficient observations, rank failures, and
-   unchanged point forecasts.
-3. Test result validation, multiple vintages, publication masks, horizon
-   cut-offs, repeat calls, decomposition, and native-metric simulations with
-   small OLS fixtures.
-4. Test quantile-mode output selection: level reconstruction is disabled, the
-   stored rows retain the native metric and `quantile` column, and point rows
-   are not published. Confirm rejected density requests leave point forecasts
-   and caller data unchanged.
-5. Test sequential and spawned parallel runs with OLS, including one small real
-   process-pool case.
-6. Add one BVAR integration test with two variables, one lag, short history, few
-   posterior draws, `nb_restart=0`, fixed seeds, and no progress bars. Compare
-   wrapper quantiles with the backend's formatted output for unconditional and
-   conditional forecasts, including one BVAR-supported transformation.
-7. Test BVAR selection, burn-in forwarding, mode-only rejection, and draw shapes
-   with synthetic backend outputs.
-8. In `forecast-evaluation`, test preserved native metrics, no invented derived
-   densities, exclusive quantile storage, and unchanged state after rejection.
-
-## Delivery
-
-1. Add the request and result contract with analytical OLS quantiles.
-2. Add realtime collection, validation, and rejection of unsupported transformed
-   densities.
-3. Add the BVAR adapter and burn-in correction.
-4. Update API, usage, and model-author documentation.
-5. Add private joint-path support and `forecast-evaluation` ingestion only when
-   publishing points and quantiles together becomes a concrete requirement. The
-   joint-path contract must state whether temporal dependence is preserved.
-
-After each slice, run focused tests with `pytest -n auto` in the
-`forecast-realtime` conda environment. Then run the full suite and the
-repository's lint, formatting, docstring, and documentation checks. Use the
-`forecast-evaluation` environment for its separate work.
-
-Suggested commit messages, without committing:
-
-- `feat: add predictive quantiles to model and realtime forecasts`
-- `fix: preserve density metrics without transforming marginal quantiles`
+`feat!: standardise point forecast results as long tables`

@@ -661,6 +661,7 @@ def test_public_model_signatures_and_context_shape_remain_stable():
         "frequency",
         "X_imputation",
         "context",
+        "quantiles",
         "kwargs",
     )
     assert tuple(inspect.signature(ForecastModel.predict).parameters) == (
@@ -671,8 +672,13 @@ def test_public_model_signatures_and_context_shape_remain_stable():
         "data_transformation",
         "frequency",
         "X_imputation",
+        "quantiles",
         "kwargs",
     )
+    for method in (ForecastModel.forecast, ForecastModel.predict):
+        parameter = inspect.signature(method).parameters["quantiles"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default is False
     assert tuple(inspect.signature(ForecastTree.forecast).parameters) == (
         "self",
         "steps",

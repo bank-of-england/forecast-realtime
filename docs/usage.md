@@ -157,6 +157,48 @@ column has an ambiguous frequency, provide it through the resolved
 | `"log diff"` | Log difference |
 | `"diff"` | First difference |
 
+## Density forecasts
+
+Pass the keyword-only `quantiles` argument to a fitted model's `forecast()` or
+`predict()` call:
+
+```python
+density = model.forecast(steps=4, quantiles=[0.9, 0.1, 0.5])
+```
+
+`quantiles=False` (the default) keeps point forecasts unchanged. `True` uses
+the default probabilities `(0.16, 0.5, 0.84)`. A supplied sequence must contain
+distinct, finite probabilities strictly between 0 and 1; the package sorts the
+sequence before forecasting. Density mode returns one long, DataFrame-compatible
+`ForecastResult` with the columns `date`, `variable`, `quantile`, and `value`.
+It contains only the requested quantile rows, in the model's native forecast
+metric, and does not include a point forecast.
+
+For realtime forecasts, pass the same argument to `RealTimeModel.forecast()`:
+
+```python
+rt_model.forecast(
+    y_variables=["quarterly_1"],
+    data_transformation={"quarterly_1": "levels"},
+    steps=2,
+    quantiles=True,
+)
+quantiles = rt_model.quantiles
+```
+
+Density mode stores only native-metric rows in `rt_model.quantiles`. Rows
+include `date`, `variable`, `quantile`, `value`, `metric`, `source`,
+`frequency`, `vintage_date`, and `forecast_horizon`. It sets
+`reconstruct_levels=False` internally, even when the argument is `True`. It
+does not add point rows to `data.forecasts` or change rows already there.
+`decomp=True` is not supported with quantiles.
+
+Built-in density support is currently available for `ForecastOLS`,
+`ForecastRidge`, `ForecastLasso`, `ForecastElasticNet`, and `ForecastBVAR`.
+Models without quantile support, including tree models, reject the request.
+The package does not expose predictive draws, derive growth or level quantiles
+from marginal quantiles, or ingest these rows through `forecast-evaluation`.
+
 ## News decomposition
 
 Set `decomp=True` to attribute each forecast revision to **news** (newly

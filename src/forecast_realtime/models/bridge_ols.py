@@ -57,6 +57,7 @@ class ForecastBridgeOLS(ForecastOLS):
     """
 
     _handles_mixed_frequencies = True
+    _supports_quantiles = False
 
     def __init__(
         self,

@@ -137,6 +137,47 @@ arima = rt.models.RFableARIMA(p=1, d=0, q=0)
 See [adding_a_model.md](adding_a_model.md) for the expected function
 signatures.
 
+## Density forecasts
+
+Built-in density support is available for the recursive fixed-regressor linear
+models (`ForecastOLS`, `ForecastRidge`, `ForecastLasso`, and
+`ForecastElasticNet`) and `ForecastBVAR`. `ForecastBridgeOLS`, `RandomForest`,
+and `XGBoost` do not support quantile forecasts.
+
+### Linear regression models
+
+Linear regression density forecasts use an optional intercept and fixed, known
+future regressors. They support recursive fixed-regressor fits only: target
+lags and `forecast_strategy="direct"` are not supported. Future regressor rows
+must be complete. Supplied or imputed regressor paths are treated as known and
+add no regressor uncertainty.
+
+For `n` retained observations and `k` design columns, each model estimates the
+residual standard error using `n - k` residual degrees of freedom. When
+quantiles are requested, it samples normal residual innovations around the
+point forecast and returns their empirical quantiles:
+
+```text
+s = sqrt(sum(residual^2) / (n - k))
+y_* = point_forecast + s * normal(0, 1)
+```
+
+The draws contain residual noise only: they do not include coefficient or
+regressor uncertainty. The sampler uses antithetic draws, so the sampled median
+equals the point forecast. Pass `n_samples` and `random_state` to `forecast()`
+or `predict()` to control the draw count and replication. Density forecasts
+require positive residual degrees of freedom; rank-deficient designs remain
+valid for point and density forecasts.
+
+### `ForecastBVAR`
+
+`ForecastBVAR` density forecasts require posterior draws. Keep
+`mode_only=False`, the default; `mode_only=True` rejects quantile requests.
+Leave `N_burn=None` unless you need to set it explicitly, so the backend can
+derive burn-in from the effective draw count.
+Quantiles are returned in the fitted model's native metric. Realtime does not
+reconstruct levels or derive another metric from marginal quantile curves.
+
 ### Regressor imputation
 
 When `X_imputation` is requested, every regressor must have at least one

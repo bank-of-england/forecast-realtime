@@ -26,6 +26,62 @@ from forecast_realtime.formula import Formula
 X_IMPUTATION_METHODS = ("zero", "last", "mean", "ar1_t")
 
 
+def _normalise_quantiles(quantiles):
+    """Return sorted probabilities, or None for point forecasts."""
+    if quantiles is False:
+        return None
+    if quantiles is True:
+        return (0.16, 0.5, 0.84)
+    try:
+        values = tuple(quantiles)
+    except TypeError as error:
+        raise ValueError(
+            "quantiles must be a Boolean or a probability sequence."
+        ) from error
+    if not values or any(
+        isinstance(value, (bool, np.bool_))
+        or not isinstance(value, (int, float, np.number))
+        or not np.isreal(value)
+        for value in values
+    ):
+        raise ValueError("quantiles must contain non-Boolean probabilities.")
+    values = np.asarray(values, dtype=float)
+    if (
+        not np.isfinite(values).all()
+        or (values <= 0).any()
+        or (values >= 1).any()
+        or len(np.unique(values)) != len(values)
+    ):
+        raise ValueError(
+            "quantiles must be distinct finite probabilities between 0 and 1."
+        )
+    return tuple(sorted(values.tolist()))
+
+
+def _validate_quantile_result(forecast, dates, variables, probabilities):
+    """Validate complete marginal quantiles on the requested forecast calendar."""
+    columns = ["date", "variable", "quantile", "value"]
+    if not isinstance(forecast, pd.DataFrame) or set(forecast.columns) != set(columns):
+        raise ValueError(f"Quantile forecasts must have columns {columns}.")
+    result = forecast.loc[:, columns].copy()
+    keys = columns[:-1]
+    expected = pd.MultiIndex.from_product([dates, variables, probabilities], names=keys)
+    if result[keys].isna().any().any() or result.duplicated(keys).any():
+        raise ValueError("Quantile forecast keys must be complete and unique.")
+    result = result.set_index(keys)
+    if len(result) != len(expected) or not expected.isin(result.index).all():
+        raise ValueError(
+            "Quantile forecasts must cover every date, variable and probability."
+        )
+    result = result.reindex(expected)
+    values = result["value"].to_numpy(dtype=float).reshape(-1, len(probabilities))
+    if not np.isfinite(values).all():
+        raise ValueError("Quantile forecast values must be finite.")
+    if (np.diff(values, axis=1) < 0).any():
+        raise ValueError("Quantile forecasts must not cross.")
+    return result.reset_index()
+
+
 @dataclass(frozen=True)
 class _ConditioningEntry:
     variable: str
@@ -772,8 +828,20 @@ class ForecastModel(ABC):
         forecast_origin: pd.Timestamp,
         decomp: bool = False,
         decomp_kwargs: dict | None = None,
+        quantiles=None,
     ) -> ForecastResult:
         """Validate, normalise, and wrap a model forecast result."""
+        if quantiles is not None:
+            configuration = self._fitted_model_configuration
+            return ForecastResult(
+                _validate_quantile_result(
+                    forecast,
+                    self._forecast_calendar(steps, forecast_origin),
+                    list(configuration.y_columns),
+                    quantiles,
+                ),
+                forecast_origin=forecast_origin,
+            )
         if forecast is None:
             raise TypeError(
                 f"{self.__class__.__name__}._forecast returned None; it must "
@@ -815,6 +883,19 @@ class ForecastModel(ABC):
             expected_columns=expected_columns,
             forecast_dates_include_origin=self._forecast_dates_include_origin,
         )
+
+    def _forecast_calendar(self, steps, forecast_origin):
+        """Return the authoritative dates for a fitted model forecast."""
+        configuration = self._fitted_model_configuration
+        dates = self._infer_forecast_dates(
+            self.y.index,
+            steps,
+            frequency=configuration.data_transformation.frequency,
+            start=forecast_origin,
+        )
+        if self._forecast_dates_include_origin:
+            dates = pd.DatetimeIndex([pd.Timestamp(forecast_origin)]).append(dates[:-1])
+        return dates
 
     @staticmethod
     def _dummy_spec(dummies: list | dict, columns: list[str]) -> dict:
@@ -1288,9 +1369,13 @@ class ForecastModel(ABC):
         frequency: str | None = None,
         X_imputation: str | None = None,
         context: ForecastContext | None = None,
+        *,
+        quantiles: bool | list[float] = False,
         **kwargs,
     ) -> ForecastResult:
-        """Forecast using the fitted history and captured preprocessing policy."""
+        """Return point forecasts, or native-metric quantiles when requested."""
+        if quantiles is not False:
+            kwargs["quantiles"] = quantiles
         if not getattr(self, "_is_fitted", False):
             raise AttributeError("Model has not been fitted yet; call fit() first.")
         if context is None:
@@ -1335,11 +1420,11 @@ class ForecastModel(ABC):
         data_transformation: dict[str, str] | None = None,
         frequency: str | None = None,
         X_imputation: str | None = None,
+        *,
+        quantiles: bool | list[float] = False,
         **kwargs,
     ) -> pd.DataFrame:
-        """Generate forecasts from a fitted model and a ``ForecastContext`` containing
-        the history, optional conditioning paths, and forecast origin.
-        """
+        """Return point forecasts or native-metric quantiles from a forecast context."""
         if not getattr(self, "_is_fitted", False):
             raise AttributeError("Model has not been fitted yet; call fit() first.")
         data = ModelData.from_context(context, self._raw_data)
@@ -1351,6 +1436,7 @@ class ForecastModel(ABC):
             data_transformation=data_transformation,
             frequency=frequency,
             X_imputation=X_imputation,
+            quantiles=quantiles,
             **kwargs,
         )
 
@@ -1358,9 +1444,19 @@ class ForecastModel(ABC):
         """Retain the public predict override used by realtime consumers."""
         self._validate_explicit_target_path(data, forecast_origin, kwargs.get("steps", 1))
         if type(self).predict is not ForecastModel.predict:
-            return self.predict(
+            result = self.predict(
                 ForecastContext._from_data(data, forecast_origin), **kwargs
             )
+            probabilities = _normalise_quantiles(kwargs.get("quantiles", False))
+            if probabilities is not None:
+                configuration = self._fitted_model_configuration
+                _validate_quantile_result(
+                    result.forecast,
+                    self._forecast_calendar(kwargs.get("steps", 1), forecast_origin),
+                    list(configuration.y_columns),
+                    probabilities,
+                )
+            return result
         return self._predict_data(data, forecast_origin=forecast_origin, **kwargs)
 
     def _forecast_from_data(self, data, *, forecast_origin, **kwargs):
@@ -1416,9 +1512,18 @@ class ForecastModel(ABC):
         data_transformation=None,
         frequency=None,
         X_imputation=None,
+        quantiles=False,
         **kwargs,
     ):
         """Prepare labelled inputs, construct the design and validate the result."""
+        probabilities = _normalise_quantiles(quantiles)
+        if probabilities is not None:
+            if not getattr(self, "_supports_quantiles", False):
+                raise ValueError(
+                    f"{type(self).__name__} does not support quantile forecasts."
+                )
+            if decomp:
+                raise ValueError("decomp=True is not supported for quantile forecasts.")
         # Validate that steps is an integer greater than zero
         if not isinstance(steps, int) or steps <= 0:
             raise ValueError("steps must be an integer greater than zero")
@@ -1568,6 +1673,8 @@ class ForecastModel(ABC):
         # Pass full history to _forecast; models handle filtering to forecast rows
         hook_kwargs = dict(kwargs)
         hook_kwargs["forecast_origin"] = forecast_origin
+        if probabilities is not None:
+            hook_kwargs["quantiles"] = probabilities
         forecast = self._forecast(steps=steps, X=X_design, y=y_input, **hook_kwargs)
         return self._finalise_forecast(
             forecast,
@@ -1575,4 +1682,5 @@ class ForecastModel(ABC):
             forecast_origin,
             decomp=decomp,
             decomp_kwargs={"X": X_design, "y": y_input, **hook_kwargs},
+            quantiles=probabilities,
         )

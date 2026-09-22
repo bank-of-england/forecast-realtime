@@ -17,6 +17,7 @@ from .forecast_model import (
     X_IMPUTATION_METHODS,
     ForecastModel,
     NoUsableTransformedYError,
+    _normalise_quantiles,
 )
 
 _FORECAST_COLUMNS = (
@@ -41,6 +42,13 @@ def _run_forecast_task(task: ForecastTask) -> ForecastRunResult:
         model_kwargs=task.model_kwargs,
         **task.options,
     )
+    if task.options.get("quantiles", False) is not False:
+        return ForecastRunResult(
+            forecasts=pd.DataFrame(columns=_FORECAST_COLUMNS),
+            decompositions=None,
+            all_vintages_skipped=result[2],
+            quantiles=result[0],
+        )
     return ForecastRunResult(*result)
 
 
@@ -243,6 +251,7 @@ class RealTimeModel:
         self.data = data
         self.decompositions = None
         self.native_forecasts = None
+        self.quantiles = None
 
     def forecast(
         self,
@@ -269,6 +278,8 @@ class RealTimeModel:
         decomp: bool = False,
         X_imputation: str | None = None,
         drop_transformation_nans: bool = True,
+        *,
+        quantiles: bool | list[float] = False,
         **kwargs,
     ):
         """Produce forecasts in real-time.
@@ -392,9 +403,24 @@ class RealTimeModel:
                 calendar-dependent transformations such as ``pop``, ``yoy``,
                 ``diff`` and ``log diff``. Interior missing observations are
                 preserved. Set to False to keep the undefined prefix.
+            quantiles : bool | list[float], optional
+                False returns point forecasts. True selects (0.16, 0.5, 0.84);
+                a sequence selects distinct probabilities between zero and one.
+                Store only native-metric quantiles in ``self.quantiles`` and
+                disable level reconstruction. Decomposition is unavailable.
             **kwargs : dict
                 Additional keyword arguments to pass.
         """
+        probabilities = _normalise_quantiles(quantiles)
+        if probabilities is not None:
+            if decomp:
+                raise ValueError("decomp=True is not supported for quantile forecasts.")
+            for model in self.models:
+                if not getattr(model, "_supports_quantiles", False):
+                    raise ValueError(
+                        f"{type(model).__name__} does not support quantile forecasts."
+                    )
+            reconstruct_levels = False
         if type(steps) is not int or steps < 1:
             raise ValueError("steps must be a positive integer")
 
@@ -625,6 +651,8 @@ class RealTimeModel:
             X_imputation=X_imputation,
             drop_transformation_nans=drop_transformation_nans,
         )
+        if probabilities is not None:
+            common["quantiles"] = probabilities
 
         tasks = self._build_forecast_tasks(
             resolved_model_data,
@@ -648,12 +676,15 @@ class RealTimeModel:
             reconstruct_levels=reconstruct_levels,
             first_vintage=first_vintage,
             last_vintage=last_vintage,
+            quantiles=probabilities is not None,
         )
 
-        self.data.add_forecasts(
-            result.forecasts,
-            compute_levels=reconstruct_levels,
-        )
+        if probabilities is None:
+            self.data.add_forecasts(
+                result.forecasts,
+                compute_levels=reconstruct_levels,
+            )
+        self.quantiles = result.quantiles
         self.decompositions = result.decompositions
         self.native_forecasts = result.native_forecasts
         self.first_vintage = first_vintage
@@ -706,7 +737,9 @@ class RealTimeModel:
     @staticmethod
     def _execute_forecast_tasks(tasks, *, parallel, max_workers):
         """Schedule tasks without aggregating or publishing their results."""
-        isolate_failures = len({id(task.model) for task in tasks}) > 1
+        isolate_failures = len({id(task.model) for task in tasks}) > 1 and all(
+            task.options.get("quantiles", False) is False for task in tasks
+        )
         if not parallel:
             if not isolate_failures:
                 return [_run_forecast_task(task) for task in tasks]
@@ -740,6 +773,7 @@ class RealTimeModel:
         reconstruct_levels,
         first_vintage,
         last_vintage,
+        quantiles=False,
     ):
         """Aggregate completed worker output without mutating the realtime model."""
         if not task_results or all(
@@ -751,6 +785,20 @@ class RealTimeModel:
                 np.array([first_vintage, last_vintage]),
             )
 
+        if quantiles:
+            return ForecastRunResult(
+                forecasts=pd.DataFrame(columns=_FORECAST_COLUMNS),
+                decompositions=None,
+                all_vintages_skipped=False,
+                quantiles=pd.concat(
+                    [
+                        result.quantiles
+                        for result in task_results
+                        if result.quantiles is not None
+                    ],
+                    ignore_index=True,
+                ),
+            )
         forecasts = pd.concat(
             [result.forecasts for result in task_results], ignore_index=True
         )
@@ -803,6 +851,7 @@ def _loop_through_vintages(
     decomp=False,
     drop_transformation_nans=True,
     model_kwargs=None,
+    quantiles=False,
 ):
     """Loop through selected model data by vintage and produce forecasts.
 
@@ -922,6 +971,7 @@ def _loop_through_vintages(
             X_steps_ahead=X_steps_ahead,
         )
         forecast_data = model_vintage._raw_data.with_conditioning(future)
+        prediction_options = {} if quantiles is False else {"quantiles": quantiles}
         model_result = model_vintage._predict_from_data(
             forecast_data,
             forecast_origin=model_vintage.last_y_fit_date,
@@ -930,9 +980,15 @@ def _loop_through_vintages(
             data_transformation=data_transformation,
             frequency=frequency,
             X_imputation=X_imputation,
+            **prediction_options,
             **kwargs,
         )
         model_forecast = model_result.forecast
+        forecast_dates = (
+            model_vintage._forecast_calendar(steps, model_vintage.last_y_fit_date)
+            if quantiles is not False
+            else None
+        )
 
         # =======================
         # Forecast decomposition
@@ -1003,17 +1059,43 @@ def _loop_through_vintages(
         # model's returned index. forecast_evaluation defines the horizon
         # relative to the final target observation used for fitting.
         forecast_df = model_forecast.copy()
-        output_variables = list(forecast_df.columns)
-        if first_forecast_horizon is None:
+        output_variables = model_target_variables
+        if quantiles is not False:
+            if first_forecast_horizon is None:
+                published = (
+                    y_vintage.rename_axis("date")
+                    .reset_index()
+                    .melt(id_vars="date", var_name="variable", value_name="published")
+                )
+                forecast_df = forecast_df.merge(
+                    published, on=["date", "variable"], how="left"
+                )
+                forecast_df = forecast_df.loc[forecast_df.published.isna()].drop(
+                    columns="published"
+                )
+        elif first_forecast_horizon is None:
             published = y_vintage.reindex(
                 index=forecast_df.index, columns=output_variables
             ).notna()
             forecast_df = forecast_df.mask(published)
-        forecast_df = forecast_df.reset_index()  # date column from index
+        if quantiles is False:
+            forecast_df = forecast_df.reset_index()
         forecast_df["date"] = pd.to_datetime(forecast_df["date"]).dt.normalize()
         forecast_df["vintage_date"] = vintage
         if model_vintage._forecast_dates_include_origin:
-            forecast_df["forecast_horizon"] = np.arange(len(forecast_df))
+            forecast_df["forecast_horizon"] = (
+                forecast_df["date"].map(
+                    dict(
+                        zip(
+                            pd.DatetimeIndex(forecast_dates).normalize(),
+                            range(len(forecast_dates)),
+                            strict=True,
+                        )
+                    )
+                )
+                if quantiles is not False
+                else np.arange(len(forecast_df))
+            )
         else:
             forecast_df["forecast_horizon"] = [
                 (pd.Period(d, freq=frequency) - last_observed_period).n - 1
@@ -1034,16 +1116,15 @@ def _loop_through_vintages(
     all_forecasts = pd.concat(forecasts_list, ignore_index=True)
 
     # reorder columns to have date and vintage_date first
-    all_forecasts = all_forecasts[
-        ["date", "vintage_date", "forecast_horizon"] + output_variables
-    ]
-
-    # melt the dataframe to long format
-    all_forecasts = all_forecasts.melt(
-        id_vars=["date", "vintage_date", "forecast_horizon"],
-        var_name="variable",
-        value_name="value",
-    )
+    if quantiles is False:
+        all_forecasts = all_forecasts[
+            ["date", "vintage_date", "forecast_horizon"] + output_variables
+        ]
+        all_forecasts = all_forecasts.melt(
+            id_vars=["date", "vintage_date", "forecast_horizon"],
+            var_name="variable",
+            value_name="value",
+        )
 
     # Filter per-variable by the vintage-relative cutoff. The emitted
     # forecast_horizon is relative to last_observed_period, so it must not be

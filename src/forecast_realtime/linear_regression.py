@@ -1,6 +1,7 @@
 """Ordinary Least Squares regression model for time series forecasting."""
 
 from copy import copy
+from numbers import Integral
 
 import numpy as np
 import pandas as pd
@@ -49,6 +50,7 @@ class LinearRegression(ForecastModel):
 
     _handles_mixed_frequencies = False
     _supports_multivariate_y = False
+    _supports_quantiles = True
     _penalty_attribute = None
 
     def __init__(
@@ -241,6 +243,13 @@ class LinearRegression(ForecastModel):
 
         fitted_values = pd.Series(fitted, index=fitted_index, name=self.y_fit.columns[0])
         self.fitted_values_ = fitted_values.reindex(incoming_index)
+        residuals = y_ori.iloc[:, 0].to_numpy(dtype=float) - fitted
+        self._degrees_freedom = len(residuals) - self.N_regressors
+        self._std_error = (
+            float(np.sqrt(residuals @ residuals / self._degrees_freedom))
+            if self._degrees_freedom > 0
+            else None
+        )
 
         return self
 
@@ -250,6 +259,9 @@ class LinearRegression(ForecastModel):
         X: pd.DataFrame | None = None,
         y: pd.DataFrame | None = None,
         forecast_origin=None,
+        quantiles=None,
+        n_samples=10_000,
+        random_state=42,
         **kwargs,
     ):
         """Forecast using the fitted OLS model(s).
@@ -271,6 +283,54 @@ class LinearRegression(ForecastModel):
         pd.DataFrame
             Forecast DataFrame.
         """
+        if quantiles is not None:
+            if (
+                self.forecast_strategy == "direct"
+                or self._fitted_model_configuration.y_lags
+            ):
+                raise ValueError(
+                    "Linear regression quantiles do not support target lags or "
+                    "direct strategies."
+                )
+            if self._std_error is None:
+                raise ValueError(
+                    "Linear regression quantiles require positive residual "
+                    "degrees of freedom."
+                )
+            if (
+                isinstance(n_samples, bool)
+                or not isinstance(n_samples, Integral)
+                or n_samples < 2
+                or n_samples % 2
+            ):
+                raise ValueError("n_samples must be an even integer greater than one.")
+
+            point = self._forecast(
+                steps=steps,
+                X=X,
+                y=y,
+                forecast_origin=forecast_origin,
+                **kwargs,
+            )
+            mean = point.iloc[:, 0].to_numpy(dtype=float)
+            noise = np.random.default_rng(random_state).standard_normal(
+                (len(mean), n_samples // 2)
+            )
+            noise = np.concatenate([noise, -noise], axis=1)
+            values = np.quantile(
+                mean[:, None] + self._std_error * noise,
+                quantiles,
+                axis=1,
+            ).T
+            return pd.DataFrame(
+                {
+                    "date": np.repeat(point.index, len(quantiles)),
+                    "variable": self.y.columns[0],
+                    "quantile": np.tile(quantiles, len(point)),
+                    "value": values.reshape(-1),
+                }
+            )
+
         if steps is None:
             steps = self.steps
 

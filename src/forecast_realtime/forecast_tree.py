@@ -667,9 +667,12 @@ class ForecastTree(ForecastModel):
         forecast_origin=None,
         steps=1,
         decomp=False,
+        quantiles=False,
         **kwargs,
     ) -> ForecastResult:
         """Evaluate each consumer from shared raw observations and fitted policies."""
+        if quantiles is not False:
+            raise ValueError("ForecastTree does not support quantile forecasts.")
         if not isinstance(steps, int) or steps <= 0:
             raise ValueError("'Steps' must be an integer greater than zero")
 

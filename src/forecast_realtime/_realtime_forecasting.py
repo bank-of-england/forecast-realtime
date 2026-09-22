@@ -27,3 +27,4 @@ class ForecastRunResult:
     decompositions: object
     all_vintages_skipped: bool
     native_forecasts: object = None
+    quantiles: object = None

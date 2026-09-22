@@ -118,7 +118,7 @@ date
 
 ---
 
-### `_forecast(steps, X=None, y=None, **kwargs)` — Forecasting
+### `_forecast(steps, X=None, y=None, quantiles=None, **kwargs)` — Forecasting
 
 Produce multi-step-ahead forecasts using the fitted model. This method is called after `_fit()` and should return predicted values for the next `steps` periods. Each row of the output corresponds to a forecast horizon; row 0 is the first forecast row, row 1 is the next row, and so on.
 
@@ -129,6 +129,7 @@ Produce multi-step-ahead forecasts using the fitted model. This method is called
 | `steps` | `int` | Number of periods ahead to forecast (always ≥ 1). |
 | `X` | `pd.DataFrame` or `None` | Prepared design over history and any supplied forecast conditioning, indexed by a `DatetimeIndex`. Select forecast rows by date or forecast origin; they are not guaranteed to be the final `steps` rows. Column order matches the `X` passed to `_fit`. `None` when omitted; lag or dummy settings may still create a design. |
 | `y` | `pd.DataFrame` or `None` | Prepared target history plus conditioning paths over the horizon when conditioning is supplied, indexed by a `DatetimeIndex`. With an explicit transformation, `y` includes prepared history even without conditioning; with implicit identity, it may be `None` when no conditioning is supplied. Column order matches the `y` passed to `_fit`. Non-missing future values provide conditioning; `NaN` values are unconstrained. |
+| `quantiles` | `tuple[float, ...]` or `None` | `None` requests the point payload. A tuple requests native-metric quantiles for the sorted probabilities supplied to the public call. |
 | `**kwargs` | | Additional keyword arguments. |
 
 **Output:**
@@ -160,6 +161,32 @@ pd.DataFrame(
     columns=["cpisa", "gdpkp"],
 )  # shape: (4, 2)
 ```
+
+#### Quantile forecasts
+
+Opt in explicitly by setting `_supports_quantiles = True` on the model class.
+The default is `False`, so the base class rejects quantile requests for models
+that have not implemented this contract. The public `quantiles=False` becomes
+`None` here; `True` becomes `(0.16, 0.5, 0.84)`, and a supplied sequence arrives
+as sorted, distinct, finite probabilities between 0 and 1.
+
+When `quantiles` is not `None`, return one `pd.DataFrame` with exactly these
+columns:
+
+```text
+date, variable, quantile, value
+```
+
+Return one row for every requested date, fitted target variable, and
+probability. Values must be finite, and the quantiles for each date and
+variable must not cross. The shared finaliser checks the columns, complete
+coverage, unique keys, finite values, and ordering, then wraps the table in a
+single `ForecastResult`. Do not return a point forecast alongside the quantile
+table.
+
+The quantile table uses the model's native forecast metric. A model may compute
+quantiles analytically or summarise joint paths privately, but predictive draws
+are not part of the public model contract and must not be returned or stored.
 
 The base class validates the returned shape and the number of target columns. A returned DataFrame must supply a `DatetimeIndex`; array-like results receive the standard forecast dates when the base class wraps them.
 
