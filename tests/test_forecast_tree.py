@@ -16,9 +16,12 @@ import pytest
 from forecast_realtime.forecast_model import (
     ForecastContext,
     ForecastModel,
+)
+from forecast_realtime.forecast_tree import (
+    ForecastTree,
+    TreeNode,
     _point_forecast_to_wide,
 )
-from forecast_realtime.forecast_tree import ForecastTree, TreeNode
 
 
 class StubForecastModel(ForecastModel):

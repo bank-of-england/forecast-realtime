@@ -12,7 +12,7 @@ import bvar as bv
 import forecast_evaluation as fe
 
 import forecast_realtime as rt
-from forecast_realtime.forecast_model import _point_forecast_to_wide
+from forecast_realtime.forecast_tree import _point_forecast_to_wide
 
 
 class _SyntheticBVAR:

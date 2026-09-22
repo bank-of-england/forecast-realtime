@@ -58,28 +58,42 @@ def _normalise_quantiles(quantiles):
     return tuple(sorted(values.tolist()))
 
 
+def _order_forecast_keys(forecast, dates, variables, probabilities=None):
+    """Check complete, unique keys and return rows in the requested order."""
+    keys = ["date", "variable"]
+    dimensions = [dates, variables]
+    mode, coverage = "Point", "date and fitted target"
+    if probabilities is not None:
+        keys.append("quantile")
+        dimensions.append(probabilities)
+        mode, coverage = "Quantile", "date, variable and probability"
+    if forecast[keys].isna().any().any() or forecast.duplicated(keys).any():
+        raise ValueError(f"{mode} forecast keys must be complete and unique.")
+    expected = pd.MultiIndex.from_product(dimensions, names=keys)
+    result = pd.DataFrame(forecast).set_index(keys)
+    if len(result) != len(expected) or not expected.isin(result.index).all():
+        raise ValueError(f"{mode} forecasts must cover every {coverage}.")
+    return result.reindex(expected).reset_index()
+
+
 def _validate_quantile_result(forecast, dates, variables, probabilities):
     """Validate complete marginal quantiles on the requested forecast calendar."""
     columns = ["date", "variable", "quantile", "value"]
-    if not isinstance(forecast, pd.DataFrame) or set(forecast.columns) != set(columns):
+    if (
+        not isinstance(forecast, pd.DataFrame)
+        or not forecast.columns.is_unique
+        or set(forecast.columns) != set(columns)
+    ):
         raise ValueError(f"Quantile forecasts must have columns {columns}.")
-    result = forecast.loc[:, columns].copy()
-    keys = columns[:-1]
-    expected = pd.MultiIndex.from_product([dates, variables, probabilities], names=keys)
-    if result[keys].isna().any().any() or result.duplicated(keys).any():
-        raise ValueError("Quantile forecast keys must be complete and unique.")
-    result = result.set_index(keys)
-    if len(result) != len(expected) or not expected.isin(result.index).all():
-        raise ValueError(
-            "Quantile forecasts must cover every date, variable and probability."
-        )
-    result = result.reindex(expected)
+    result = _order_forecast_keys(
+        forecast.loc[:, columns], dates, variables, probabilities
+    )
     values = result["value"].to_numpy(dtype=float).reshape(-1, len(probabilities))
     if not np.isfinite(values).all():
         raise ValueError("Quantile forecast values must be finite.")
     if (np.diff(values, axis=1) < 0).any():
         raise ValueError("Quantile forecasts must not cross.")
-    return result.reset_index()
+    return result
 
 
 @dataclass(frozen=True)
@@ -192,18 +206,173 @@ class _FitDesignState:
     last_y_fit_date: pd.Timestamp | pd.Period
 
 
-def _point_forecast_to_wide(forecast, variables=None):
-    """Restore a point matrix for internal consumers that require one."""
+def _validate_point_result(
+    forecast,
+    steps: int,
+    expected_columns: list[str],
+    forecast_origin: pd.Timestamp,
+    forecast_dates_include_origin: bool,
+) -> pd.DataFrame:
+    """Validate complete point keys without treating missing values as absent."""
     if list(forecast.columns) != ["date", "variable", "value"]:
-        raise ValueError("A long point forecast with date, variable, value is required.")
-    if variables is None:
-        variables = forecast["variable"].drop_duplicates().tolist()
-    return (
-        pd.DataFrame(forecast)
-        .pivot(index="date", columns="variable", values="value")
-        .reindex(columns=variables)
-        .rename_axis(columns=None)
+        raise ValueError(
+            "Point forecasts must have columns ['date', 'variable', 'value']."
+        )
+    if not pd.api.types.is_datetime64_any_dtype(forecast["date"]):
+        raise TypeError("Forecast date must have a datetime dtype.")
+    dates = pd.DatetimeIndex(forecast["date"].drop_duplicates()).sort_values()
+    ordered = _order_forecast_keys(forecast, dates, expected_columns)
+    _validate_calendar(dates, steps, forecast_origin, forecast_dates_include_origin)
+    return ordered
+
+
+def _validate_calendar(dates, steps, forecast_origin, forecast_dates_include_origin):
+    """Validate the date contract shared by hook payloads and long results."""
+    if len(dates) != steps:
+        raise ValueError(f"Forecast must have {steps} dates, got {len(dates)}")
+    if not isinstance(dates, pd.DatetimeIndex):
+        raise TypeError("Forecast must be indexed by a DatetimeIndex.")
+    if dates.hasnans:
+        raise ValueError("Forecast index must not contain missing dates.")
+    if dates.has_duplicates:
+        raise ValueError("Forecast index must not contain duplicate dates.")
+    if not dates.is_monotonic_increasing:
+        raise ValueError("Forecast index must be sorted in increasing order.")
+
+    origin = pd.Timestamp(forecast_origin)
+    invalid_dates = dates < origin if forecast_dates_include_origin else dates <= origin
+    if invalid_dates.any():
+        raise ValueError(
+            "Forecast dates do not satisfy their declared relationship to the "
+            "fitted forecast origin; ordinary forecasts must be strictly "
+            "after that origin."
+        )
+
+
+def _validate_decomposition(
+    forecast,
+    decomposition: pd.DataFrame | None,
+    steps: int,
+    expected_columns: list[str],
+) -> pd.DataFrame | None:
+    """Validate and normalise a model-local additive decomposition."""
+    if decomposition is None:
+        return None
+    if not isinstance(decomposition, pd.DataFrame):
+        raise TypeError("decomposition must be a pandas DataFrame or None.")
+
+    required_columns = {
+        "forecast_horizon",
+        "component",
+        "contribution",
+        "weight",
+    }
+    missing_columns = required_columns - set(decomposition.columns)
+    if missing_columns:
+        raise ValueError(
+            f"decomposition is missing required columns: {sorted(missing_columns)}"
+        )
+    if decomposition.empty:
+        raise ValueError("decomposition must contain at least one row.")
+
+    result = decomposition.copy()
+    horizon = result["forecast_horizon"]
+    if horizon.isna().any() or not pd.api.types.is_integer_dtype(horizon):
+        raise TypeError("decomposition forecast_horizon must be integers.")
+    if ((horizon < 0) | (horizon >= steps)).any():
+        raise ValueError(
+            f"decomposition forecast_horizon must be in the range 0..{steps - 1}."
+        )
+
+    for column in ("contribution", "weight"):
+        if column not in result:
+            continue
+        values = result[column]
+        numeric = pd.to_numeric(values, errors="coerce")
+        if column == "contribution" and numeric.isna().any():
+            raise TypeError("decomposition contribution values must be numeric.")
+        if (
+            column == "weight"
+            and values.notna().any()
+            and numeric[values.notna()].isna().any()
+        ):
+            raise TypeError("decomposition weight values must be numeric.")
+        if np.isinf(numeric.dropna().to_numpy(dtype=float)).any():
+            raise ValueError(f"decomposition {column} values must be finite.")
+        if column == "contribution":
+            result[column] = numeric
+        elif values.notna().any():
+            result.loc[values.notna(), column] = numeric[values.notna()]
+
+    for column in ("component", "variable"):
+        if column not in result:
+            continue
+        if (
+            result[column].isna().any()
+            or not result[column].map(lambda value: isinstance(value, str)).all()
+        ):
+            raise TypeError(f"decomposition {column} values must be non-missing strings.")
+
+    if "variable" not in result:
+        if len(expected_columns) != 1:
+            raise ValueError(
+                "Multi-target decompositions must include a 'variable' column."
+            )
+        variables = pd.Series(expected_columns[0], index=result.index)
+    else:
+        variables = result["variable"]
+    if not set(variables).issubset(expected_columns):
+        unknown = sorted(set(variables) - set(expected_columns))
+        raise ValueError(f"decomposition contains unknown target variable(s): {unknown}")
+
+    decomposition_keys = pd.DataFrame(
+        {
+            "forecast_horizon": result["forecast_horizon"],
+            "variable": variables,
+            "component": result["component"],
+        }
     )
+    duplicate_keys = decomposition_keys.duplicated()
+    if duplicate_keys.any():
+        raise ValueError(
+            "decomposition must contain at most one contribution per "
+            "forecast_horizon, variable, and component."
+        )
+
+    expected_pairs = pd.MultiIndex.from_product(
+        [range(steps), expected_columns],
+        names=["forecast_horizon", "variable"],
+    )
+    actual_pairs = pd.MultiIndex.from_frame(
+        pd.DataFrame(
+            {
+                "forecast_horizon": result["forecast_horizon"],
+                "variable": variables,
+            }
+        ).drop_duplicates()
+    )
+    if not expected_pairs.isin(actual_pairs).all():
+        raise ValueError(
+            "decomposition must reconcile every forecast horizon for every "
+            "target variable."
+        )
+
+    totals = (
+        result.assign(_variable=variables)
+        .groupby(["forecast_horizon", "_variable"])["contribution"]
+        .sum()
+    )
+    forecast_values = forecast.set_index(["date", "variable"])["value"]
+    for horizon_value, date in enumerate(forecast["date"].drop_duplicates()):
+        for variable in expected_columns:
+            total = totals.loc[(horizon_value, variable)]
+            forecast_value = forecast_values.loc[(date, variable)]
+            if not np.isclose(total, forecast_value, equal_nan=True):
+                raise ValueError(
+                    "decomposition contributions must reconcile to the "
+                    "forecast for every horizon and target variable."
+                )
+    return result
 
 
 class ForecastResult(pd.DataFrame):
@@ -212,6 +381,9 @@ class ForecastResult(pd.DataFrame):
     Point results contain ``date``, ``variable`` and ``value``. Quantile results
     also contain ``quantile`` before ``value``. Rows use a RangeIndex and follow
     date, fitted target and ascending probability order; steps count dates.
+
+    ForecastModel validates prediction results before constructing this container.
+    Ordinary pandas operations do not validate or reorder their contents.
     """
 
     _metadata = ["decomposition", "forecast_origin"]
@@ -230,212 +402,11 @@ class ForecastResult(pd.DataFrame):
         forecast=None,
         decomposition: pd.DataFrame | None = None,
         forecast_origin: pd.Timestamp | None = None,
-        steps: int | None = None,
-        expected_columns: list[str] | None = None,
-        forecast_dates_include_origin: bool = False,
+        **kwargs,
     ):
-        super().__init__(forecast)
-        if steps is not None or expected_columns is not None:
-            if steps is None or expected_columns is None or forecast_origin is None:
-                raise ValueError(
-                    "steps, expected_columns, and forecast_origin must be provided "
-                    "together to validate a ForecastResult."
-                )
-            self._validate_forecast(
-                steps,
-                expected_columns,
-                forecast_origin,
-                forecast_dates_include_origin,
-            )
-            decomposition = self._validate_decomposition(
-                decomposition,
-                steps,
-                expected_columns,
-            )
+        super().__init__(forecast, **kwargs)
         self.decomposition = decomposition
         self.forecast_origin = forecast_origin
-
-    def _validate_forecast(
-        self,
-        steps: int,
-        expected_columns: list[str],
-        forecast_origin: pd.Timestamp,
-        forecast_dates_include_origin: bool,
-    ) -> None:
-        """Validate complete point keys without treating missing values as absent."""
-        if list(self.columns) != ["date", "variable", "value"]:
-            raise ValueError(
-                "Point forecasts must have columns ['date', 'variable', 'value']."
-            )
-        if not pd.api.types.is_datetime64_any_dtype(self["date"]):
-            raise TypeError("Forecast date must have a datetime dtype.")
-        keys = ["date", "variable"]
-        if self[keys].isna().any().any() or self.duplicated(keys).any():
-            raise ValueError("Point forecast keys must be complete and unique.")
-        dates = pd.DatetimeIndex(self["date"].drop_duplicates()).sort_values()
-        expected = pd.MultiIndex.from_product([dates, expected_columns], names=keys)
-        actual = pd.MultiIndex.from_frame(self[keys])
-        if len(actual) != len(expected) or not expected.isin(actual).all():
-            raise ValueError("Point forecasts must cover every date and fitted target.")
-        self._validate_calendar(
-            dates, steps, forecast_origin, forecast_dates_include_origin
-        )
-        ordered = pd.DataFrame(self).set_index(keys).reindex(expected).reset_index()
-        pd.DataFrame.__init__(self, ordered)
-
-    @staticmethod
-    def _validate_calendar(dates, steps, forecast_origin, forecast_dates_include_origin):
-        """Validate the date contract shared by hook payloads and long results."""
-        if len(dates) != steps:
-            raise ValueError(f"Forecast must have {steps} dates, got {len(dates)}")
-        if not isinstance(dates, pd.DatetimeIndex):
-            raise TypeError("Forecast must be indexed by a DatetimeIndex.")
-        if dates.hasnans:
-            raise ValueError("Forecast index must not contain missing dates.")
-        if dates.has_duplicates:
-            raise ValueError("Forecast index must not contain duplicate dates.")
-        if not dates.is_monotonic_increasing:
-            raise ValueError("Forecast index must be sorted in increasing order.")
-
-        origin = pd.Timestamp(forecast_origin)
-        invalid_dates = (
-            dates < origin if forecast_dates_include_origin else dates <= origin
-        )
-        if invalid_dates.any():
-            raise ValueError(
-                "Forecast dates do not satisfy their declared relationship to the "
-                "fitted forecast origin; ordinary forecasts must be strictly "
-                "after that origin."
-            )
-
-    def _validate_decomposition(
-        self,
-        decomposition: pd.DataFrame | None,
-        steps: int,
-        expected_columns: list[str],
-    ) -> pd.DataFrame | None:
-        """Validate and normalise a model-local additive decomposition."""
-        if decomposition is None:
-            return None
-        if not isinstance(decomposition, pd.DataFrame):
-            raise TypeError("decomposition must be a pandas DataFrame or None.")
-
-        required_columns = {
-            "forecast_horizon",
-            "component",
-            "contribution",
-            "weight",
-        }
-        missing_columns = required_columns - set(decomposition.columns)
-        if missing_columns:
-            raise ValueError(
-                f"decomposition is missing required columns: {sorted(missing_columns)}"
-            )
-        if decomposition.empty:
-            raise ValueError("decomposition must contain at least one row.")
-
-        result = decomposition.copy()
-        horizon = result["forecast_horizon"]
-        if horizon.isna().any() or not pd.api.types.is_integer_dtype(horizon):
-            raise TypeError("decomposition forecast_horizon must be integers.")
-        if ((horizon < 0) | (horizon >= steps)).any():
-            raise ValueError(
-                f"decomposition forecast_horizon must be in the range 0..{steps - 1}."
-            )
-
-        for column in ("contribution", "weight"):
-            if column not in result:
-                continue
-            values = result[column]
-            numeric = pd.to_numeric(values, errors="coerce")
-            if column == "contribution" and numeric.isna().any():
-                raise TypeError("decomposition contribution values must be numeric.")
-            if (
-                column == "weight"
-                and values.notna().any()
-                and numeric[values.notna()].isna().any()
-            ):
-                raise TypeError("decomposition weight values must be numeric.")
-            if np.isinf(numeric.dropna().to_numpy(dtype=float)).any():
-                raise ValueError(f"decomposition {column} values must be finite.")
-            if column == "contribution":
-                result[column] = numeric
-            elif values.notna().any():
-                result.loc[values.notna(), column] = numeric[values.notna()]
-
-        for column in ("component", "variable"):
-            if column not in result:
-                continue
-            if (
-                result[column].isna().any()
-                or not result[column].map(lambda value: isinstance(value, str)).all()
-            ):
-                raise TypeError(
-                    f"decomposition {column} values must be non-missing strings."
-                )
-
-        if "variable" not in result:
-            if len(expected_columns) != 1:
-                raise ValueError(
-                    "Multi-target decompositions must include a 'variable' column."
-                )
-            variables = pd.Series(expected_columns[0], index=result.index)
-        else:
-            variables = result["variable"]
-        if not set(variables).issubset(expected_columns):
-            unknown = sorted(set(variables) - set(expected_columns))
-            raise ValueError(
-                f"decomposition contains unknown target variable(s): {unknown}"
-            )
-
-        decomposition_keys = pd.DataFrame(
-            {
-                "forecast_horizon": result["forecast_horizon"],
-                "variable": variables,
-                "component": result["component"],
-            }
-        )
-        duplicate_keys = decomposition_keys.duplicated()
-        if duplicate_keys.any():
-            raise ValueError(
-                "decomposition must contain at most one contribution per "
-                "forecast_horizon, variable, and component."
-            )
-
-        expected_pairs = pd.MultiIndex.from_product(
-            [range(steps), expected_columns],
-            names=["forecast_horizon", "variable"],
-        )
-        actual_pairs = pd.MultiIndex.from_frame(
-            pd.DataFrame(
-                {
-                    "forecast_horizon": result["forecast_horizon"],
-                    "variable": variables,
-                }
-            ).drop_duplicates()
-        )
-        if not expected_pairs.isin(actual_pairs).all():
-            raise ValueError(
-                "decomposition must reconcile every forecast horizon for every "
-                "target variable."
-            )
-
-        totals = (
-            result.assign(_variable=variables)
-            .groupby(["forecast_horizon", "_variable"])["contribution"]
-            .sum()
-        )
-        forecast_values = self.set_index(["date", "variable"])["value"]
-        for horizon_value, date in enumerate(self["date"].drop_duplicates()):
-            for variable in expected_columns:
-                total = totals.loc[(horizon_value, variable)]
-                forecast_value = forecast_values.loc[(date, variable)]
-                if not np.isclose(total, forecast_value, equal_nan=True):
-                    raise ValueError(
-                        "decomposition contributions must reconcile to the "
-                        "forecast for every horizon and target variable."
-                    )
-        return result
 
 
 _FITTED_VALUES_NOT_FITTED_MSG = (
@@ -867,18 +838,22 @@ class ForecastModel(ABC):
         decomp_kwargs: dict | None = None,
         quantiles=None,
     ) -> ForecastResult:
-        """Validate, normalise, and wrap a model forecast result."""
-        if quantiles is not None:
-            configuration = self._fitted_model_configuration
-            return ForecastResult(
-                _validate_quantile_result(
-                    forecast,
-                    self._forecast_calendar(steps, forecast_origin),
-                    list(configuration.y_columns),
-                    quantiles,
-                ),
-                forecast_origin=forecast_origin,
-            )
+        """Normalise hook output, validate the result and attach metadata."""
+        if quantiles is not None and decomp:
+            raise ValueError("decomp=True is not supported for quantile forecasts.")
+        if quantiles is None:
+            forecast = self._normalise_point_forecast(forecast, steps, forecast_origin)
+        decomposition = (
+            self._forecast_decomp(steps=steps, **(decomp_kwargs or {}))
+            if decomp
+            else None
+        )
+        return self._validate_result(
+            forecast, steps, forecast_origin, decomposition, quantiles
+        )
+
+    def _normalise_point_forecast(self, forecast, steps, forecast_origin):
+        """Validate the wide hook contract and convert it to a long table."""
         if forecast is None:
             raise TypeError(
                 f"{self.__class__.__name__}._forecast returned None; it must "
@@ -895,13 +870,6 @@ class ForecastModel(ABC):
                 forecast_origin=forecast_origin,
             )
 
-        decomposition = None
-        if decomp:
-            decomposition = self._forecast_decomp(
-                steps=steps,
-                **(decomp_kwargs or {}),
-            )
-
         configuration = getattr(self, "_fitted_model_configuration", None)
         expected_columns = (
             list(configuration.y_columns)
@@ -913,25 +881,49 @@ class ForecastModel(ABC):
                 "Forecast columns must match the fitted target columns in order; "
                 f"expected {expected_columns}, got {list(forecast.columns)}"
             )
-        ForecastResult._validate_calendar(
+        _validate_calendar(
             forecast.index,
             steps,
             forecast_origin,
             self._forecast_dates_include_origin,
         )
+        return pd.DataFrame(
+            {
+                "date": forecast.index.repeat(len(expected_columns)),
+                "variable": np.tile(expected_columns, steps),
+                "value": forecast.to_numpy().reshape(-1),
+            }
+        )
+
+    def _validate_result(
+        self, forecast, steps, forecast_origin, decomposition=None, quantiles=None
+    ) -> ForecastResult:
+        """Validate long output from hooks or public overrides before publication."""
+        variables = list(self._fitted_model_configuration.y_columns)
+        if quantiles is None:
+            forecast = _validate_point_result(
+                forecast,
+                steps,
+                variables,
+                forecast_origin,
+                self._forecast_dates_include_origin,
+            )
+            decomposition = _validate_decomposition(
+                forecast, decomposition, steps, variables
+            )
+        else:
+            if decomposition is not None:
+                raise ValueError("decomp=True is not supported for quantile forecasts.")
+            forecast = _validate_quantile_result(
+                forecast,
+                self._forecast_calendar(steps, forecast_origin),
+                variables,
+                quantiles,
+            )
         return ForecastResult(
-            pd.DataFrame(
-                {
-                    "date": forecast.index.repeat(len(expected_columns)),
-                    "variable": np.tile(expected_columns, steps),
-                    "value": forecast.to_numpy().reshape(-1),
-                }
-            ),
+            forecast,
             decomposition=decomposition,
             forecast_origin=forecast_origin,
-            steps=steps,
-            expected_columns=expected_columns,
-            forecast_dates_include_origin=self._forecast_dates_include_origin,
         )
 
     def _forecast_calendar(self, steps, forecast_origin):
@@ -1523,21 +1515,15 @@ class ForecastModel(ABC):
         """Validate public overrides without repeating fitting or prediction."""
         if not isinstance(result, ForecastResult):
             raise TypeError("Public prediction overrides must return a ForecastResult.")
-        steps = kwargs.get("steps", 1)
         probabilities = _normalise_quantiles(kwargs.get("quantiles", False))
-        if probabilities is not None:
-            if kwargs.get("decomp", False) or result.decomposition is not None:
-                raise ValueError("decomp=True is not supported for quantile forecasts.")
-            return self._finalise_forecast(
-                result.forecast, steps, forecast_origin, quantiles=probabilities
-            )
-        return ForecastResult(
+        if probabilities is not None and kwargs.get("decomp", False):
+            raise ValueError("decomp=True is not supported for quantile forecasts.")
+        return self._validate_result(
             result.forecast,
+            steps=kwargs.get("steps", 1),
             decomposition=result.decomposition,
             forecast_origin=forecast_origin,
-            steps=steps,
-            expected_columns=list(self._fitted_model_configuration.y_columns),
-            forecast_dates_include_origin=self._forecast_dates_include_origin,
+            quantiles=probabilities,
         )
 
     def _conditioning_dates(self, data, forecast_origin, steps):

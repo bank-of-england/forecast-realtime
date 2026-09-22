@@ -11,8 +11,11 @@ pytest.importorskip("bvar")
 pytest.importorskip("nowcast_midas")
 
 from forecast_realtime.examples.midas_bvar_tree import ConditionalBVAR
-from forecast_realtime.forecast_model import _point_forecast_to_wide
-from forecast_realtime.forecast_tree import ForecastTree, TreeNode
+from forecast_realtime.forecast_tree import (
+    ForecastTree,
+    TreeNode,
+    _point_forecast_to_wide,
+)
 from forecast_realtime.models import ForecastBVAR, ForecastMIDAS
 
 STEPS = 4

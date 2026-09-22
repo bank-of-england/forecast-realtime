@@ -25,7 +25,6 @@ from forecast_realtime.forecast_model import (
     ForecastContext,
     ForecastModel,
     ForecastResult,
-    _point_forecast_to_wide,
 )
 
 TransformType = Callable[[dict[str, pd.DataFrame]], pd.DataFrame] | ForecastModel
@@ -34,6 +33,20 @@ TransformType = Callable[[dict[str, pd.DataFrame]], pd.DataFrame] | ForecastMode
 # --------------------------------------------------------------------------- #
 # Component helpers, shared by the node evaluators below.                      #
 # --------------------------------------------------------------------------- #
+def _point_forecast_to_wide(forecast, variables=None):
+    """Restore a point matrix for internal consumers that require one."""
+    if list(forecast.columns) != ["date", "variable", "value"]:
+        raise ValueError("A long point forecast with date, variable, value is required.")
+    if variables is None:
+        variables = forecast["variable"].drop_duplicates().tolist()
+    return (
+        pd.DataFrame(forecast)
+        .pivot(index="date", columns="variable", values="value")
+        .reindex(columns=variables)
+        .rename_axis(columns=None)
+    )
+
+
 def _as_frame(values: pd.Series | pd.DataFrame) -> pd.DataFrame:
     """Coerce fitted/forecast values to a DataFrame, keeping their column name(s)."""
     return values.to_frame() if isinstance(values, pd.Series) else values

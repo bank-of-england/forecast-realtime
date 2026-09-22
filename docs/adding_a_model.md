@@ -173,6 +173,13 @@ and `value`. Rows are ordered by date and fitted target order. The result keeps
 `forecast_origin` and `decomposition` as metadata, while `.forecast` returns
 the same long payload as an ordinary DataFrame.
 
+`ForecastResult` construction only wraps the DataFrame payload and attaches
+`forecast_origin` and `decomposition`; it does not validate or reorder the
+payload. Framework model dispatch owns validation: hook output is normalised and
+validated before construction, and public overrides are validated at the public
+output boundary. Ordinary pandas operations do not validate or reorder the
+contents.
+
 Use an explicit pivot when a downstream calculation needs a wide point matrix:
 
 ```python
@@ -185,10 +192,9 @@ point_matrix = point_result.pivot(
 ```
 
 Public `forecast()` and `predict()` overrides must return this validated long
-contract. Framework dispatch validates an override result at its existing
-boundaries. A direct call to an override that bypasses `super()` bypasses that
-dispatch validation, so the model author is responsible for returning the
-contract there.
+contract. A direct call to an override that bypasses `super()` bypasses
+framework dispatch validation, so the model author is responsible for returning
+the contract there.
 
 #### Quantile forecasts
 

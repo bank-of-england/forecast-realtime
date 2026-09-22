@@ -5,8 +5,8 @@ import pytest
 from forecast_realtime.forecast_model import (
     ForecastModel,
     ForecastResult,
-    _point_forecast_to_wide,
 )
+from forecast_realtime.forecast_tree import _point_forecast_to_wide
 from forecast_realtime.models.ols import ForecastOLS
 
 
@@ -173,12 +173,17 @@ def test_long_decomposition_reconciles_by_date_and_target():
             "weight": 1.0,
         }
     )
-    result = ForecastResult(
+    model = _DesignRecordingModel().fit(
+        pd.DataFrame(
+            {"z": [1.0, 2.0, 3.0], "a": [4.0, 5.0, 6.0]},
+            index=pd.date_range("2019-11-30", periods=3, freq="ME"),
+        )
+    )
+    result = model._validate_result(
         forecast.iloc[::-1],
         decomposition=decomposition,
         forecast_origin=pd.Timestamp("2020-01-31"),
         steps=2,
-        expected_columns=["z", "a"],
     )
     pd.testing.assert_frame_equal(result.forecast, forecast)
     pd.testing.assert_frame_equal(result.decomposition, decomposition)
@@ -319,13 +324,36 @@ def _forecast_result(decomposition, expected_columns=None):
             for column in expected_columns
         ]
     )
-    return ForecastResult(
+    model = _DesignRecordingModel().fit(
+        pd.DataFrame(
+            {column: [1.0, 2.0, 3.0] for column in expected_columns},
+            index=pd.date_range("2019-11-30", periods=3, freq="ME"),
+        )
+    )
+    return model._validate_result(
         forecast,
         decomposition=decomposition,
         forecast_origin=pd.Timestamp("2020-01-31"),
         steps=2,
-        expected_columns=expected_columns,
     )
+
+
+def test_forecast_result_construction_preserves_arbitrary_pandas_payload():
+    origin = pd.Timestamp("2020-01-31")
+    decomposition = _valid_forecast_result_decomposition()
+    result = ForecastResult(
+        [[2.0], [1.0]],
+        columns=["value"],
+        index=[7, 3],
+        forecast_origin=origin,
+        decomposition=decomposition,
+    )
+    assert result.index.tolist() == [7, 3]
+    assert result["value"].tolist() == [2.0, 1.0]
+    for frame in [result.copy(), result.iloc[:1], result[["value"]]]:
+        assert isinstance(frame, ForecastResult)
+        assert frame.forecast_origin == origin
+        pd.testing.assert_frame_equal(frame.decomposition, decomposition)
 
 
 def test_forecast_result_validates_and_preserves_single_target_decomposition():
