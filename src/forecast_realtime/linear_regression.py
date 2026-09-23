@@ -100,11 +100,7 @@ class LinearRegression(ForecastModel):
         X_aug = X[X.index > last_y_index].copy()
         forecast_history = self.y
         configuration = getattr(self, "_fitted_model_configuration", None)
-        forecast_frequency = (
-            configuration.data_transformation.frequency
-            if configuration is not None
-            else getattr(self, "_forecast_frequency", None)
-        )
+        forecast_frequency = configuration.design.frequency
         if last_y_index != forecast_history.index[-1]:
             forecast_dates = self._infer_forecast_dates(
                 pd.DatetimeIndex([last_y_index]),
@@ -158,7 +154,6 @@ class LinearRegression(ForecastModel):
         """
         # Keep the estimation index for the fitted-values output.
         incoming_index = y.index
-        self.last_y_fit_date = y.index[-1]
         # TODO: Allow model-specific interpolation and support NumPy and pandas inputs.
 
         if X is not None:
@@ -286,7 +281,7 @@ class LinearRegression(ForecastModel):
         if quantiles is not None:
             if (
                 self.forecast_strategy == "direct"
-                or self._fitted_model_configuration.y_lags
+                or self._fitted_model_configuration.design.y_lags
             ):
                 raise ValueError(
                     "Linear regression quantiles do not support target lags or "

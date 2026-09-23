@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from forecast_realtime._model_data import ModelData
 from forecast_realtime.forecast_model import (
     ForecastModel,
     ForecastResult,
@@ -51,11 +52,97 @@ class _DesignRecordingModel(ForecastModel):
         return self
 
     def _forecast(self, steps=1, X=None, y=None, **kwargs):
+        self.forecast_design = X
         return np.zeros((steps, len(self.y.columns)))
 
 
 def _monthly_dates(origin, steps):
     return pd.date_range(origin, periods=steps + 1, freq="ME")[1:]
+
+
+def test_dummy_calendar_uses_explicit_forecast_origin():
+    index = pd.date_range("2020-01-31", periods=6, freq="ME")
+    y = pd.DataFrame({"target": np.arange(6.0)}, index=index)
+    model = _DesignRecordingModel().fit(y, dummies=[index[1]])
+    supplied_history = ModelData.from_wide(y=y.iloc[:2])
+
+    model._predict_data(
+        supplied_history,
+        forecast_origin=pd.Timestamp("2020-06-30"),
+        steps=2,
+    )
+
+    expected = pd.date_range("2020-07-31", periods=2, freq="ME")
+    pd.testing.assert_index_equal(model.forecast_design.index[-2:], expected)
+
+
+def test_forecast_calendar_uses_fitted_anchor_after_estimation_index_changes():
+    index = pd.date_range("2020-01-01", periods=4, freq="MS")
+    y = pd.DataFrame({"target": np.arange(4.0)}, index=index)
+    model = _DesignRecordingModel().fit(y, frequency="M")
+    model.y.index = model.y.index.to_period("M").to_timestamp(how="end").normalize()
+
+    expected = pd.date_range("2020-05-01", periods=2, freq="MS")
+    pd.testing.assert_index_equal(model._forecast_dates(index[-1], 2), expected)
+
+
+def test_formula_can_name_a_dummy_pruned_as_zero_at_fit():
+    index = pd.date_range("2020-01-31", periods=3, freq="ME")
+    y = pd.DataFrame({"target": [1.0, 2.0, 3.0]}, index=index)
+    X = pd.DataFrame({"driver": [4.0, 5.0, 6.0]}, index=index)
+    dummy_date = pd.Timestamp("2020-04-30")
+    model = _DesignRecordingModel(formula="target ~ driver + D_2020M4").fit(
+        y, X, dummies=[dummy_date]
+    )
+
+    assert list(model.X.columns) == ["driver"]
+
+    future = pd.DataFrame({"driver": [7.0]}, index=[dummy_date])
+    model.forecast(steps=1, X=future)
+
+    assert list(model.forecast_design.columns) == ["driver"]
+
+
+def test_forecast_design_keeps_fitted_column_order_without_dummies():
+    index = pd.date_range("2020-01-31", periods=3, freq="ME")
+    y = pd.DataFrame({"target": [1.0, 2.0, 3.0]}, index=index)
+    X = pd.DataFrame({"first": [1.0, 2.0, 3.0], "second": [4.0, 5.0, 6.0]}, index=index)
+    model = _DesignRecordingModel().fit(y, X)
+
+    future = pd.DataFrame(
+        {"second": [7.0], "first": [8.0]},
+        index=[index[-1] + pd.offsets.MonthEnd()],
+    )
+    model.forecast(steps=1, X=future)
+
+    assert model._fitted_model_configuration.design.columns == ("first", "second")
+    assert list(model.forecast_design.columns) == ["first", "second"]
+
+
+def test_counterfactual_lag_design_uses_supplied_history_at_later_origin():
+    fit_index = pd.date_range("2020-01-31", periods=3, freq="ME")
+    fit_y = pd.DataFrame({"target": [1.0, 2.0, 3.0]}, index=fit_index)
+    fit_X = pd.DataFrame({"driver": [10.0, 20.0, 30.0]}, index=fit_index)
+    model = _DesignRecordingModel().fit(fit_y, fit_X, y_lags=1, X_lags=1)
+
+    counterfactual_index = pd.date_range("2020-01-31", periods=4, freq="ME")
+    counterfactual_y = pd.DataFrame(
+        {"target": [100.0, 200.0, 300.0, 400.0]}, index=counterfactual_index
+    )
+    counterfactual_X = pd.DataFrame(
+        {"driver": [1.0, 2.0, 3.0, 4.0]}, index=counterfactual_index
+    )
+    origin = counterfactual_index[-1]
+
+    model._predict_data(
+        ModelData.from_wide(y=counterfactual_y, X=counterfactual_X),
+        forecast_origin=origin,
+        steps=1,
+    )
+
+    forecast_date = origin + pd.offsets.MonthEnd(1)
+    assert model.forecast_design.loc[forecast_date, "target_lag1"] == 400.0
+    assert model.forecast_design.loc[forecast_date, "driver_lag1"] == 4.0
 
 
 @pytest.mark.parametrize("include_origin", [False, True])

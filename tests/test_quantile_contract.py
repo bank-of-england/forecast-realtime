@@ -27,20 +27,6 @@ class _OriginInclusiveOLS(rt.models.ForecastOLS):
 
     _forecast_dates_include_origin = True
 
-    def _forecast(self, *args, forecast_origin=None, quantiles=None, **kwargs):
-        forecast = super()._forecast(
-            *args,
-            forecast_origin=forecast_origin,
-            quantiles=quantiles,
-            **kwargs,
-        )
-        if quantiles is None:
-            forecast = forecast.copy()
-            forecast.index = pd.DatetimeIndex([forecast_origin]).append(
-                forecast.index[:-1]
-            )
-        return forecast
-
 
 class _OriginInclusiveMultiModel(ForecastModel):
     """Return deterministic multi-target forecasts on an origin-inclusive calendar."""
@@ -61,14 +47,7 @@ class _OriginInclusiveMultiModel(ForecastModel):
         quantiles=None,
         **kwargs,
     ):
-        frequency = self._fitted_model_configuration.data_transformation.frequency
-        dates = self._infer_forecast_dates(
-            self.y.index,
-            steps,
-            frequency=frequency,
-            start=forecast_origin,
-        )
-        dates = pd.DatetimeIndex([pd.Timestamp(forecast_origin)]).append(dates[:-1])
+        dates = self._forecast_dates(forecast_origin, steps)
         point = np.tile(self._forecast_values, (steps, 1))
         if quantiles is None:
             return pd.DataFrame(point, index=dates, columns=self.y.columns)
@@ -410,7 +389,8 @@ def test_forecast_result_rejects_crossing_quantile_values():
         )
 
 
-def test_forecast_result_rejects_quantile_decomposition():
+@pytest.mark.parametrize("decomp", [False, True])
+def test_forecast_result_rejects_quantile_decomposition(decomp):
     dates, variables, probabilities, rows = _quantile_rows()
 
     with pytest.raises(ValueError, match="decomp=True"):
@@ -419,9 +399,10 @@ def test_forecast_result_rejects_quantile_decomposition():
             expected_columns=variables,
             steps=len(dates),
             forecast_origin=pd.Timestamp("2020-12-31"),
-            decomposition=pd.DataFrame(),
+            decomposition=None if decomp else pd.DataFrame(),
             quantiles=probabilities,
             forecast_dates=dates,
+            decomp=decomp,
         )
 
 

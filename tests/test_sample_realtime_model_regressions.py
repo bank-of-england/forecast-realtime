@@ -207,8 +207,8 @@ def test_direct_monthly_ols_native_logs_match_levels_derived_logs(
         levels_model.fitted_values.to_frame(), native_model.fitted_values.to_frame()
     )
     for model in (levels_model, native_model):
-        transformation = model._fitted_model_configuration.data_transformation
-        assert dict(transformation.data_transformation) == {
+        transformation = model._fitted_model_configuration.inputs
+        assert transformation.mapping == {
             "monthly_1": "logs",
             "monthly_2": "logs",
         }

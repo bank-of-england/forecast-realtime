@@ -47,6 +47,28 @@ def test_model_owned_transformation_overrides_call_fallback():
     ).data_transformation == {"gdp": "diff"}
 
 
+def test_mapping_resolution_reports_model_fallback_and_identity_sources():
+    fallback = {"gdp": "logs"}
+    assert _StubModel()._resolve_mapping(fallback) == (fallback, "fallback")
+    assert _StubModel()._resolve_mapping() == (None, "identity")
+    assert _StubModel(data_transformation={"gdp": "diff"})._resolve_mapping(fallback) == (
+        {"gdp": "diff"},
+        "model",
+    )
+
+
+def test_fitted_mapping_view_cannot_mutate_configuration():
+    index = pd.date_range("2020-01-31", periods=3, freq="ME")
+    y = pd.DataFrame({"gdp": [10.0, 11.0, 12.0]}, index=index)
+    model = _StubModel(data_transformation={"gdp": "diff"}).fit(y)
+
+    mapping = model._fitted_model_configuration.inputs.mapping
+    assert mapping == {"gdp": "diff"}
+    mapping["gdp"] = "levels"
+
+    assert model._fitted_model_configuration.inputs.mapping == {"gdp": "diff"}
+
+
 def test_model_owned_transformation_is_a_plain_mapping():
     model = _StubModel(data_transformation={"gdp": "diff", "x": "logs"})
 
@@ -78,19 +100,6 @@ class _RecordingModel(ForecastModel):
         self.received_forecast_X = X.copy() if X is not None else None
         self.received_forecast_origin = kwargs.get("forecast_origin")
         return np.zeros((steps, len(self.y.columns)))
-
-
-class _LegacyStubModel(ForecastModel):
-    """Concrete subclass that never calls ``super().__init__()``."""
-
-    def __init__(self):
-        pass
-
-    def _fit(self, y, X=None, **kwargs):
-        return self
-
-    def _forecast(self, steps=1, X=None, y=None, **kwargs):
-        return pd.DataFrame()
 
 
 def test_explicit_forecast_frequency_overrides_period_index_frequency():
@@ -362,8 +371,11 @@ def test_nan_intolerant_fit_and_forecast_regularisation_preserves_mixed_anchors(
         X,
     )
 
-    assert pd.Timestamp("2020-03-31") in model._y_history.index
-    assert pd.Timestamp("2020-06-30") in model._X_history.index
+    prepared = model._raw_data.transform(
+        model._fitted_model_configuration.inputs.mapping
+    ).regularise()
+    assert pd.Timestamp("2020-03-31") in prepared.index("y")
+    assert pd.Timestamp("2020-06-30") in prepared.index("X")
 
     conditioning = pd.DataFrame({"target": [140.0]}, index=pd.to_datetime(["2020-06-30"]))
     model.forecast(
@@ -402,8 +414,8 @@ def test_direct_fit_without_pipeline_stores_level_input_defaults():
 
     model.fit(y, frequency="M")
 
-    transformation = model._fitted_model_configuration.data_transformation
-    assert transformation.data_transformation is None
+    transformation = model._fitted_model_configuration.inputs
+    assert transformation.mapping is None
     assert model._raw_data.metrics("y") == {"gdp": "levels"}
 
 
@@ -564,8 +576,9 @@ def test_forecast_uses_fitted_configuration_after_public_state_mutation():
     y = _levels_y([100.0, 110.0, 121.0])
     model.fit(y, frequency="M")
 
-    model.last_y_fit_date = pd.Timestamp("2021-12-31")
-    model._forecast_frequency = "Q"
+    with pytest.raises(AttributeError):
+        model.last_y_fit_date = pd.Timestamp("2021-12-31")
+    model.data_transformation = {"gdp": "levels"}
     conditioning = _levels_y([130.0], start="2020-04-30", freq="ME")
 
     forecast = model.forecast(steps=1, y=conditioning)

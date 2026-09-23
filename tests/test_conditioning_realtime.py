@@ -19,12 +19,7 @@ class EchoAdditiveModel(ForecastModel):
         return self
 
     def _forecast(self, steps, X=None, y=None, **kwargs):
-        forecast_dates = self._infer_forecast_dates(
-            (y if y is not None else X).index,
-            steps,
-            frequency=self._forecast_frequency,
-            start=kwargs["forecast_origin"],
-        )
+        forecast_dates = self._forecast_dates(kwargs["forecast_origin"], steps)
 
         def requested(frame):
             return frame.reindex(forecast_dates)
@@ -39,12 +34,7 @@ class EchoAdditiveModel(ForecastModel):
         return result
 
     def _forecast_decomp(self, steps, X=None, y=None, **kwargs):
-        forecast_dates = self._infer_forecast_dates(
-            (y if y is not None else X).index,
-            steps,
-            frequency=self._forecast_frequency,
-            start=kwargs["forecast_origin"],
-        )
+        forecast_dates = self._forecast_dates(kwargs["forecast_origin"], steps)
 
         def requested(frame):
             return frame.reindex(forecast_dates)
@@ -211,17 +201,6 @@ def _run(data, models, **kwargs):
         steps=3,
         first_forecast_horizon=0,
         **options,
-    )
-
-
-def _values(model):
-    """Return the newly published compact forecast values by source."""
-    return (
-        model.data.forecasts.query("source in ['left', 'right', 'EchoAdditiveModel']")
-        .sort_values(["source", "variable", "date"])[
-            ["source", "variable", "date", "forecast_horizon", "value"]
-        ]
-        .reset_index(drop=True)
     )
 
 

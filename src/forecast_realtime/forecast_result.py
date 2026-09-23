@@ -66,6 +66,7 @@ class ForecastResult(pd.DataFrame):
         quantiles: bool | list[float] = False,
         forecast_dates: pd.DatetimeIndex | None = None,
         forecast_dates_include_origin: bool = False,
+        decomp: bool = False,
     ):
         if type(steps) is not int or steps <= 0:
             raise ValueError("steps must be an integer greater than zero")
@@ -81,13 +82,14 @@ class ForecastResult(pd.DataFrame):
                 steps,
                 expected_columns,
                 forecast_origin,
+                forecast_dates,
                 forecast_dates_include_origin,
             )
             decomposition = ForecastResult._validate_decomposition(
                 forecast, decomposition, steps, expected_columns
             )
         else:
-            if decomposition is not None:
+            if decomp or decomposition is not None:
                 raise ValueError("decomp=True is not supported for quantile forecasts.")
             if forecast_dates is None:
                 raise ValueError("Quantile forecasts require an expected calendar.")
@@ -145,6 +147,7 @@ class ForecastResult(pd.DataFrame):
         steps: int,
         expected_columns: list[str],
         forecast_origin: pd.Timestamp,
+        forecast_dates: pd.DatetimeIndex | None,
         forecast_dates_include_origin: bool,
     ) -> pd.DataFrame:
         """Validate complete point keys without treating missing values as absent."""
@@ -158,11 +161,20 @@ class ForecastResult(pd.DataFrame):
             )
         if not pd.api.types.is_datetime64_any_dtype(forecast["date"]):
             raise TypeError("Forecast date must have a datetime dtype.")
-        dates = pd.DatetimeIndex(forecast["date"].drop_duplicates()).sort_values()
-        ordered = ForecastResult._order_forecast_keys(forecast, dates, expected_columns)
-        ForecastResult._validate_calendar(
-            dates, steps, forecast_origin, forecast_dates_include_origin
+        dates = (
+            pd.DatetimeIndex(forecast["date"].drop_duplicates()).sort_values()
+            if forecast_dates is None
+            else forecast_dates
         )
+        if forecast_dates is not None:
+            ForecastResult._validate_calendar(
+                dates, steps, forecast_origin, forecast_dates_include_origin
+            )
+        ordered = ForecastResult._order_forecast_keys(forecast, dates, expected_columns)
+        if forecast_dates is None:
+            ForecastResult._validate_calendar(
+                dates, steps, forecast_origin, forecast_dates_include_origin
+            )
         return ordered
 
     @staticmethod

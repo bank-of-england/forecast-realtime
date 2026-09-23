@@ -156,8 +156,7 @@ def _fit_synthetic_bvar(monkeypatch, **kwargs):
 
 
 def _density_dates(model, steps):
-    return model._conditioning_dates(
-        model._raw_data,
+    return model._forecast_dates(
         model._fitted_model_configuration.forecast_origin,
         steps,
     )

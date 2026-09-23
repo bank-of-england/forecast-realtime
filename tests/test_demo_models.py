@@ -91,6 +91,7 @@ def synthetic_inputs(monkeypatch):
         generate_synthetic_data,
     )
 
+
 @pytest.mark.skip(reason="Skipping demo models test temporarily")
 def test_demo_models(snapshot, bvar_python_kernel):
     """The default demo includes every model and matches its numerical snapshot."""

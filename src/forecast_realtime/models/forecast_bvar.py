@@ -231,9 +231,6 @@ class ForecastBVAR(ForecastModel):
             columns=y.columns,
         ).reindex(y.index)
 
-        # store last training date for filtering conditioning data
-        self.last_y_fit_date = y.index[-1]
-
         return self
 
     def _forecast(
@@ -273,7 +270,7 @@ class ForecastBVAR(ForecastModel):
             )
         # Align sparse or longer supplied paths to the requested forecast calendar.
         if y is not None:
-            dates = self._conditioning_dates(self._raw_data, forecast_origin, steps)
+            dates = self._forecast_dates(forecast_origin, steps)
             y = y.reindex(index=dates, columns=self.y.columns)
             y = y.to_numpy() if y.notna().any().any() else None
 
@@ -301,7 +298,7 @@ class ForecastBVAR(ForecastModel):
             )
             periods = formatted["date"].drop_duplicates().sort_values().iloc[-steps:]
             result = formatted.loc[formatted["date"].isin(periods)].copy()
-            dates = self._conditioning_dates(self._raw_data, forecast_origin, steps)
+            dates = self._forecast_dates(forecast_origin, steps)
             result["date"] = result["date"].map(dict(zip(periods, dates, strict=True)))
             self.bvar.forecast_unconditional = None
             self.bvar.forecast_conditional = None

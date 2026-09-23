@@ -13,22 +13,17 @@ from forecast_realtime.forecast_tree import ForecastTree, TreeNode
 
 
 class _BoundaryModel(ForecastModel):
-    validation_calls = 0
+    fit_calls = 0
 
-    def __init__(self, *args, fail_validation=False, **kwargs):
+    def __init__(self, *args, fail_fit=False, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fail_validation = fail_validation
-
-    def _validate_fit_inputs(self, y, X):
-        type(self).validation_calls += 1
-        self.validation_marker = "candidate"
-        y.iloc[0, 0] = -999.0
-        if self.fail_validation:
-            raise RuntimeError("validation hook failed")
-        return y, X
+        self.fail_fit = fail_fit
 
     def _fit(self, y, X=None, **kwargs):
+        type(self).fit_calls += 1
         self.fitted_values_ = y.copy()
+        if self.fail_fit:
+            raise RuntimeError("fit hook failed")
         return self
 
     def _forecast(self, steps=1, X=None, y=None, **kwargs):
@@ -169,29 +164,27 @@ def test_realtime_formula_skips_unselected_X_conditioning_sources():
     )
 
 
-def test_failed_validation_hook_isolated_from_fitted_model_and_model_data():
+def test_failed_fit_hook_isolated_from_fitted_model_and_model_data():
     source = _monthly_y([100.0, 110.0, 121.0])
     model = _BoundaryModel()
-    _BoundaryModel.validation_calls = 0
+    _BoundaryModel.fit_calls = 0
     model.fit(source)
-    model.validation_marker = "published"
     fitted_before = model.fitted_values_.copy()
     shared = ModelData.from_wide(y=source)
 
-    model.fail_validation = True
-    with pytest.raises(RuntimeError, match="validation hook failed"):
+    model.fail_fit = True
+    with pytest.raises(RuntimeError, match="fit hook failed"):
         model._fit_from_data(shared)
 
-    assert _BoundaryModel.validation_calls == 2
-    assert model.validation_marker == "published"
+    assert _BoundaryModel.fit_calls == 2
     pd.testing.assert_frame_equal(model.fitted_values_, fitted_before)
     pd.testing.assert_frame_equal(shared.to_wide("y"), source)
     pd.testing.assert_frame_equal(source, _monthly_y([100.0, 110.0, 121.0]))
 
 
-def test_validation_hook_is_reached_once_through_realtime_and_tree_paths():
+def test_fit_hook_is_reached_once_through_realtime_and_tree_paths():
     realtime_data, vintage = _realtime_data()
-    _BoundaryModel.validation_calls = 0
+    _BoundaryModel.fit_calls = 0
     rt.RealTimeModel(data=realtime_data, models=_BoundaryModel()).forecast(
         y_variables=["target"],
         data_transformation={"target": "levels"},
@@ -200,9 +193,9 @@ def test_validation_hook_is_reached_once_through_realtime_and_tree_paths():
         first_vintage=str(vintage.date()),
         last_vintage=str(vintage.date()),
     )
-    assert _BoundaryModel.validation_calls == 1
+    assert _BoundaryModel.fit_calls == 1
 
-    _BoundaryModel.validation_calls = 0
+    _BoundaryModel.fit_calls = 0
     tree = ForecastTree(
         TreeNode(
             transform=lambda components: next(iter(components.values())),
@@ -212,7 +205,7 @@ def test_validation_hook_is_reached_once_through_realtime_and_tree_paths():
         )
     )
     tree.fit(_monthly_y([100.0, 110.0, 121.0]))
-    assert _BoundaryModel.validation_calls == 1
+    assert _BoundaryModel.fit_calls == 1
 
 
 @pytest.mark.parametrize("boundary", ["direct", "tree", "realtime"])
@@ -292,13 +285,10 @@ def test_public_fit_override_preserves_changed_units_and_calendars(
     pd.testing.assert_frame_equal(X, y.rename(columns={"target": "feature"}) * 2)
 
 
-def test_public_fit_and_validation_hooks_retain_component_provenance():
+def test_public_fit_override_retains_component_provenance():
     class HookModel(_RecordingModel):
         def fit(self, y, X=None, **kwargs):
             return super().fit(y, X, **kwargs)
-
-        def _validate_fit_inputs(self, y, X):
-            return super()._validate_fit_inputs(y, X)
 
     history = _monthly_y([10.0, 20.0, 30.0])
     components = np.log(history)
@@ -336,7 +326,7 @@ def test_direct_fit_resolves_step_from_supplied_target_calendar(mapping, calenda
     model.fit(y, input_frequencies={"target": calendar})
     result = model.forecast(steps=1)
 
-    assert model._fitted_model_configuration.data_transformation.frequency == calendar
+    assert model._fitted_model_configuration.design.frequency == calendar
     pd.testing.assert_frame_equal(model.fitted_values_.dropna(), y, check_freq=False)
     expected_date = (pd.Period(y.index[-1], freq=calendar) + 1).end_time.normalize()
     assert result["date"].iloc[0] == expected_date
@@ -349,7 +339,7 @@ def test_inferred_series_calendar_does_not_replace_the_forecast_step():
     model = _RecordingModel(data_transformation={"target": "diff"}).fit(history)
 
     assert model._raw_data.frequencies("y") == {"target": "Q"}
-    assert model._fitted_model_configuration.data_transformation.frequency == "M"
+    assert model._fitted_model_configuration.design.frequency == "M"
 
 
 @pytest.mark.parametrize("boundary", ["forecast", "context", "internal"])

@@ -31,7 +31,7 @@ class SupportingModel(RecordingModel):
 
     def _forecast(self, steps, X=None, y=None, **kwargs):
         super()._forecast(steps, X, y, **kwargs)
-        dates = self._conditioning_dates(self._raw_data, kwargs["forecast_origin"], steps)
+        dates = self._forecast_dates(kwargs["forecast_origin"], steps)
         return (
             pd.DataFrame(0.0, index=dates, columns=self.y.columns)
             if y is None

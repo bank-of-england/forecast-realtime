@@ -56,7 +56,7 @@ class RecordingStubForecastModel(ForecastModel):
                 X=X,
                 y_lags=self.y_lags,
                 X_lags=self.X_lags,
-                dummies=self.dummies,
+                dummies=self._fitted_model_configuration.design.dummies,
                 kwargs=kwargs,
             )
         )
@@ -538,8 +538,8 @@ def test_forecasttree_forwards_lags_and_dummies_uniformly():
     for leaf in tree.spec.all_leaves():
         call = leaf.fit_calls[0]
         assert call["y_lags"] == 2
-        assert call["X_lags"] == 1
-        assert call["dummies"] == ["2020-03-31"]
+        assert call["X_lags"] == {"x1": 1}
+        assert call["dummies"] == (("D_2020M3", pd.Timestamp("2020-03-31")),)
 
 
 def test_forecasttree_infers_target_from_single_column_y():
@@ -875,8 +875,8 @@ def test_forecasttree_forwards_extra_kwargs_to_every_leaf():
     for leaf in tree.spec.all_leaves():
         call = leaf.fit_calls[0]
         assert call["y_lags"] == 2
-        assert call["X_lags"] == 1
-        assert call["dummies"] == ["2020-03-31"]
+        assert call["X_lags"] == {"x1": 1}
+        assert call["dummies"] == (("D_2020M3", pd.Timestamp("2020-03-31")),)
         assert leaf.recorded_kwargs["some_custom_kwarg"] == 123
 
 
@@ -1437,7 +1437,7 @@ def test_forecasttree_node_transform_without_own_pipeline_ignores_raw_input_cont
         X_imputation="last",
     )
     forecast_kwargs = transform.forecast_kwargs_calls[0]
-    assert forecast_kwargs["data_transformation"] is None
+    assert "data_transformation" not in forecast_kwargs
     assert "X_imputation" not in forecast_kwargs
     assert "frequency" not in forecast_kwargs
 

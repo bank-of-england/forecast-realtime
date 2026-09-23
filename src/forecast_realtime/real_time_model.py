@@ -567,7 +567,7 @@ class RealTimeModel:
             quantiles=probabilities is not None,
         )
 
-        if probabilities is None:
+        if probabilities is None and not result.forecasts.empty:
             self.data.add_forecasts(
                 result.forecasts,
                 compute_levels=reconstruct_levels,
@@ -862,12 +862,9 @@ def _loop_through_vintages(
         prediction_options = {} if quantiles is False else {"quantiles": quantiles}
         model_result = model_vintage._predict_data(
             forecast_data,
-            forecast_origin=model_vintage.last_y_fit_date,
+            forecast_origin=model_vintage._fitted_model_configuration.forecast_origin,
             steps=steps,
             decomp=decomp,
-            data_transformation=data_transformation,
-            frequency=frequency,
-            X_imputation=X_imputation,
             **prediction_options,
             **kwargs,
         )
@@ -903,13 +900,12 @@ def _loop_through_vintages(
                     current_model=model_vintage,
                     current_state={
                         "data": forecast_data,
-                        "forecast_origin": model_vintage.last_y_fit_date,
+                        "forecast_origin": (
+                            model_vintage._fitted_model_configuration.forecast_origin
+                        ),
                     },
                     prev_state=prev_vintage_state,
                     steps=steps,
-                    data_transformation=data_transformation,
-                    frequency=frequency,
-                    X_imputation=X_imputation,
                     **kwargs,
                 )
                 decomp_rows.extend(revision_rows)
@@ -920,7 +916,9 @@ def _loop_through_vintages(
                 "vintage_date": vintage,
                 "model": model_vintage,
                 "data": forecast_data,
-                "forecast_origin": model_vintage.last_y_fit_date,
+                "forecast_origin": (
+                    model_vintage._fitted_model_configuration.forecast_origin
+                ),
                 "decomp": row_decomp,
             }
             # =======================
@@ -1104,9 +1102,6 @@ def _level_contributions(
     data,
     forecast_origin,
     steps,
-    data_transformation,
-    frequency,
-    X_imputation,
     y_variables,
     **kwargs,
 ):
@@ -1136,9 +1131,6 @@ def _level_contributions(
         forecast_origin=forecast_origin,
         steps=steps,
         decomp=True,
-        data_transformation=data_transformation,
-        frequency=frequency,
-        X_imputation=X_imputation,
         **kwargs,
     )
 
@@ -1168,9 +1160,6 @@ def _compute_revision_decompositions(
     current_state,
     prev_state,
     steps,
-    data_transformation,
-    frequency,
-    X_imputation,
     **kwargs,
 ):
     """Decompose the revision between two consecutive vintages.
@@ -1229,9 +1218,6 @@ def _compute_revision_decompositions(
         current_state["data"],
         current_state["forecast_origin"],
         steps,
-        data_transformation,
-        frequency,
-        X_imputation,
         y_variables,
         **kwargs,
     )
@@ -1240,9 +1226,6 @@ def _compute_revision_decompositions(
         prev_state["data"],
         prev_origin,
         steps,
-        data_transformation,
-        frequency,
-        X_imputation,
         y_variables,
         **kwargs,
     )

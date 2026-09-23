@@ -211,7 +211,7 @@ def _fit_ar1_t_from_model_data(args):
         X_imputation="ar1_t",
     )
     forecast = model.forecast(steps=2, X=selected.to_wide("X"), X_imputation="ar1_t")
-    return model._prepared_X_history, forecast.forecast
+    return model.X, forecast.forecast
 
 
 def test_forecast_task_serialisation_preserves_bindings_and_isolation():
@@ -473,12 +473,12 @@ def test_multicolumn_ar1_t_preparation_matches_direct_and_realtime_paths(
 
     assert list(selected_at_vintage.columns("X")) == list(input_order)
     pd.testing.assert_frame_equal(
-        direct._prepared_y_history,
-        realtime._prepared_y_history,
+        direct.y,
+        realtime.y,
     )
     pd.testing.assert_frame_equal(
-        direct._prepared_X_history,
-        realtime._prepared_X_history,
+        direct.X,
+        realtime.X,
     )
     direct_forecast = direct.forecast(
         steps=2,
@@ -508,7 +508,7 @@ def test_multicolumn_ar1_t_preparation_matches_direct_and_realtime_paths(
         )
 
     pd.testing.assert_frame_equal(
-        direct._prepared_X_history,
+        direct.X,
         spawned_prepared_X,
         check_exact=False,
         rtol=1e-12,
