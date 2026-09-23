@@ -16,9 +16,10 @@ from dataclasses import dataclass, replace
 import pandas as pd
 
 from forecast_realtime._model_data import ModelData
-from forecast_realtime.data_transformation import (
+from forecast_realtime._data_transformation import (
     DataTransformationPipeline,
     FittedDataTransformation,
+    _coerce_data_transformation,
 )
 from ._forecast_context import ForecastContext
 from forecast_realtime.forecast_model import (
@@ -407,7 +408,7 @@ class ForecastTree(ForecastModel):
         mapping = self.data_transformation
         if mapping is None:
             mapping = data_transformation
-        return DataTransformationPipeline(mapping) if mapping is not None else None
+        return _coerce_data_transformation(mapping)
 
     def _refresh_capability_flags(self) -> None:
         """Derive aggregate preprocessing capabilities from tree components."""

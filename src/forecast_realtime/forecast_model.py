@@ -14,9 +14,10 @@ from forecast_realtime._model_data import (
     _validate_metric_mapping,
 )
 from forecast_realtime._utils import build_dummies, build_lagged_design
-from forecast_realtime.data_transformation import (
+from forecast_realtime._data_transformation import (
     DataTransformationPipeline,
     FittedDataTransformation,
+    _coerce_data_transformation,
 )
 from forecast_realtime.formula import Formula
 
@@ -72,24 +73,6 @@ def _validate_X_imputation(value: str | None) -> None:
         raise ValueError(
             f"X_imputation must be None or one of {X_IMPUTATION_METHODS}; got {value!r}"
         )
-
-
-def _coerce_data_transformation(
-    value: dict[str, str] | None,
-) -> DataTransformationPipeline | None:
-    """Normalise a call-level ``data_transformation`` fallback argument.
-
-    Mirrors ``ForecastModel.data_transformation``'s own setter
-    validation for a call-level mapping.
-    """
-    if value is None:
-        return value
-    if isinstance(value, dict):
-        return DataTransformationPipeline(value)
-    raise TypeError(
-        "data_transformation must be None or a dict[str, str] mapping; "
-        f"got {type(value).__name__}."
-    )
 
 
 def _restrict_mapping(value: dict | None, columns) -> dict | None:
@@ -299,10 +282,8 @@ class ForecastModel(ABC):
         model input roles using the same coverage rules as the pipeline.
         """
         mapping = self.data_transformation
-        pipeline = (
-            DataTransformationPipeline(mapping)
-            if mapping is not None
-            else _coerce_data_transformation(data_transformation)
+        pipeline = _coerce_data_transformation(
+            mapping if mapping is not None else data_transformation
         )
 
         if pipeline is not None and y_variables is not None:

@@ -373,6 +373,20 @@ class DataTransformationPipeline:
         )
 
 
+def _coerce_data_transformation(
+    value: dict[str, str] | None,
+) -> DataTransformationPipeline | None:
+    """Build a pipeline from an optional call-level transformation mapping."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return DataTransformationPipeline(value)
+    raise TypeError(
+        "data_transformation must be None or a dict[str, str] mapping; "
+        f"got {type(value).__name__}."
+    )
+
+
 @dataclass(frozen=True)
 class FittedDataTransformation:
     """Immutable input-transformation configuration captured during fitting."""

@@ -11,7 +11,7 @@ import forecast_realtime as rt
 from forecast_realtime import ForecastModel
 from forecast_realtime import real_time_model as real_time_model_module
 from forecast_realtime._utils import _ar1_t_impute, impute_X
-from forecast_realtime.data_transformation import DataTransformationPipeline
+from forecast_realtime._data_transformation import DataTransformationPipeline
 from forecast_realtime.forecast_tree import ForecastTree, TreeNode
 from forecast_realtime.real_time_model import _level_contributions
 

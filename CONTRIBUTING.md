@@ -74,8 +74,8 @@ The following private removals are deliberate: `RawInputBundle`,
 `InputMetricMapping`, `PreparedModelInputs`, and `ResolvedTransformationPlan`;
 the changed `ForecastTask` shape; and the operation wrappers formerly on
 `FittedDataTransformation`. Do not use these names as extension points.
-`DataTransformationPipeline` and the module helpers remain import-compatible
-adapters where existing internal integrations need them.
+The private `_data_transformation.py` module contains the pipeline and helpers;
+they are internal implementation details, not extension points.
 
 ## 3. Behavioural decisions
 

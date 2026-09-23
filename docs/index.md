@@ -164,7 +164,7 @@ src/forecast_realtime/
 ├── forecast_model.py       # ForecastModel contract and result validation
 ├── real_time_model.py      # Vintage loop and forecast orchestration
 ├── forecast_tree.py        # Tree-based forecast composition
-├── data_transformation.py  # Input metrics and transformation pipelines
+├── _data_transformation.py # Internal input metrics and transformation pipelines
 ├── formula.py              # Formula-based variable selection
 ├── external_model.py       # R, MATLAB, and Julia wrappers
 └── models/                 # Built-in model implementations
