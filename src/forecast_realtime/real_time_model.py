@@ -856,7 +856,7 @@ def _loop_through_vintages(
     """Loop through selected model data by vintage and produce forecasts.
 
     The loop selects vintage-specific history and conditioning paths from
-    ``ModelData``. Each model's ``predict()`` owns transformation, lag
+    ``ModelData``. Each model's forecast data path owns transformation, lag
     construction, formula selection, and design matrices.
 
     Returns:

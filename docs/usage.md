@@ -123,7 +123,7 @@ enable imputation unless `X_imputation` is also supplied.
 
 ## Direct model results
 
-For a fitted model, `forecast()` and `predict()` return a validated,
+For a fitted model, `forecast()` returns a validated,
 DataFrame-compatible `ForecastResult`. Point results are long tables with a
 `RangeIndex` and the columns `date`, `variable`, and `value`. Quantile results
 add `quantile`. The `.forecast` property returns the same payload as an
@@ -181,8 +181,7 @@ column has an ambiguous frequency, provide it through the resolved
 
 ## Density forecasts
 
-Pass the keyword-only `quantiles` argument to a fitted model's `forecast()` or
-`predict()` call:
+Pass the keyword-only `quantiles` argument to a fitted model's `forecast()` call:
 
 ```python
 density = model.forecast(steps=4, quantiles=[0.9, 0.1, 0.5])

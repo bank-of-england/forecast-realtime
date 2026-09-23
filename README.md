@@ -104,7 +104,7 @@ rt_model.forecast(
 print(rt_model.data.forecasts.head().to_string(index=False))
 ```
 
-Direct calls to a fitted model's `forecast()` or `predict()` return a
+Direct calls to a fitted model's `forecast()` return a
 DataFrame-compatible `ForecastResult`. Its constructor validates and orders
 the result at construction. Point results use the long columns `date`,
 `variable`, and `value` and may use custom dates; quantile results add

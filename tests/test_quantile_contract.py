@@ -615,7 +615,7 @@ def test_ols_zero_residual_variance_produces_degenerate_quantiles():
     )
 
 
-def test_ols_predict_accepts_an_explicit_forecast_context():
+def test_ols_forecast_accepts_an_explicit_forecast_context():
     target, regressors, future = _regression_data()
     model = rt.models.ForecastOLS().fit(target, X=regressors)
     context = rt.ForecastContext(
@@ -627,7 +627,7 @@ def test_ols_predict_accepts_an_explicit_forecast_context():
     probabilities = [0.1, 0.5, 0.9]
 
     expected = model.forecast(steps=len(future), X=future, quantiles=probabilities)
-    result = model.predict(context, steps=len(future), quantiles=probabilities)
+    result = model.forecast(context=context, steps=len(future), quantiles=probabilities)
 
     pd.testing.assert_frame_equal(result, expected)
 

@@ -352,7 +352,7 @@ def test_inferred_series_calendar_does_not_replace_the_forecast_step():
     assert model._fitted_model_configuration.data_transformation.frequency == "M"
 
 
-@pytest.mark.parametrize("boundary", ["forecast", "predict", "internal"])
+@pytest.mark.parametrize("boundary", ["forecast", "context", "internal"])
 @pytest.mark.parametrize("replace_context", [False, True])
 def test_tree_forecast_hook_preserves_context_and_conditioning(boundary, replace_context):
     class ContextTree(ForecastTree):
@@ -406,8 +406,8 @@ def test_tree_forecast_hook_preserves_context_and_conditioning(boundary, replace
         result = tree.forecast(
             steps=2, y=conditioning, X=X_conditioning, decomp=True, marker="forwarded"
         )
-    elif boundary == "predict":
-        result = tree.predict(context, steps=2, decomp=True, marker="forwarded")
+    elif boundary == "context":
+        result = tree.forecast(context=context, steps=2, decomp=True, marker="forwarded")
     else:
         result = tree._predict_data(
             ModelData.from_context(context, tree._raw_data),
@@ -508,7 +508,7 @@ def test_forecast_context_exposes_published_paths_and_reconciles_native_conditio
 
     model = _RecordingModel(data_transformation={"target": "pop"})
     model.fit(fit_history, frequency="M")
-    model.predict(context, steps=2)
+    model.forecast(context=context, steps=2)
     pd.testing.assert_frame_equal(
         model.received_forecast_y.loc[native_future.index], native_future
     )
@@ -638,21 +638,9 @@ def test_public_model_signatures_and_context_shape_remain_stable():
         "quantiles",
         "kwargs",
     )
-    assert tuple(inspect.signature(ForecastModel.predict).parameters) == (
-        "self",
-        "context",
-        "steps",
-        "decomp",
-        "data_transformation",
-        "frequency",
-        "X_imputation",
-        "quantiles",
-        "kwargs",
-    )
-    for method in (ForecastModel.forecast, ForecastModel.predict):
-        parameter = inspect.signature(method).parameters["quantiles"]
-        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
-        assert parameter.default is False
+    parameter = inspect.signature(ForecastModel.forecast).parameters["quantiles"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is False
     assert tuple(inspect.signature(ForecastTree.forecast).parameters) == (
         "self",
         "steps",

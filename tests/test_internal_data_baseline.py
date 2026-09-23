@@ -57,7 +57,7 @@ def result_constructions(monkeypatch):
     return results
 
 
-@pytest.mark.parametrize("boundary", ["forecast", "context", "predict"])
+@pytest.mark.parametrize("boundary", ["forecast", "context"])
 @pytest.mark.parametrize("quantiles", [False, True])
 def test_prediction_constructs_one_result(boundary, quantiles, result_constructions):
     history = _monthly_y([1.0, 2.0, 4.0, 3.0])
@@ -67,8 +67,6 @@ def test_prediction_constructs_one_result(boundary, quantiles, result_constructi
         result = model.forecast(steps=2, quantiles=quantiles)
     elif boundary == "context":
         result = model.forecast(steps=2, context=context, quantiles=quantiles)
-    else:
-        result = model.predict(context, steps=2, quantiles=quantiles)
     assert len(result_constructions) == 1
     assert result_constructions[0] is result
 

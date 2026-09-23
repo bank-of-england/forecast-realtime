@@ -1,25 +1,56 @@
-Package build, Twine checks and the strict documentation build passed. The final test run was interrupted during worker start-up before any tests ran; I’ll rerun it in a fresh terminal to get a complete result.
+# Branch Merge Review: feature/density_forecasts -> main
 
+Date: 2026-09-23
 
-Ran terminal command:  cd /c/git/opera/forecast-realtime && PYTHONPATH=C:/Users/344704/AppData/Local/Temp/tmp.UTB4p34H1B/unpacked conda run --no-capture-output -n forecast-realtime python -m pytest -n auto -q
+## Scope
 
-The final run has finished. I’ll check its summary before closing the review; no source files have been changed.
+- Compared `main...HEAD` on branch `feature/density_forecasts`.
+- Reviewed runtime/API changes in:
+	- `src/forecast_realtime/forecast_model.py`
+	- `src/forecast_realtime/forecast_result.py`
+	- `src/forecast_realtime/real_time_model.py`
+	- `src/forecast_realtime/forecast_tree.py`
+	- `src/forecast_realtime/models/forecast_bvar.py`
+	- `src/forecast_realtime/linear_regression.py`
+- Cross-checked contract tests and ran the full test suite.
 
+## Change Summary
 
-Read , lines 160 to 181
+- Introduces a validated long-format forecast container (`ForecastResult`) and centralises point/quantile/decomposition validation.
+- Standardises point forecast outputs to long tables: `date`, `variable`, `value`.
+- Adds quantile forecast support in core flow and selected models (notably OLS and BVAR).
+- Extends realtime orchestration to store/aggregate quantile outputs and keep native-metric outputs available.
+- Updates tree/realtime/model tests substantially, including a dedicated quantile contract suite.
 
-**Not quite ready: one confirmed issue to fix before merging.**
+## Findings
 
-**P2: Explicit contexts bypass override validation** at `forecast_model.py:1452`. `forecast(context=...)` returns an overridden `predict()` result without validating it. I reproduced crossed quantiles being accepted here while the equivalent `forecast(X=...)` call correctly rejects them. Route this path through the shared validation boundary and add a regression test.
+### P1 - Release merges leave `dev` out of sync
 
-**Verification**
-- Full suite with published `bvar==0.3.1`: **1,260 passed, 10 skipped**.
-- Lint, formatting, docstrings, documentation checks, package build and Twine checks passed.
-- The initial snapshot failure came from the editable BVAR checkout; it also affected `dev`.
-- Local `dev` matches remote `dev` and is an ancestor of this branch.
+- Location: `.github/workflows/sync-dev-after-main.yml`, job condition.
+- The job now handles merged pull requests from `dev` and deletion of `dev`, but no longer handles merged `release-please--` pull requests. A release merge therefore leaves `dev` without its version and changelog changes. A later merge from `dev` may restore stale release metadata.
+- Restore a guarded release-pull-request path to synchronise `dev` with `main`.
 
-The wide-to-long API change is intentional and documented. Remote CI and downstream ecosystem compatibility remain unverified.
+### Test failure - Demo forecast snapshot
 
-No source changes made. Two branch commits remain unpushed.
+- Location: `tests/test_demo_models.py`, `test_demo_models`.
+- The BVAR output differs from the stored snapshot: the first mismatch is `0.00514` against `0.00513`. The failure repeats in isolation.
+- The cause is unconfirmed. The backend discards burn-in for point-only forecasts, so the changed default burn-in does not by itself explain this mismatch. Establish whether the baseline also fails before changing the forecast or refreshing the snapshot.
 
-Suggested fix commit: `fix: validate forecast overrides with explicit contexts`
+## Override Audit
+
+- No package model overrides the removed public method. The package exposes fitted-model forecasts through `forecast()`, including `forecast(context=...)`.
+- `ForecastTree.forecast()` is the sole package-model forecast override. It forwards to the base method to preserve the tree's positional-context signature.
+- `ForecastTree._predict_data()` also overrides a private hook to compose tree forecasts; it is not a public forecasting entry point.
+- Estimator and R integration methods for producing predictions are external APIs and remain in use.
+
+## Test Evidence
+
+- Migrated context, result and tree tests: `240 passed`.
+- README, exports and public-signature tests: `4 passed`.
+- Full suite: `PYTHONPATH=src conda run -n forecast-realtime pytest -n auto -q --disable-warnings --tb=line`.
+- Result: `1 failed, 1264 passed, 10 skipped`.
+
+## Merge Recommendation
+
+- Recommendation: **do not merge yet**. Restore release synchronisation and classify the reproducible snapshot failure.
+- Suggested conventional commit message for the workflow fix: `fix: synchronise dev after release merges`.

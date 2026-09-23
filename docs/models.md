@@ -165,7 +165,7 @@ y_* = point_forecast + s * normal(0, 1)
 The draws contain residual noise only: they do not include coefficient or
 regressor uncertainty. The sampler uses antithetic draws, so the sampled median
 equals the point forecast. Pass `n_samples` and `random_state` to `forecast()`
-or `predict()` to control the draw count and replication. Density forecasts
+to control the draw count and replication. Density forecasts
 require positive residual degrees of freedom; rank-deficient designs remain
 valid for point and density forecasts.
 

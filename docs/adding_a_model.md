@@ -168,7 +168,7 @@ pd.DataFrame(
 
 #### Public point results
 
-Public `forecast()` and `predict()` calls return a DataFrame-compatible
+Public `forecast()` calls return a DataFrame-compatible
 `ForecastResult` with a `RangeIndex` and the long columns `date`, `variable`,
 and `value`. Rows are ordered by date and fitted target order. The result keeps
 `forecast_origin` and `decomposition` as metadata, while `.forecast` returns
@@ -211,8 +211,7 @@ point_matrix = point_result.pivot(
 
 Model extensions implement `_fit()`, `_forecast()`, and the optional
 `_forecast_decomp()` hooks, together with the existing preparation hooks.
-Replacing public `forecast()` or the internal `predict()` orchestration is not
-a supported extension point.
+Replacing public `forecast()` orchestration is not a supported extension point.
 
 #### Quantile forecasts
 
@@ -286,7 +285,7 @@ update it as part of the release handoff rather than adding a local copy here.
 
 ## Data and Extension Boundary
 
-Model authors use the public `fit()`, `forecast()`, `predict()`, and
+Model authors use the public `fit()`, `forecast()`, and
 `ForecastContext` interfaces. The existing DataFrame contracts for
 `_prepare_fit_inputs()`, `_prepare_forecast_inputs()`,
 `_prepare_estimation_inputs()`, `_fit()`, `_forecast()`, and

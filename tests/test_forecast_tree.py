@@ -1386,8 +1386,8 @@ def test_forecasttree_leaf_forecast_transforms_history_and_conditioning_once():
         y_published=y_cond,
         forecast_origin=y_hist.index[-1],
     )
-    tree.predict(
-        context,
+    tree.forecast(
+        context=context,
         steps=2,
         frequency="M",
         data_transformation={"target": "levels"},

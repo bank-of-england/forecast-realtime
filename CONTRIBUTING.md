@@ -51,7 +51,7 @@ When the public API changes, update its exports and docstrings; the hooks genera
 
 `ModelData` is the private consolidation point for labelled observations,
 provenance, conditioning paths, and archive selection. Keep the public
-`fit()`, `forecast()`, `predict()`, and `ForecastContext` interfaces stable,
+`fit()`, `forecast()`, and `ForecastContext` interfaces stable,
 including the DataFrame-based preparation and model hooks
 `_prepare_fit_inputs()`, `_prepare_forecast_inputs()`,
 `_prepare_estimation_inputs()`, `_fit()`, `_forecast()`, and
@@ -90,7 +90,7 @@ one complete vintage batch per model to retain revision continuity. Run tests in
 the `forecast-realtime` conda environment with `pytest -n auto`; this work
 does not add a runtime dependency.
 
-Direct `ForecastModel.forecast()` and `predict()` calls return validated
+Direct `ForecastModel.forecast()` calls return validated
 `ForecastResult` objects. The constructor validates and orders the long
 payload, which has a `RangeIndex` and the columns `date`, `variable`, and
 `value`; quantile results add `quantile`. Point forecasts may use custom dates;
@@ -102,8 +102,8 @@ This change does not alter model hooks: `_fit()`, `_forecast()`, and
 `_forecast_decomp()` keep their existing array and wide DataFrame contracts.
 The existing preparation hooks remain supported as well. Fitting inputs,
 conditioning inputs, fitted values, tree callables, and realtime storage remain
-stable. Replacing public `forecast()` or the internal `predict()` orchestration
-is not a supported model extension point.
+stable. Replacing public `forecast()` orchestration is not a supported model
+extension point.
 
 ## 4. Code
 

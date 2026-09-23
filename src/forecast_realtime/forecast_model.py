@@ -1157,45 +1157,14 @@ class ForecastModel(ABC):
                 X_imputation=X_imputation,
                 **kwargs,
             )
-        return self.predict(
-            context,
-            steps=steps,
-            decomp=decomp,
-            data_transformation=data_transformation,
-            frequency=frequency,
-            X_imputation=X_imputation,
-            **kwargs,
-        )
-
-    def predict(
-        self,
-        context: ForecastContext,
-        steps: int = 1,
-        decomp: bool = False,
-        data_transformation: dict[str, str] | None = None,
-        frequency: str | None = None,
-        X_imputation: str | None = None,
-        *,
-        quantiles: bool | list[float] = False,
-        **kwargs,
-    ) -> ForecastResult:
-        """Return long point forecasts or native-metric quantiles from a context.
-
-        This orchestration is not a model extension point. The context and model
-        hooks retain their wide input format; ForecastResult validates output.
-        """
-        if not getattr(self, "_is_fitted", False):
-            raise AttributeError("Model has not been fitted yet; call fit() first.")
-        data = ModelData.from_context(context, self._raw_data)
         return self._predict_data(
-            data,
+            ModelData.from_context(context, self._raw_data),
             forecast_origin=context.forecast_origin,
             steps=steps,
             decomp=decomp,
             data_transformation=data_transformation,
             frequency=frequency,
             X_imputation=X_imputation,
-            quantiles=quantiles,
             **kwargs,
         )
 

@@ -56,7 +56,7 @@ def _future(history, values=(80.0, 90.0, 100.0)):
     )
 
 
-@pytest.mark.parametrize("boundary", ["forecast", "predict", "internal-data"])
+@pytest.mark.parametrize("boundary", ["forecast", "context", "internal-data"])
 def test_raw_constraints_rejected_before_transformation(history, boundary):
     model = RecordingModel(data_transformation={"target": "logs"}).fit(history)
     # A negative value would become NaN; validate the raw request first.
@@ -67,8 +67,8 @@ def test_raw_constraints_rejected_before_transformation(history, boundary):
     with pytest.raises(ValueError, match="does not support target conditioning.*target"):
         if boundary == "forecast":
             model.forecast(y=constraint)
-        elif boundary == "predict":
-            model.predict(context)
+        elif boundary == "context":
+            model.forecast(context=context)
         else:
             model._predict_data(
                 ModelData.from_context(context, model._raw_data),
@@ -94,7 +94,7 @@ def test_unsupported_model_accepts_non_constraints(history, path):
         forecast_origin=history.index[-1],
         y_published=future if path == "published" else None,
     )
-    assert len(model.predict(context, steps=2)) == 2
+    assert len(model.forecast(context=context, steps=2)) == 2
     if path == "published":
         pd.testing.assert_frame_equal(model.received_y.loc[future.index], future)
 
@@ -143,7 +143,7 @@ def test_multilevel_tree_routes_constraints_only_to_root(history):
         history.index[-1],
         y_published=published,
     )
-    result = tree.predict(context, steps=3)
+    result = tree.forecast(context=context, steps=3)
     np.testing.assert_allclose(
         result.loc[result["variable"] == "target", "value"].to_numpy(),
         explicit.to_numpy().ravel(),
@@ -225,4 +225,6 @@ def test_context_round_trip_preserves_units_and_prepared_values(history):
         round_trip.transform({"target": "pop"}, combine=True).to_wide("y"),
     )
     changed = replace(context, y_conditioning=explicit.assign(target=7.0))
-    np.testing.assert_allclose(model.predict(changed, steps=3)["value"].iloc[1:], 7.0)
+    np.testing.assert_allclose(
+        model.forecast(context=changed, steps=3)["value"].iloc[1:], 7.0
+    )
