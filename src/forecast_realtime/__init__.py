@@ -1,7 +1,8 @@
 from importlib.metadata import version
 
 from .external_model import ExternalModel, JuliaModel, MATLABModel, RModel
-from .forecast_model import ForecastContext, ForecastModel
+from ._forecast_context import ForecastContext
+from .forecast_model import ForecastModel
 from .forecast_result import ForecastResult
 from .forecast_tree import ForecastTree, TreeNode
 from .formula import Formula

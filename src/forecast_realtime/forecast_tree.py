@@ -20,9 +20,9 @@ from forecast_realtime.data_transformation import (
     DataTransformationPipeline,
     FittedDataTransformation,
 )
+from ._forecast_context import ForecastContext
 from forecast_realtime.forecast_model import (
     FittedModelConfiguration,
-    ForecastContext,
     ForecastModel,
     ForecastResult,
 )

@@ -21,6 +21,7 @@ from forecast_realtime.data_transformation import (
 from forecast_realtime.formula import Formula
 
 from ._conditioning import _parse_conditioning
+from ._forecast_context import ForecastContext
 from .forecast_result import ForecastResult, _normalise_quantiles
 
 # Single source of truth for RealTimeModel's X_imputation strategies, shared
@@ -30,39 +31,6 @@ X_IMPUTATION_METHODS = ("zero", "last", "mean", "ar1_t")
 
 class NoUsableTransformedYError(ValueError):
     """Raised when input preparation leaves no usable transformed target rows."""
-
-
-@dataclass(frozen=True)
-class ForecastContext:
-    """Raw fitted history and future paths for one prediction request."""
-
-    y_history: pd.DataFrame
-    X_history: pd.DataFrame | None
-    y_conditioning: pd.DataFrame | None = None
-    """Raw explicit target constraints, never merged with published observations."""
-    X_conditioning: pd.DataFrame | None = None
-    forecast_origin: pd.Timestamp | None = None
-    y_conditioning_input_metrics: dict[str, str] | None = None
-    X_conditioning_input_metrics: dict[str, str] | None = None
-    y_published: pd.DataFrame | None = None
-    """Published target observations after the fitted history."""
-    y_published_input_metrics: dict[str, str] | None = None
-    """Input units of published targets, independent of explicit constraint units."""
-
-    @classmethod
-    def _from_data(cls, data, forecast_origin):
-        """Materialise raw frames for a tree's context-based forecast hook."""
-        return cls(
-            data.to_wide("y"),
-            data.to_wide("X"),
-            data.to_wide("y", "conditioning"),
-            data.to_wide("X", "conditioning"),
-            forecast_origin,
-            data.metrics("y", "conditioning"),
-            data.metrics("X", "conditioning"),
-            data.to_wide("y", "published"),
-            data.metrics("y", "published"),
-        )
 
 
 @dataclass(frozen=True)
