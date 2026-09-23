@@ -5,8 +5,8 @@ import pandas as pd
 import pytest
 
 from forecast_realtime import ForecastTree, TreeNode
+from forecast_realtime._conditioning import _resolve_conditioning
 from forecast_realtime._model_data import ModelData
-from forecast_realtime.real_time_model import _resolve_conditioning
 from tests.test_conditioning_boundaries import RecordingModel, SupportingModel
 
 

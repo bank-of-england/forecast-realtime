@@ -2,7 +2,6 @@
 
 import copy
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -21,56 +20,12 @@ from forecast_realtime.data_transformation import (
 )
 from forecast_realtime.formula import Formula
 
+from ._conditioning import _parse_conditioning
 from .forecast_result import ForecastResult, _normalise_quantiles
 
 # Single source of truth for RealTimeModel's X_imputation strategies, shared
 # with the validation check in RealTimeModel.forecast() and the error below.
 X_IMPUTATION_METHODS = ("zero", "last", "mean", "ar1_t")
-
-
-@dataclass(frozen=True)
-class _ConditioningEntry:
-    variable: str
-    source: str
-    periods: int
-
-
-@dataclass(frozen=True)
-class _ConditioningPolicy:
-    y: tuple[_ConditioningEntry, ...] = ()
-    X: tuple[_ConditioningEntry, ...] = ()
-
-
-def _parse_conditioning(value, label):
-    """Copy and validate a model-owned conditioning policy."""
-    if value is None:
-        return None
-    prefix = f"Model {label!r}: conditioning"
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{prefix} must be a mapping or None.")
-    if set(value) - {"y", "X"}:
-        raise ValueError(f"{prefix} accepts only 'y' and 'X' roles.")
-    roles = {}
-    for role, entries in value.items():
-        if not isinstance(entries, Mapping):
-            raise TypeError(f"{prefix} {role} must be a variable mapping.")
-        parsed = []
-        for variable, entry in entries.items():
-            name = f"{prefix} {role} variable {variable!r}"
-            if not isinstance(variable, str) or not variable:
-                raise TypeError(f"{name} must have a non-empty string name.")
-            if not isinstance(entry, Mapping):
-                raise TypeError(f"{name} must map source and periods.")
-            if set(entry) != {"source", "periods"}:
-                raise ValueError(f"{name} requires exactly source and periods.")
-            source, periods = entry["source"], entry["periods"]
-            if not isinstance(source, str) or not source:
-                raise TypeError(f"{name} source must be a non-empty string.")
-            if type(periods) is not int or periods <= 0:
-                raise ValueError(f"{name} periods must be a positive integer.")
-            parsed.append(_ConditioningEntry(variable, source, periods))
-        roles[role] = tuple(parsed)
-    return _ConditioningPolicy(**roles)
 
 
 class NoUsableTransformedYError(ValueError):
