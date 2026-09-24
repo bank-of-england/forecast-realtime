@@ -17,8 +17,9 @@ pytest.importorskip("sklearn")
 
 @pytest.mark.parametrize("scale", [False, True])
 @pytest.mark.parametrize("regressors", [False, True])
-def test_ols_quantiles_sample_residual_uncertainty(scale, regressors):
+def test_ols_quantiles_use_residual_uncertainty(scale, regressors):
     import statsmodels.api as sm
+    from scipy.stats import t
 
     generator = np.random.default_rng(427)
     index = pd.date_range("2000-01-31", periods=43, freq="ME")
@@ -36,13 +37,9 @@ def test_ols_quantiles_sample_residual_uncertainty(scale, regressors):
     fitted = sm.OLS(target, design).fit()
     residual_se = np.sqrt(np.sum(fitted.resid**2) / fitted.df_resid)
     np.testing.assert_allclose(model._std_error, residual_se)
-    noise = np.random.default_rng(42).standard_normal((len(point), 10_000 // 2))
-    noise = np.concatenate([noise, -noise], axis=1)
-    expected = np.quantile(
-        point["value"].to_numpy()[:, None] + residual_se * noise,
-        [0.05, 0.5, 0.95],
-        axis=1,
-    ).T
+    expected = point["value"].to_numpy()[:, None] + residual_se * t.ppf(
+        [0.05, 0.5, 0.95], fitted.df_resid
+    )
     actual = result.pivot(index="date", columns="quantile", values="value")
     np.testing.assert_allclose(actual[[0.05, 0.5, 0.95]], expected)
     pd.testing.assert_frame_equal(point, model.forecast(steps=3, X=future))

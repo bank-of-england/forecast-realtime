@@ -42,13 +42,6 @@ def _run_forecast_task(task: ForecastTask) -> ForecastRunResult:
         model_kwargs=task.model_kwargs,
         **task.options,
     )
-    if task.options.get("quantiles", False) is not False:
-        return ForecastRunResult(
-            forecasts=pd.DataFrame(columns=_FORECAST_COLUMNS),
-            decompositions=None,
-            all_vintages_skipped=result[2],
-            quantiles=result[0],
-        )
     return ForecastRunResult(*result)
 
 
@@ -625,9 +618,7 @@ class RealTimeModel:
     @staticmethod
     def _execute_forecast_tasks(tasks, *, parallel, max_workers):
         """Schedule tasks without aggregating or publishing their results."""
-        isolate_failures = len({id(task.model) for task in tasks}) > 1 and all(
-            task.options.get("quantiles", False) is False for task in tasks
-        )
+        isolate_failures = len({id(task.model) for task in tasks}) > 1
         if not parallel:
             if not isolate_failures:
                 return [_run_forecast_task(task) for task in tasks]
@@ -670,22 +661,26 @@ class RealTimeModel:
             _raise_no_forecasts_error(
                 y_variables,
                 X_variables,
-                np.array([first_vintage, last_vintage]),
+                pd.DatetimeIndex([first_vintage, last_vintage]),
             )
 
         if quantiles:
+            nonempty_forecasts = [
+                result.forecasts
+                for result in task_results
+                if not result.forecasts.empty
+            ]
+            if not nonempty_forecasts:
+                _raise_no_forecasts_error(
+                    y_variables,
+                    X_variables,
+                    pd.DatetimeIndex([first_vintage, last_vintage]),
+                )
             return ForecastRunResult(
                 forecasts=pd.DataFrame(columns=_FORECAST_COLUMNS),
                 decompositions=None,
                 all_vintages_skipped=False,
-                quantiles=pd.concat(
-                    [
-                        result.quantiles
-                        for result in task_results
-                        if result.quantiles is not None
-                    ],
-                    ignore_index=True,
-                ),
+                quantiles=pd.concat(nonempty_forecasts, ignore_index=True),
             )
         forecasts = pd.concat(
             [result.forecasts for result in task_results], ignore_index=True

@@ -69,6 +69,7 @@ class ForecastRidge(LinearRegression):
         Penalty actually applied, reported on the ``alpha_scaling`` scale.
     """
 
+    _supports_quantiles = False
     _penalty_attribute = "alpha_"
     _default_alphas = tuple(np.logspace(-4, 2, 100))
 

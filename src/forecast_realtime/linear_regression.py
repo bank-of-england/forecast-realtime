@@ -1,10 +1,10 @@
 """Ordinary Least Squares regression model for time series forecasting."""
 
 from copy import copy
-from numbers import Integral
 
 import numpy as np
 import pandas as pd
+from scipy.stats import t
 
 from forecast_realtime._utils import init_recent_y
 from forecast_realtime.forecast_model import X_IMPUTATION_METHODS, ForecastModel
@@ -255,8 +255,6 @@ class LinearRegression(ForecastModel):
         y: pd.DataFrame | None = None,
         forecast_origin=None,
         quantiles=None,
-        n_samples=10_000,
-        random_state=42,
         **kwargs,
     ):
         """Forecast using the fitted OLS model(s).
@@ -292,13 +290,6 @@ class LinearRegression(ForecastModel):
                     "Linear regression quantiles require positive residual "
                     "degrees of freedom."
                 )
-            if (
-                isinstance(n_samples, bool)
-                or not isinstance(n_samples, Integral)
-                or n_samples < 2
-                or n_samples % 2
-            ):
-                raise ValueError("n_samples must be an even integer greater than one.")
 
             point = self._forecast(
                 steps=steps,
@@ -308,15 +299,9 @@ class LinearRegression(ForecastModel):
                 **kwargs,
             )
             mean = point.iloc[:, 0].to_numpy(dtype=float)
-            noise = np.random.default_rng(random_state).standard_normal(
-                (len(mean), n_samples // 2)
+            values = mean[:, None] + self._std_error * t.ppf(
+                quantiles, self._degrees_freedom
             )
-            noise = np.concatenate([noise, -noise], axis=1)
-            values = np.quantile(
-                mean[:, None] + self._std_error * noise,
-                quantiles,
-                axis=1,
-            ).T
             return pd.DataFrame(
                 {
                     "date": np.repeat(point.index, len(quantiles)),

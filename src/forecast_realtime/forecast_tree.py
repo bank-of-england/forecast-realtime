@@ -629,24 +629,20 @@ class ForecastTree(ForecastModel):
         # read by RealTimeModel (e.g. to anchor X imputation over the horizon).
         last_y_fit_date = self._resolve_fit_origin(root_transform)
         frequency = kwargs.get("frequency")
-        if frequency is None and isinstance(root_transform, ForecastModel):
-            frequency = root_transform._fitted_model_configuration.design.frequency
         if frequency is None:
             try:
                 frequency = infer_frequency_from_dates(
                     self.y.index, context="forecast tree output"
                 )
             except ValueError:
-                frequency = getattr(self.y.index, "freqstr", None)
-                if frequency is None and len(self.y.index) >= 3:
-                    frequency = pd.infer_freq(self.y.index)
-        if frequency is None:
-            input_frequencies = {
-                value for value in data.frequencies("y").values() if value is not None
-            }
-            frequency = (
-                next(iter(input_frequencies)) if len(input_frequencies) == 1 else None
-            )
+                input_frequencies = set(data.frequencies("y").values()) - {None}
+                if len(input_frequencies) == 1:
+                    frequency = next(iter(input_frequencies))
+                else:
+                    raise ValueError(
+                        "Cannot resolve forecast tree frequency from output dates "
+                        "or target metadata; provide frequency explicitly."
+                    ) from None
         mapping, source = self._resolve_mapping(kwargs.get("data_transformation"))
         self._fitted_model_configuration = FittedModelConfiguration(
             inputs=FittedDataTransformation.from_fit(

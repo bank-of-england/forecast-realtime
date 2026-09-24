@@ -1036,8 +1036,6 @@ class ForecastModel(ABC):
         Extend models through _forecast(), not by replacing this orchestration.
         Point hooks remain arrays or wide tables; ForecastResult validates output.
         """
-        if quantiles is not False:
-            kwargs["quantiles"] = quantiles
         if not getattr(self, "_is_fitted", False):
             raise AttributeError("Model has not been fitted yet; call fit() first.")
         self._validate_forecast_options(data_transformation, frequency, X_imputation)
@@ -1060,6 +1058,7 @@ class ForecastModel(ABC):
                 forecast_origin=self._fitted_model_configuration.forecast_origin,
                 steps=steps,
                 decomp=decomp,
+                quantiles=quantiles,
                 **kwargs,
             )
         return self._predict_data(
@@ -1067,6 +1066,7 @@ class ForecastModel(ABC):
             forecast_origin=context.forecast_origin,
             steps=steps,
             decomp=decomp,
+            quantiles=quantiles,
             **kwargs,
         )
 

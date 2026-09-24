@@ -3,8 +3,10 @@ import numpy as np
 import pandas as pd
 import pytest
 import statsmodels.api as sm
+from scipy import stats
 
 import forecast_realtime as rt
+from forecast_realtime._realtime_forecasting import ForecastRunResult
 from forecast_realtime.forecast_model import (
     ForecastModel,
     ForecastResult,
@@ -184,7 +186,7 @@ def test_realtime_rejects_bridge_density_before_fitting():
 
 
 @pytest.mark.parametrize("parallel", [False, True])
-def test_realtime_rejected_density_model_does_not_publish_partial_results(
+def test_realtime_rejected_density_model_keeps_other_models(
     parallel, inline_executor
 ):
     runner = rt.RealTimeModel(
@@ -195,10 +197,27 @@ def test_realtime_rejected_density_model_does_not_publish_partial_results(
         ],
     )
     original = runner.data.forecasts.copy(deep=True)
-    with pytest.raises(ValueError, match="direct strategies"):
+    with pytest.warns(UserWarning, match="Model 'direct' failed"):
         runner.forecast(**_realtime_options(parallel=parallel), quantiles=True)
-    assert runner.quantiles is None
+    assert runner.quantiles is not None
+    assert not runner.quantiles.empty
+    assert set(runner.quantiles["source"]) == {"fixed"}
     pd.testing.assert_frame_equal(runner.data.forecasts, original)
+
+
+def test_realtime_density_with_no_emitted_rows_raises_no_forecasts_error():
+    empty = ForecastRunResult(pd.DataFrame(), None, False)
+    with pytest.raises(ValueError, match="No forecasts could be produced"):
+        rt.RealTimeModel._aggregate_forecast_results(
+            [empty],
+            outturns=pd.DataFrame(),
+            y_variables=["target"],
+            X_variables=None,
+            reconstruct_levels=False,
+            first_vintage="2021-06-30",
+            last_vintage="2021-08-31",
+            quantiles=True,
+        )
 
 
 def _regression_data(n_train=12, n_future=3):
@@ -251,16 +270,9 @@ def _assert_matches_residual_se_quantiles(
     ).fit()
     residual_se = np.sqrt(np.sum(fitted.resid**2) / fitted.df_resid)
     np.testing.assert_allclose(model._std_error, residual_se)
-    noise = np.random.default_rng(42).standard_normal((len(future), 10_000 // 2))
-    noise = np.concatenate([noise, -noise], axis=1)
-    expected = np.quantile(
-        np.asarray(fitted.predict(sm.add_constant(future_design, has_constant="add")))[
-            :, None
-        ]
-        + residual_se * noise,
-        probabilities,
-        axis=1,
-    ).T
+    expected = np.asarray(
+        fitted.predict(sm.add_constant(future_design, has_constant="add"))
+    )[:, None] + residual_se * stats.t.ppf(probabilities, fitted.df_resid)
 
     assert actual.index.equals(future.index)
     np.testing.assert_allclose(
@@ -447,47 +459,15 @@ def test_ols_density_defaults_are_sorted_and_point_mode_remains_separate():
     assert "quantile" not in point.columns
 
 
-def test_ols_density_sampling_is_reproducible_from_forecast_state():
+def test_ols_density_is_deterministic():
     target, regressors, future = _regression_data()
     first = rt.models.ForecastOLS().fit(target, X=regressors)
     second = rt.models.ForecastOLS().fit(target, X=regressors)
-    different = rt.models.ForecastOLS().fit(target, X=regressors)
-
-    first_result = first.forecast(
-        steps=len(future),
-        X=future,
-        quantiles=True,
-        n_samples=2_000,
-        random_state=7,
-    )
+    first_result = first.forecast(steps=len(future), X=future, quantiles=True)
     pd.testing.assert_frame_equal(
         first_result,
-        second.forecast(
-            steps=len(future),
-            X=future,
-            quantiles=True,
-            n_samples=2_000,
-            random_state=7,
-        ),
+        second.forecast(steps=len(future), X=future, quantiles=True),
     )
-    assert not first_result["value"].equals(
-        different.forecast(
-            steps=len(future),
-            X=future,
-            quantiles=True,
-            n_samples=2_000,
-            random_state=11,
-        )["value"]
-    )
-
-
-@pytest.mark.parametrize("n_samples", [True, 1, 3, 1.5])
-def test_ols_density_rejects_invalid_sample_counts(n_samples):
-    target, regressors, future = _regression_data()
-    model = rt.models.ForecastOLS().fit(target, X=regressors)
-
-    with pytest.raises(ValueError, match="even integer"):
-        model.forecast(steps=len(future), X=future, quantiles=True, n_samples=n_samples)
 
 
 def test_ols_rank_deficient_density_uses_residual_se_and_preserves_point_forecast():
@@ -544,19 +524,14 @@ def test_ols_density_rejects_target_lags_and_direct_strategy(model_kwargs, fit_k
         ("ForecastElasticNet", {"alpha": 0.01, "l1_ratio": 0.5}),
     ],
 )
-def test_regularised_models_support_density(model_name, model_kwargs):
+def test_regularised_models_reject_density(model_name, model_kwargs):
     pytest.importorskip("sklearn")
     target, regressors, future = _regression_data()
     model = getattr(rt.models, model_name)(**model_kwargs).fit(target, X=regressors)
 
-    point = model.forecast(steps=len(future), X=future)
-    density = model.forecast(steps=len(future), X=future, quantiles=[0.1, 0.5, 0.9])
-
-    assert list(density.columns) == ["date", "variable", "quantile", "value"]
-    assert np.isfinite(density["value"]).all()
-    np.testing.assert_allclose(
-        density.loc[density["quantile"] == 0.5, "value"], point["value"]
-    )
+    assert not model.forecast(steps=len(future), X=future).empty
+    with pytest.raises(ValueError, match="does not support quantile forecasts"):
+        model.forecast(steps=len(future), X=future, quantiles=[0.1, 0.5, 0.9])
 
 
 def _identity_component(components):

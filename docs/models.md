@@ -139,35 +139,32 @@ signatures.
 
 ## Density forecasts
 
-Built-in density support is available for the recursive fixed-regressor linear
-models (`ForecastOLS`, `ForecastRidge`, `ForecastLasso`, and
-`ForecastElasticNet`) and `ForecastBVAR`. `ForecastBridgeOLS`, `RandomForest`,
-and `XGBoost` do not support quantile forecasts.
+Built-in density support is available for recursive fixed-regressor
+`ForecastOLS` and `ForecastBVAR`. Penalised regressions (`ForecastRidge`,
+`ForecastLasso`, and `ForecastElasticNet`), `ForecastBridgeOLS`,
+`RandomForest`, and `XGBoost` do not support quantile forecasts.
 
 ### Linear regression models
 
-Linear regression density forecasts use an optional intercept and fixed, known
+OLS density forecasts use an optional intercept and fixed, known
 future regressors. They support recursive fixed-regressor fits only: target
 lags and `forecast_strategy="direct"` are not supported. Future regressor rows
 must be complete. Supplied or imputed regressor paths are treated as known and
 add no regressor uncertainty.
 
 For `n` retained observations and `k` design columns, each model estimates the
-residual standard error using `n - k` residual degrees of freedom. When
-quantiles are requested, it samples normal residual innovations around the
-point forecast and returns their empirical quantiles:
+residual standard error using `n - k` residual degrees of freedom. A requested
+quantile `q` is calculated directly from a Student-t distribution:
 
 ```text
 s = sqrt(sum(residual^2) / (n - k))
-y_* = point_forecast + s * normal(0, 1)
+quantile(q) = point_forecast + s * t_ppf(q, n - k)
 ```
 
-The draws contain residual noise only: they do not include coefficient or
-regressor uncertainty. The sampler uses antithetic draws, so the sampled median
-equals the point forecast. Pass `n_samples` and `random_state` to `forecast()`
-to control the draw count and replication. Density forecasts
-require positive residual degrees of freedom; rank-deficient designs remain
-valid for point and density forecasts.
+These quantiles model residual noise only: they omit coefficient and regressor
+uncertainty. The median equals the point forecast. Density forecasts require
+positive residual degrees of freedom; rank-deficient designs remain valid for
+point and density forecasts.
 
 ### `ForecastBVAR`
 

@@ -1,56 +1,35 @@
-# Branch Merge Review: feature/density_forecasts -> main
+# Review: `feature/density_forecasts` → `dev`
 
-Date: 2026-09-23
+## Fix before merge
 
-## Scope
+1. **A failure in one model aborts the whole quantile run.** In point mode, a model that fails is caught and the other models still produce forecasts. In quantile mode that protection is switched off (`real_time_model.py:628`). I suspect this was done because a failed task carries no quantile table, so combining the results would fail with "No objects to concatenate". The fix is to skip empty results when combining, not to drop the protection.
 
-- Compared `main...HEAD` on branch `feature/density_forecasts`.
-- Reviewed runtime/API changes in:
-	- `src/forecast_realtime/forecast_model.py`
-	- `src/forecast_realtime/forecast_result.py`
-	- `src/forecast_realtime/real_time_model.py`
-	- `src/forecast_realtime/forecast_tree.py`
-	- `src/forecast_realtime/models/forecast_bvar.py`
-	- `src/forecast_realtime/linear_regression.py`
-- Cross-checked contract tests and ran the full test suite.
+2. **Quantiles are passed back in the wrong slot.** `real_time_model.py:45-51` puts the quantile table into the slot meant for point forecasts, reads it back by position (`result[0]`, `result[2]`), and hard-codes `all_vintages_skipped=False` when combining. Nothing depends on the point slot, because quantile rows already carry a `quantile` column. It would be simpler to keep one table and split it only when saving to `self.quantiles`, which would also remove both special cases.
 
-## Change Summary
+## Should fix (clarity and correctness)
 
-- Introduces a validated long-format forecast container (`ForecastResult`) and centralises point/quantile/decomposition validation.
-- Standardises point forecast outputs to long tables: `date`, `variable`, `value`.
-- Adds quantile forecast support in core flow and selected models (notably OLS and BVAR).
-- Extends realtime orchestration to store/aggregate quantile outputs and keep native-metric outputs available.
-- Updates tree/realtime/model tests substantially, including a dedicated quantile contract suite.
+3. **Linear regression quantiles are simulated when they can be calculated exactly.** `linear_regression.py:311` draws 10,000 random samples from a normal distribution with a known mean and spread. The same answer comes directly from `mean + se * stats.t.ppf(q, df)`, or `norm.ppf(q)` if a normal distribution is intended. That would remove the `n_samples` and `random_state` options, which aren't documented anyway, and the check that `n_samples` is even. The test at `test_quantile_contract.py:253-263` repeats the same simulation, so it checks the code against itself rather than against the statistics.
 
-## Findings
+4. **Restrict regression density forecasts to unpenalised regressions for now.** Use the residual standard error to model forecast noise; this omits coefficient uncertainty. Revisit resampling and parameter uncertainty in later work.
 
-### P1 - Release merges leave `dev` out of sync
+7. **Simplify the tree's frequency resolution.** `RealTimeModel` supplies the frequency at fit time, so a missing value on that path is a bug. Standalone `ForecastTree.fit()` permits an omitted frequency: resolve it once from input dates or metadata, then raise a clear error if it is ambiguous. Remove the extra fallback chain in `forecast_tree.py:631-649`.
 
-- Location: `.github/workflows/sync-dev-after-main.yml`, job condition.
-- The job now handles merged pull requests from `dev` and deletion of `dev`, but no longer handles merged `release-please--` pull requests. A release merge therefore leaves `dev` without its version and changelog changes. A later merge from `dev` may restore stale release metadata.
-- Restore a guarded release-pull-request path to synchronise `dev` with `main`.
+9. **`forecast()` passes `quantiles` in a roundabout way.** `forecast_model.py:1039` adds it to `kwargs` only when it isn't `False`. Passing `quantiles=quantiles` straight to `_predict_data` is simpler, since that function already defaults it to `False`.
 
-### Test failure - Demo forecast snapshot
+## Suggested squash-merge message
 
-- Location: `tests/test_demo_models.py`, `test_demo_models`.
-- The BVAR output differs from the stored snapshot: the first mismatch is `0.00514` against `0.00513`. The failure repeats in isolation.
-- The cause is unconfirmed. The backend discards burn-in for point-only forecasts, so the changed default burn-in does not by itself explain this mismatch. Establish whether the baseline also fails before changing the forecast or refreshing the snapshot.
+```
+feat!: add quantile forecasts and standardise long forecast results
 
-## Override Audit
+Add native-metric predictive quantiles for OLS-family and BVAR models
+through `quantiles=` on ForecastModel.forecast() and RealTimeModel.forecast().
+Unify the fitted configuration and design specification so that fitting and
+forecasting share a single frozen DesignSpec, and move result validation into
+ForecastResult.
 
-- No package model overrides the removed public method. The package exposes fitted-model forecasts through `forecast()`, including `forecast(context=...)`.
-- `ForecastTree.forecast()` is the sole package-model forecast override. It forwards to the base method to preserve the tree's positional-context signature.
-- `ForecastTree._predict_data()` also overrides a private hook to compose tree forecasts; it is not a public forecasting entry point.
-- Estimator and R integration methods for producing predictions are external APIs and remain in use.
-
-## Test Evidence
-
-- Migrated context, result and tree tests: `240 passed`.
-- README, exports and public-signature tests: `4 passed`.
-- Full suite: `PYTHONPATH=src conda run -n forecast-realtime pytest -n auto -q --disable-warnings --tb=line`.
-- Result: `1 failed, 1264 passed, 10 skipped`.
-
-## Merge Recommendation
-
-- Recommendation: **do not merge yet**. Restore release synchronisation and classify the reproducible snapshot failure.
-- Suggested conventional commit message for the workflow fix: `fix: synchronise dev after release merges`.
+BREAKING CHANGE: ForecastModel.forecast() returns a long table with date,
+variable and value columns instead of a wide frame. ForecastModel.predict()
+is removed; use forecast(context=...). The forecast_realtime.data_transformation
+module is now private. Fitted mirror attributes such as X_names, dummies,
+y_estimation and _forecast_frequency are removed.
+```
