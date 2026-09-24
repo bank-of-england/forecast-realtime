@@ -24,12 +24,11 @@ from forecast_realtime.forecast_model import (
     DesignSpec,
     FittedModelConfiguration,
     ForecastModel,
-    ForecastResult,
     _as_origin,
 )
 
 from ._forecast_context import ForecastContext
-from .forecast_result import _normalise_quantiles
+from .forecast_result import ForecastResult, _normalise_quantiles
 
 TransformType = Callable[[dict[str, pd.DataFrame]], pd.DataFrame] | ForecastModel
 
@@ -673,6 +672,8 @@ class ForecastTree(ForecastModel):
         **kwargs,
     ) -> ForecastResult:
         """Evaluate each consumer from shared raw observations and fitted policies."""
+        if not self._is_fitted:
+            raise AttributeError("Model has not been fitted yet; call fit() first.")
         if _normalise_quantiles(quantiles) is not None:
             raise ValueError("ForecastTree does not support quantile forecasts.")
         if not isinstance(steps, int) or steps <= 0:

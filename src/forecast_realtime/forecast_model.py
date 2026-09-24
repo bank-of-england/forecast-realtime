@@ -177,6 +177,8 @@ class ForecastModel(ABC):
 
     _supports_target_conditioning: bool = False
 
+    _supports_quantiles: bool = False
+
     def __init__(
         self,
         label: str | None = None,
@@ -529,12 +531,7 @@ class ForecastModel(ABC):
         quantiles=None,
     ) -> ForecastResult:
         """Normalise hook output, validate the result and attach metadata."""
-        point_dates = None
         if quantiles is None:
-            if isinstance(forecast, pd.DataFrame) and isinstance(
-                forecast.index, pd.DatetimeIndex
-            ):
-                point_dates = forecast.index
             forecast = self._normalise_point_forecast(forecast, steps, forecast_origin)
         decomposition = (
             self._forecast_decomp(steps=steps, **(decomp_kwargs or {}))
@@ -548,11 +545,6 @@ class ForecastModel(ABC):
             forecast_origin=forecast_origin,
             decomposition=decomposition,
             quantiles=False if quantiles is None else quantiles,
-            forecast_dates=(
-                self._forecast_dates(forecast_origin, steps)
-                if quantiles is not None
-                else point_dates
-            ),
             forecast_dates_include_origin=self._forecast_dates_include_origin,
             decomp=decomp,
         )
@@ -575,6 +567,9 @@ class ForecastModel(ABC):
                 forecast_origin=forecast_origin,
             )
 
+        ForecastResult._validate_calendar(
+            forecast.index, steps, forecast_origin, self._forecast_dates_include_origin
+        )
         expected_columns = list(self._fitted_model_configuration.y_columns)
         if list(forecast.columns) != expected_columns:
             raise ValueError(
@@ -1025,7 +1020,7 @@ class ForecastModel(ABC):
         Extend models through _forecast(), not by replacing this orchestration.
         Point hooks remain arrays or wide tables; ForecastResult validates output.
         """
-        if not getattr(self, "_is_fitted", False):
+        if not self._is_fitted:
             raise AttributeError("Model has not been fitted yet; call fit() first.")
         self._validate_forecast_options(data_transformation, frequency, X_imputation)
         if context is None:
@@ -1091,7 +1086,7 @@ class ForecastModel(ABC):
         """Prepare labelled inputs, construct the design and validate the result."""
         probabilities = _normalise_quantiles(quantiles)
         if probabilities is not None:
-            if not getattr(self, "_supports_quantiles", False):
+            if not self._supports_quantiles:
                 raise ValueError(
                     f"{type(self).__name__} does not support quantile forecasts."
                 )

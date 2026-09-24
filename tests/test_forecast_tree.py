@@ -452,6 +452,15 @@ def test_forecasttree_rejects_non_treenode():
         ForecastTree(spec="not_a_treenode")
 
 
+def test_forecasttree_rejects_forecast_before_fit():
+    leaf = StubForecastModel("model_a")
+    spec = TreeNode(transform=_first_value, children=[leaf], name="outer")
+    tree = ForecastTree(spec=spec)
+
+    with pytest.raises(AttributeError, match="Model has not been fitted yet"):
+        tree.forecast()
+
+
 def test_forecasttree_flat_tree_fits_every_leaf():
     leaf_a = RecordingStubForecastModel("model_a")
     leaf_b = RecordingStubForecastModel("model_b")

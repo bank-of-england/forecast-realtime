@@ -56,7 +56,6 @@ class ForecastLasso(LinearRegression):
         penalised terms use least squares.
     """
 
-    _supports_quantiles = False
     _penalty_attribute = "best_alpha"
 
     def __init__(

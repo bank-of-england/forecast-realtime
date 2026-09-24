@@ -323,6 +323,40 @@ def test_forecast_result_reorders_complete_quantile_keys():
     pd.testing.assert_frame_equal(result.forecast, expected)
 
 
+@pytest.mark.parametrize("quantiles", [False, (0.1, 0.9)])
+def test_forecast_result_accepts_reordered_columns(quantiles):
+    dates, variables, probabilities, rows = _quantile_rows()
+    if quantiles is False:
+        rows = rows.loc[rows["quantile"] == probabilities[0]].drop(columns="quantile")
+    expected = rows.reset_index(drop=True)
+
+    result = ForecastResult(
+        rows.loc[:, list(reversed(rows.columns))],
+        expected_columns=variables,
+        steps=len(dates),
+        forecast_origin=pd.Timestamp("2020-12-31"),
+        quantiles=quantiles,
+        forecast_dates=dates,
+    )
+
+    pd.testing.assert_frame_equal(result.forecast, expected)
+
+
+def test_forecast_result_rejects_non_datetime_quantile_dates():
+    dates, variables, probabilities, rows = _quantile_rows()
+    rows["date"] = rows["date"].astype(str)
+
+    with pytest.raises(TypeError, match="Forecast date must have a datetime dtype"):
+        ForecastResult(
+            rows,
+            expected_columns=variables,
+            steps=len(dates),
+            forecast_origin=pd.Timestamp("2020-12-31"),
+            quantiles=probabilities,
+            forecast_dates=dates,
+        )
+
+
 @pytest.mark.parametrize(
     ("operation", "dimension"),
     [

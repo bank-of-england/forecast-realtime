@@ -76,29 +76,20 @@ class ForecastResult(pd.DataFrame):
         if pd.isna(forecast_origin):
             raise ValueError("forecast_origin must be a non-missing timestamp.")
         probabilities = _normalise_quantiles(quantiles)
-        if probabilities is None:
-            forecast = ForecastResult._validate_point_result(
-                forecast,
-                steps,
-                expected_columns,
-                forecast_origin,
-                forecast_dates,
-                forecast_dates_include_origin,
-            )
-            decomposition = ForecastResult._validate_decomposition(
-                forecast, decomposition, steps, expected_columns
-            )
-        else:
-            if decomp or decomposition is not None:
-                raise ValueError("decomp=True is not supported for quantile forecasts.")
-            if forecast_dates is None:
-                raise ValueError("Quantile forecasts require an expected calendar.")
-            ForecastResult._validate_calendar(
-                forecast_dates, steps, forecast_origin, forecast_dates_include_origin
-            )
-            forecast = ForecastResult._validate_quantile_result(
-                forecast, forecast_dates, expected_columns, probabilities
-            )
+        if probabilities is not None and (decomp or decomposition is not None):
+            raise ValueError("decomp=True is not supported for quantile forecasts.")
+        forecast = ForecastResult._validate_result(
+            forecast,
+            forecast_dates,
+            expected_columns,
+            steps,
+            forecast_origin,
+            forecast_dates_include_origin,
+            probabilities,
+        )
+        decomposition = ForecastResult._validate_decomposition(
+            forecast, decomposition, steps, expected_columns
+        )
         super().__init__(forecast)
         self.decomposition = decomposition
         self.forecast_origin = forecast_origin
@@ -122,60 +113,37 @@ class ForecastResult(pd.DataFrame):
         return result.reindex(expected).reset_index()
 
     @staticmethod
-    def _validate_quantile_result(forecast, dates, variables, probabilities):
-        """Validate complete marginal quantiles on the requested forecast calendar."""
-        columns = ["date", "variable", "quantile", "value"]
+    def _validate_result(
+        forecast, dates, variables, steps, origin, include_origin, probabilities=None
+    ):
+        """Validate complete forecast keys and the shared date contract."""
+        columns = (
+            ["date", "variable"]
+            + (["quantile"] if probabilities is not None else [])
+            + ["value"]
+        )
+        mode = "Quantile" if probabilities is not None else "Point"
         if (
             not isinstance(forecast, pd.DataFrame)
             or not forecast.columns.is_unique
             or set(forecast.columns) != set(columns)
         ):
-            raise ValueError(f"Quantile forecasts must have columns {columns}.")
+            raise ValueError(f"{mode} forecasts must have columns {columns}.")
+        if not pd.api.types.is_datetime64_any_dtype(forecast["date"]):
+            raise TypeError("Forecast date must have a datetime dtype.")
+        if dates is None:
+            dates = pd.DatetimeIndex(forecast["date"].dropna().unique()).sort_values()
+        ForecastResult._validate_calendar(dates, steps, origin, include_origin)
         result = ForecastResult._order_forecast_keys(
             forecast.loc[:, columns], dates, variables, probabilities
         )
-        values = result["value"].to_numpy(dtype=float).reshape(-1, len(probabilities))
-        if not np.isfinite(values).all():
-            raise ValueError("Quantile forecast values must be finite.")
-        if (np.diff(values, axis=1) < 0).any():
-            raise ValueError("Quantile forecasts must not cross.")
+        if probabilities is not None:
+            values = result["value"].to_numpy(dtype=float).reshape(-1, len(probabilities))
+            if not np.isfinite(values).all():
+                raise ValueError("Quantile forecast values must be finite.")
+            if (np.diff(values, axis=1) < 0).any():
+                raise ValueError("Quantile forecasts must not cross.")
         return result
-
-    @staticmethod
-    def _validate_point_result(
-        forecast,
-        steps: int,
-        expected_columns: list[str],
-        forecast_origin: pd.Timestamp,
-        forecast_dates: pd.DatetimeIndex | None,
-        forecast_dates_include_origin: bool,
-    ) -> pd.DataFrame:
-        """Validate complete point keys without treating missing values as absent."""
-        if not isinstance(forecast, pd.DataFrame) or list(forecast.columns) != [
-            "date",
-            "variable",
-            "value",
-        ]:
-            raise ValueError(
-                "Point forecasts must have columns ['date', 'variable', 'value']."
-            )
-        if not pd.api.types.is_datetime64_any_dtype(forecast["date"]):
-            raise TypeError("Forecast date must have a datetime dtype.")
-        dates = (
-            pd.DatetimeIndex(forecast["date"].drop_duplicates()).sort_values()
-            if forecast_dates is None
-            else forecast_dates
-        )
-        if forecast_dates is not None:
-            ForecastResult._validate_calendar(
-                dates, steps, forecast_origin, forecast_dates_include_origin
-            )
-        ordered = ForecastResult._order_forecast_keys(forecast, dates, expected_columns)
-        if forecast_dates is None:
-            ForecastResult._validate_calendar(
-                dates, steps, forecast_origin, forecast_dates_include_origin
-            )
-        return ordered
 
     @staticmethod
     def _validate_calendar(dates, steps, forecast_origin, forecast_dates_include_origin):
@@ -241,8 +209,6 @@ class ForecastResult(pd.DataFrame):
             )
 
         for column in ("contribution", "weight"):
-            if column not in result:
-                continue
             values = result[column]
             numeric = pd.to_numeric(values, errors="coerce")
             if column == "contribution" and numeric.isna().any():

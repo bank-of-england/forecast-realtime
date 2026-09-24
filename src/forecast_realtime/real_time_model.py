@@ -17,8 +17,8 @@ from .forecast_model import (
     X_IMPUTATION_METHODS,
     ForecastModel,
     NoUsableTransformedYError,
-    _normalise_quantiles,
 )
+from .forecast_result import _normalise_quantiles
 
 _FORECAST_COLUMNS = (
     "date",
@@ -312,6 +312,8 @@ class RealTimeModel:
                 a sequence selects distinct probabilities between zero and one.
                 Store only native-metric quantiles in ``self.quantiles`` and
                 disable level reconstruction. Decomposition is unavailable.
+                Quantile runs leave earlier point forecasts in ``self.data``
+                unchanged; point runs accumulate forecasts there.
             **kwargs : dict
                 Additional keyword arguments to pass.
         """
@@ -320,7 +322,7 @@ class RealTimeModel:
             if decomp:
                 raise ValueError("decomp=True is not supported for quantile forecasts.")
             for model in self.models:
-                if not getattr(model, "_supports_quantiles", False):
+                if not model._supports_quantiles:
                     raise ValueError(
                         f"{type(model).__name__} does not support quantile forecasts."
                     )
