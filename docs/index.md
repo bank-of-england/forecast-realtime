@@ -91,7 +91,7 @@ The base class provides this validation:
 - `fit()` checks that `y` (and `X`, if supplied) is a `pd.DataFrame`, builds the
   lagged design matrix and dummies, then stores `self.y` after fitting.
 - `forecast()` checks that `steps` is a positive integer and
-  construct a `ForecastResult`, whose constructor validates the result.
+  constructs a `ForecastResult`, whose constructor validates the result.
 
 `_fit()` and `_forecast()` always receive `y` and `X` as pandas DataFrames.
 See [adding_a_model.md](adding_a_model.md) for the full interface.

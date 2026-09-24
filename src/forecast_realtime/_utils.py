@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import warnings
 
-import numpy as np
 import pandas as pd
 
 from ._model_data import ModelData
@@ -184,19 +183,20 @@ def build_dummies(
     """
     if not isinstance(index, pd.DatetimeIndex):
         raise TypeError("build_dummies requires a DatetimeIndex")
-    if isinstance(dummies, dict):
-        items = list(dummies.items())
-    elif isinstance(dummies, (list, tuple)):
-        items = [(_period_label(pd.Timestamp(d), target_frequency), d) for d in dummies]
-    else:
-        raise TypeError("dummies must be a list of dates or a dict {name: date}")
-
-    cols: dict[str, np.ndarray] = {}
-    for name, date in items:
-        ts = pd.Timestamp(date)
-        cols[name] = (index == ts).astype(float)
-
+    cols = {
+        name: (index == pd.Timestamp(date)).astype(float)
+        for name, date in dummy_items(dummies, target_frequency)
+    }
     return pd.DataFrame(cols, index=index)
+
+
+def dummy_items(dummies: list | dict, target_frequency: str) -> list[tuple[str, object]]:
+    """Return the named dummy dates that ``build_dummies`` turns into columns."""
+    if isinstance(dummies, dict):
+        return list(dummies.items())
+    if isinstance(dummies, (list, tuple)):
+        return [(_period_label(pd.Timestamp(d), target_frequency), d) for d in dummies]
+    raise TypeError("dummies must be a list of dates or a dict {name: date}")
 
 
 def impute_X(

@@ -288,7 +288,7 @@ def test_bvar_density_rejects_mode_only(monkeypatch):
     """Posterior quantiles require a sampled, rather than point-only, backend."""
     model = _fit_synthetic_bvar(monkeypatch, mode_only=True)
 
-    with pytest.raises(ValueError, match="point_only"):
+    with pytest.raises(ValueError, match="mode_only"):
         model.forecast(steps=2, quantiles=True)
     assert not model.bvar.forecast_calls
 

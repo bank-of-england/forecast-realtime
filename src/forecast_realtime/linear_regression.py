@@ -97,8 +97,7 @@ class LinearRegression(ForecastModel):
         """Select rows matching the target forecast dates when available."""
         X_aug = X[X.index > last_y_index].copy()
         forecast_history = self.y
-        configuration = getattr(self, "_fitted_model_configuration", None)
-        forecast_frequency = configuration.design.frequency
+        forecast_frequency = self._fitted_model_configuration.design.frequency
         if last_y_index != forecast_history.index[-1]:
             forecast_dates = self._infer_forecast_dates(
                 pd.DatetimeIndex([last_y_index]),

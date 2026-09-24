@@ -187,7 +187,7 @@ Pass the keyword-only `quantiles` argument to a fitted model's `forecast()` call
 density = model.forecast(steps=4, quantiles=[0.9, 0.1, 0.5])
 ```
 
-`quantiles=False` (the default) keeps point forecasts unchanged. `True` uses
+`quantiles=False` (the default) returns the long point result. `True` uses
 the default probabilities `(0.16, 0.5, 0.84)`. A supplied sequence must contain
 distinct, finite probabilities strictly between 0 and 1; the package sorts the
 sequence before forecasting. Density mode returns one long, DataFrame-compatible
@@ -214,9 +214,9 @@ include `date`, `variable`, `quantile`, `value`, `metric`, `source`,
 does not add point rows to `data.forecasts` or change rows already there.
 `decomp=True` is not supported with quantiles.
 
-Built-in density support is currently available for `ForecastOLS`,
-`ForecastRidge`, `ForecastLasso`, `ForecastElasticNet`, and `ForecastBVAR`.
-Models without quantile support, including tree models, reject the request.
+Built-in density support is currently available for `ForecastOLS` and
+`ForecastBVAR`. Models without quantile support, including penalised
+regressions and tree models, reject the request.
 The package does not expose predictive draws, derive growth or level quantiles
 from marginal quantiles, or ingest these rows through `forecast-evaluation`.
 

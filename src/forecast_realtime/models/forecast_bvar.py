@@ -266,7 +266,7 @@ class ForecastBVAR(ForecastModel):
             )
         if quantiles is not None and (self.mode_only or self.bvar.point_only):
             raise ValueError(
-                "BVAR quantiles require posterior draws; point_only=True is unsupported."
+                "BVAR quantiles require posterior draws; mode_only=True is unsupported."
             )
         # Align sparse or longer supplied paths to the requested forecast calendar.
         if y is not None:
@@ -300,6 +300,7 @@ class ForecastBVAR(ForecastModel):
             result = formatted.loc[formatted["date"].isin(periods)].copy()
             dates = self._forecast_dates(forecast_origin, steps)
             result["date"] = result["date"].map(dict(zip(periods, dates, strict=True)))
+            # Predictive draws are not part of the public contract, so release them.
             self.bvar.forecast_unconditional = None
             self.bvar.forecast_conditional = None
             self.bvar.df_forecasts_unconditional = None

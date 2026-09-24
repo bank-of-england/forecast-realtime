@@ -689,9 +689,7 @@ class RealTimeModel:
 
         if quantiles:
             nonempty_forecasts = [
-                result.forecasts
-                for result in task_results
-                if not result.forecasts.empty
+                result.forecasts for result in task_results if not result.forecasts.empty
             ]
             if not nonempty_forecasts:
                 _raise_no_forecasts_error(

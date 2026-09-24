@@ -186,9 +186,7 @@ def test_realtime_rejects_bridge_density_before_fitting():
 
 
 @pytest.mark.parametrize("parallel", [False, True])
-def test_realtime_rejected_density_model_keeps_other_models(
-    parallel, inline_executor
-):
+def test_realtime_rejected_density_model_keeps_other_models(parallel, inline_executor):
     runner = rt.RealTimeModel(
         _realtime_data(),
         [

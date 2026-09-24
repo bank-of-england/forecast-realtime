@@ -144,7 +144,7 @@ Built-in density support is available for recursive fixed-regressor
 `ForecastLasso`, and `ForecastElasticNet`), `ForecastBridgeOLS`,
 `RandomForest`, and `XGBoost` do not support quantile forecasts.
 
-### Linear regression models
+### `ForecastOLS`
 
 OLS density forecasts use an optional intercept and fixed, known
 future regressors. They support recursive fixed-regressor fits only: target
@@ -152,7 +152,7 @@ lags and `forecast_strategy="direct"` are not supported. Future regressor rows
 must be complete. Supplied or imputed regressor paths are treated as known and
 add no regressor uncertainty.
 
-For `n` retained observations and `k` design columns, each model estimates the
+For `n` retained observations and `k` design columns, OLS estimates the
 residual standard error using `n - k` residual degrees of freedom. A requested
 quantile `q` is calculated from normal forecast noise, treating the fitted
 coefficients and residual standard error as fixed:

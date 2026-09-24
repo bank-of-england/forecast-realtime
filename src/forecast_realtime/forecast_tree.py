@@ -29,6 +29,7 @@ from forecast_realtime.forecast_model import (
 )
 
 from ._forecast_context import ForecastContext
+from .forecast_result import _normalise_quantiles
 
 TransformType = Callable[[dict[str, pd.DataFrame]], pd.DataFrame] | ForecastModel
 
@@ -672,7 +673,7 @@ class ForecastTree(ForecastModel):
         **kwargs,
     ) -> ForecastResult:
         """Evaluate each consumer from shared raw observations and fitted policies."""
-        if quantiles is not False:
+        if _normalise_quantiles(quantiles) is not None:
             raise ValueError("ForecastTree does not support quantile forecasts.")
         if not isinstance(steps, int) or steps <= 0:
             raise ValueError("'Steps' must be an integer greater than zero")

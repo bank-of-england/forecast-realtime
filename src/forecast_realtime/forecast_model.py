@@ -17,7 +17,12 @@ from forecast_realtime._model_data import (
     _validate_mapping_coverage,
     _validate_metric_mapping,
 )
-from forecast_realtime._utils import build_dummies, build_lagged_design, resolve_X_lags
+from forecast_realtime._utils import (
+    build_dummies,
+    build_lagged_design,
+    dummy_items,
+    resolve_X_lags,
+)
 from forecast_realtime.formula import Formula
 
 from ._conditioning import _parse_conditioning
@@ -62,13 +67,7 @@ class DesignSpec:
             design = X
 
         if self.dummies:
-            dummy_index = (
-                design.index
-                if design is not None
-                else y.index
-                if index is None
-                else index
-            )
+            dummy_index = design.index if design is not None else y.index
             if isinstance(dummy_index, pd.PeriodIndex):
                 dummy_index = dummy_index.to_timestamp(how="end").normalize()
             dummies = build_dummies(
@@ -614,12 +613,6 @@ class ForecastModel(ABC):
             dates = pd.DatetimeIndex([origin]).append(dates[:-1])
         return dates
 
-    @staticmethod
-    def _dummy_spec(dummies: list | dict, columns: list[str]) -> dict:
-        if isinstance(dummies, dict):
-            return dict(dummies)
-        return dict(zip(columns, dummies, strict=True))
-
     @classmethod
     def _infer_forecast_dates(
         cls,
@@ -890,13 +883,9 @@ class ForecastModel(ABC):
             if prepared_X is None
             else y_fit.index.union(prepared_X.index).sort_values()
         )
-        dummy_definitions = {}
-        if dummies:
-            D = build_dummies(pd.DatetimeIndex(design_index), dummies, target_frequency)
-            dummy_names = list(D.columns)
-            dummy_definitions = self._dummy_spec(dummies, dummy_names)
         dummy_spec = tuple(
-            (name, _as_origin(date)) for name, date in dummy_definitions.items()
+            (name, _as_origin(date))
+            for name, date in (dummy_items(dummies, target_frequency) if dummies else ())
         )
         specification = DesignSpec(
             y_lags=y_lags,
