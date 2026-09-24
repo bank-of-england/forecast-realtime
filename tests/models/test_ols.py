@@ -45,6 +45,20 @@ def test_ols_quantiles_use_residual_uncertainty(scale, regressors):
     pd.testing.assert_frame_equal(point, model.forecast(steps=3, X=future))
 
 
+@pytest.mark.parametrize(
+    "model_class",
+    [rt.models.ForecastRidge, rt.models.ForecastLasso, rt.models.ForecastElasticNet],
+)
+def test_penalised_regressions_do_not_compute_residual_spread(model_class):
+    target, regressors, _, _, _ = sample_regression_data(
+        n_train=40, n_test=3, random_seed=427
+    )
+    model = model_class(alpha=0.1).fit(target, X=regressors)
+
+    assert not hasattr(model, "_std_error")
+    assert not hasattr(model, "_degrees_freedom")
+
+
 def test_build_lagged_design_uses_previous_calendar_period():
     """A missing quarter produces a missing lag instead of skipping it."""
     index = pd.to_datetime(["2020-03-31", "2020-09-30"])
