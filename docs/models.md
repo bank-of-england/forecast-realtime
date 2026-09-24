@@ -154,15 +154,17 @@ add no regressor uncertainty.
 
 For `n` retained observations and `k` design columns, each model estimates the
 residual standard error using `n - k` residual degrees of freedom. A requested
-quantile `q` is calculated directly from a Student-t distribution:
+quantile `q` is calculated from normal forecast noise, treating the fitted
+coefficients and residual standard error as fixed:
 
 ```text
 s = sqrt(sum(residual^2) / (n - k))
-quantile(q) = point_forecast + s * t_ppf(q, n - k)
+quantile(q) = point_forecast + s * normal_ppf(q)
 ```
 
-These quantiles model residual noise only: they omit coefficient and regressor
-uncertainty. The median equals the point forecast. Density forecasts require
+These plug-in quantiles model residual noise only: they omit uncertainty in the
+coefficients, residual standard error, and regressor paths. The median equals
+the point forecast. Density forecasts require
 positive residual degrees of freedom; rank-deficient designs remain valid for
 point and density forecasts.
 

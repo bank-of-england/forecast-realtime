@@ -272,7 +272,7 @@ def _assert_matches_residual_se_quantiles(
     np.testing.assert_allclose(model._std_error, residual_se)
     expected = np.asarray(
         fitted.predict(sm.add_constant(future_design, has_constant="add"))
-    )[:, None] + residual_se * stats.t.ppf(probabilities, fitted.df_resid)
+    )[:, None] + residual_se * stats.norm.ppf(probabilities)
 
     assert actual.index.equals(future.index)
     np.testing.assert_allclose(

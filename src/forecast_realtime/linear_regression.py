@@ -4,7 +4,7 @@ from copy import copy
 
 import numpy as np
 import pandas as pd
-from scipy.stats import t
+from scipy.stats import norm
 
 from forecast_realtime._utils import init_recent_y
 from forecast_realtime.forecast_model import X_IMPUTATION_METHODS, ForecastModel
@@ -299,9 +299,7 @@ class LinearRegression(ForecastModel):
                 **kwargs,
             )
             mean = point.iloc[:, 0].to_numpy(dtype=float)
-            values = mean[:, None] + self._std_error * t.ppf(
-                quantiles, self._degrees_freedom
-            )
+            values = mean[:, None] + self._std_error * norm.ppf(quantiles)
             return pd.DataFrame(
                 {
                     "date": np.repeat(point.index, len(quantiles)),
