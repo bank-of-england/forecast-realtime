@@ -6,12 +6,12 @@ import statsmodels.api as sm
 from scipy import stats
 
 import forecast_realtime as rt
-from forecast_realtime._realtime_forecasting import ForecastRunResult
 from forecast_realtime.forecast_model import (
     ForecastModel,
     ForecastResult,
     _normalise_quantiles,
 )
+from forecast_realtime.real_time_model import ForecastRunResult
 
 
 class _FitQuantileSpyOLS(rt.models.ForecastOLS):

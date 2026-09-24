@@ -3,6 +3,7 @@ import os
 import pickle
 import warnings
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from numbers import Integral
 
 import numpy as np
@@ -12,7 +13,6 @@ from tqdm import tqdm
 
 from ._conditioning import _resolve_conditioning, _validate_conditioning
 from ._model_data import ModelData, infer_long_variable_frequencies
-from ._realtime_forecasting import ForecastRunResult, ForecastTask
 from .forecast_model import (
     X_IMPUTATION_METHODS,
     ForecastModel,
@@ -30,6 +30,29 @@ _FORECAST_COLUMNS = (
     "source",
     "frequency",
 )
+
+
+@dataclass(frozen=True)
+class ForecastTask:
+    """Pickleable work item submitted to a realtime forecast worker."""
+
+    model: object
+    data: ModelData
+    data_transformation: object
+    vintages: np.ndarray
+    options: dict
+    model_kwargs: dict
+
+
+@dataclass(frozen=True)
+class ForecastRunResult:
+    """Completed worker outputs before aggregation and storage."""
+
+    forecasts: object
+    decompositions: object
+    all_vintages_skipped: bool
+    native_forecasts: object = None
+    quantiles: object = None
 
 
 def _run_forecast_task(task: ForecastTask) -> ForecastRunResult:

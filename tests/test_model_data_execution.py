@@ -14,8 +14,7 @@ from forecast_evaluation import ForecastData
 
 import forecast_realtime as rt
 from forecast_realtime._model_data import ModelData, ModelInputRequirements
-from forecast_realtime._realtime_forecasting import ForecastTask
-from forecast_realtime.real_time_model import _run_forecast_task
+from forecast_realtime.real_time_model import ForecastTask, _run_forecast_task
 
 _MAPPING = {"target": "levels", "feature": "levels"}
 _FORECAST_COLUMNS = [
