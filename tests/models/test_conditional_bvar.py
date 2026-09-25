@@ -11,7 +11,11 @@ pytest.importorskip("bvar")
 pytest.importorskip("nowcast_midas")
 
 from forecast_realtime.examples.midas_bvar_tree import ConditionalBVAR
-from forecast_realtime.forecast_tree import ForecastTree, TreeNode
+from forecast_realtime.forecast_tree import (
+    ForecastTree,
+    TreeNode,
+    _point_forecast_to_wide,
+)
 from forecast_realtime.models import ForecastBVAR, ForecastMIDAS
 
 STEPS = 4
@@ -88,10 +92,10 @@ def test_conditional_bvar_tree_forecast_integration():
 
     forecast = tree.forecast(steps=STEPS, X=X)
 
-    assert list(forecast.columns) == list(y.columns)
-    assert len(forecast) == STEPS
-    assert isinstance(forecast.index, pd.DatetimeIndex)
-    assert forecast.notna().all().all()
+    assert list(forecast.columns) == ["date", "variable", "value"]
+    assert forecast["date"].nunique() == STEPS
+    assert forecast["variable"].drop_duplicates().tolist() == list(y.columns)
+    assert forecast["value"].notna().all()
 
     transform = tree.spec.transform
     conditioning = transform.conditioning_
@@ -120,14 +124,17 @@ def test_conditional_bvar_tree_forecast_integration():
     plain.fit(y)
     conditional_forecast = plain.forecast(steps=STEPS, y=conditioning)
     unconditional_forecast = plain.forecast(steps=STEPS)
+    forecast_wide = _point_forecast_to_wide(forecast, list(y.columns))
+    conditional_wide = _point_forecast_to_wide(conditional_forecast, list(y.columns))
+    unconditional_wide = _point_forecast_to_wide(unconditional_forecast, list(y.columns))
 
-    pd.testing.assert_frame_equal(forecast, conditional_forecast, rtol=1e-5, atol=1e-5)
+    pd.testing.assert_frame_equal(forecast_wide, conditional_wide, rtol=1e-5, atol=1e-5)
     np.testing.assert_allclose(
-        forecast.to_numpy()[constrained], conditioning.to_numpy()[constrained]
+        forecast_wide.to_numpy()[constrained], conditioning.to_numpy()[constrained]
     )
 
     # Guards against the conditioning silently being a no-op.
-    assert not np.allclose(forecast.to_numpy(), unconditional_forecast.to_numpy())
+    assert not np.allclose(forecast_wide.to_numpy(), unconditional_wide.to_numpy())
     assert conditioning.iloc[-1].isna().all()
 
 
@@ -204,8 +211,9 @@ def test_conditioning_keeps_published_values_at_the_ragged_edge():
 
     assert conditioning.loc[last_date, "gdp"] == gdp_nowcast
     assert conditioning.loc[last_date, "cpi"] == published_cpi
+    forecast_wide = _point_forecast_to_wide(forecast, list(y.columns))
     np.testing.assert_allclose(
-        forecast.loc[last_date, ["gdp", "cpi"]],
+        forecast_wide.loc[last_date, ["gdp", "cpi"]],
         conditioning.loc[last_date, ["gdp", "cpi"]],
     )
 
@@ -271,7 +279,10 @@ def test_nowcast_of_unobserved_quarter_conditions_the_bvar():
     for leaf_forecast in tree.leaf_forecasts_.values():
         assert leaf_forecast.index[0] > y_ragged.index[-1]
 
-    np.testing.assert_allclose(forecast.to_numpy(), conditioning.to_numpy())
+    np.testing.assert_allclose(
+        _point_forecast_to_wide(forecast, list(y.columns)).to_numpy(),
+        conditioning.to_numpy(),
+    )
 
 
 def test_conditioning_steps_limits_constrained_horizons():
@@ -416,9 +427,12 @@ def test_realtime_tree_matches_manual_fit(forecast_data):
     conditioning = manual_tree.spec.transform.conditioning_
     assert conditioning.notna().any().any()
 
+    manual_forecast_wide = _point_forecast_to_wide(manual_forecast, Y_VARIABLES)
     for variable in Y_VARIABLES:
         realtime_rows = produced[produced["variable"] == variable].sort_values("date")
-        expected = manual_forecast.loc[pd.DatetimeIndex(realtime_rows["date"]), variable]
+        expected = manual_forecast_wide.loc[
+            pd.DatetimeIndex(realtime_rows["date"]), variable
+        ]
         np.testing.assert_allclose(
             realtime_rows["value"].to_numpy(),
             expected.to_numpy(),

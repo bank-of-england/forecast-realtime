@@ -90,12 +90,39 @@ The base class provides this validation:
 
 - `fit()` checks that `y` (and `X`, if supplied) is a `pd.DataFrame`, builds the
   lagged design matrix and dummies, then stores `self.y` after fitting.
-- `forecast()` checks that `steps` is a positive integer and verifies the output
-  is a `pd.DataFrame` of shape `(steps, n_variables)` indexed by a
-  `DatetimeIndex` (one date per horizon).
+- `forecast()` checks that `steps` is a positive integer and
+  constructs a `ForecastResult`, whose constructor validates the result.
 
 `_fit()` and `_forecast()` always receive `y` and `X` as pandas DataFrames.
 See [adding_a_model.md](adding_a_model.md) for the full interface.
+
+### Public forecast results
+
+Point results use a `RangeIndex` and exactly these columns:
+
+```text
+date, variable, value
+```
+
+Quantile results use the same `RangeIndex` and add `quantile`:
+
+```text
+date, variable, quantile, value
+```
+
+Rows are ordered by date, fitted target order, and probability when present.
+Point and quantile results may use custom dates. The original result retains
+`.forecast`, `.forecast_origin`, and `.decomposition`, while slices and copies
+return ordinary DataFrames without result metadata. To use a point result as a
+conventional date-by-variable matrix, pivot it explicitly:
+
+```python
+point_matrix = point_result.pivot(
+    index="date",
+    columns="variable",
+    values="value",
+)
+```
 
 ## RealTimeModel
 
@@ -136,7 +163,7 @@ src/forecast_realtime/
 ├── forecast_model.py       # ForecastModel contract and result validation
 ├── real_time_model.py      # Vintage loop and forecast orchestration
 ├── forecast_tree.py        # Tree-based forecast composition
-├── data_transformation.py  # Input metrics and transformation pipelines
+├── _data_transformation.py # Internal input metrics and transformation pipelines
 ├── formula.py              # Formula-based variable selection
 ├── external_model.py       # R, MATLAB, and Julia wrappers
 └── models/                 # Built-in model implementations

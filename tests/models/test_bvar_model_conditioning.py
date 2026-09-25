@@ -110,8 +110,11 @@ def test_bvar_sparse_and_overlong_direct_paths_use_requested_calendar():
         {"gdp": [90.0, 110.0], "cpi": [np.nan, np.nan]}, index=dates[[1, 4]]
     )
     forecast = model.forecast(steps=3, y=path)
-    assert forecast.loc[dates[1], "gdp"] == pytest.approx(90.0)
-    assert len(forecast) == 3
+    assert forecast.loc[
+        (forecast["date"] == dates[1]) & (forecast["variable"] == "gdp"), "value"
+    ].iloc[0] == pytest.approx(90.0)
+    assert forecast["date"].nunique() == 3
+    assert list(forecast.columns) == ["date", "variable", "value"]
     outside = model.forecast(steps=3, y=path.iloc[1:])
     pd.testing.assert_frame_equal(outside, model.forecast(steps=3))
 
@@ -129,9 +132,16 @@ def test_conditional_bvar_root_does_not_clip_explicit_constraints():
     path = pd.DataFrame(np.nan, index=dates, columns=history.columns)
     path.iloc[0, 0] = 90.0
     result = tree.forecast(steps=3, y=path)
-    assert result.iloc[0, 0] == pytest.approx(90.0)
+    assert result.loc[
+        (result["date"] == dates[0]) & (result["variable"] == "gdp"), "value"
+    ].iloc[0] == pytest.approx(90.0)
     path.iloc[2, 0] = 110.0
     with pytest.raises(ValueError, match="beyond conditioning_steps"):
         tree.forecast(steps=3, y=path)
     # Child-only nowcast behaviour is unchanged after the rejected request.
-    assert len(tree.forecast(steps=3)) == 3
+    forecast = tree.forecast(steps=3)
+    assert forecast["date"].nunique() == 3
+    rows_by_date = forecast.groupby("date")["variable"]
+    assert rows_by_date.size().eq(len(history.columns)).all()
+    assert rows_by_date.nunique().eq(len(history.columns)).all()
+    assert set(forecast["variable"]) == set(history.columns)

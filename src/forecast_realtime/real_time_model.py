@@ -2,8 +2,8 @@ import copy
 import os
 import pickle
 import warnings
-from collections.abc import Mapping
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from numbers import Integral
 
 import numpy as np
@@ -11,13 +11,14 @@ import pandas as pd
 from forecast_evaluation import ForecastData
 from tqdm import tqdm
 
+from ._conditioning import _resolve_conditioning, _validate_conditioning
 from ._model_data import ModelData, infer_long_variable_frequencies
-from ._realtime_forecasting import ForecastRunResult, ForecastTask
 from .forecast_model import (
     X_IMPUTATION_METHODS,
     ForecastModel,
     NoUsableTransformedYError,
 )
+from .forecast_result import _normalise_quantiles
 
 _FORECAST_COLUMNS = (
     "date",
@@ -29,6 +30,29 @@ _FORECAST_COLUMNS = (
     "source",
     "frequency",
 )
+
+
+@dataclass(frozen=True)
+class ForecastTask:
+    """Pickleable work item submitted to a realtime forecast worker."""
+
+    model: object
+    data: ModelData
+    data_transformation: object
+    vintages: np.ndarray
+    options: dict
+    model_kwargs: dict
+
+
+@dataclass(frozen=True)
+class ForecastRunResult:
+    """Completed worker outputs before aggregation and storage."""
+
+    forecasts: object
+    decompositions: object
+    all_vintages_skipped: bool
+    native_forecasts: object = None
+    quantiles: object = None
 
 
 def _run_forecast_task(task: ForecastTask) -> ForecastRunResult:
@@ -56,118 +80,6 @@ def _failed_forecast_task(task: ForecastTask, error: Exception) -> ForecastRunRe
         decompositions=None,
         all_vintages_skipped=True,
     )
-
-
-def _validate_conditioning(role, selected_variables, horizons, sources, steps):
-    horizon_name = f"{role}_steps_ahead"
-    source_name = f"{role}_sources"
-
-    for name, value in ((horizon_name, horizons), (source_name, sources)):
-        if value is not None and not isinstance(value, Mapping):
-            raise TypeError(f"{name} must be a mapping or None.")
-    if sources is not None:
-        for variable, source in sources.items():
-            if not isinstance(source, str) or not source:
-                raise TypeError(
-                    f"{source_name} variable {variable!r}: source must be a non-empty "
-                    "string."
-                )
-
-    if horizons is not None:
-        if selected_variables is None:
-            raise ValueError(
-                f"{role}_variables must be provided when {horizon_name} is specified."
-            )
-
-        if not set(horizons.keys()).issubset(set(selected_variables)):
-            extra_keys = set(horizons.keys()) - set(selected_variables)
-            raise ValueError(
-                f"Keys of {horizon_name} must be a subset of {role}_variables. "
-                f"Extra keys: {extra_keys}"
-            )
-
-        invalid = [
-            horizon
-            for horizon in horizons.values()
-            if horizon is not None
-            and (type(horizon) is not int or not 0 <= horizon < steps)
-        ]
-        if invalid:
-            raise ValueError(
-                f"{horizon_name} values must be None or integers in the range "
-                f"0..{steps - 1}; got {invalid}"
-            )
-
-        if sources is None:
-            raise ValueError(
-                f"{source_name} must be provided when {horizon_name} is specified."
-            )
-
-        if set(sources.keys()) != set(horizons.keys()):
-            raise ValueError(
-                f"Keys of {source_name} must match {horizon_name} exactly. "
-                f"Got {set(sources.keys())}, "
-                f"but expected {set(horizons.keys())}"
-            )
-
-    if horizons is None and sources is not None:
-        raise ValueError(
-            f"{source_name} is provided but {horizon_name} is None. "
-            f"Please provide {horizon_name} to use {source_name}."
-        )
-
-
-def _resolve_conditioning(model, requirements, y_variables, fallback, sources, steps):
-    """Resolve one replacement policy or project the validated run fallback."""
-    variables = model._conditioning_variables(requirements, y_variables)
-    policy = model.conditioning
-    resolved = {}
-    for role in ("y", "X"):
-        if policy is None:
-            for suffix in ("sources", "steps_ahead"):
-                value = fallback[f"{role}_{suffix}"]
-                resolved[f"{role}_{suffix}"] = (
-                    None
-                    if value is None
-                    else {
-                        key: item for key, item in value.items() if key in variables[role]
-                    }
-                )
-        else:
-            entries = getattr(policy, role)
-            for entry in entries:
-                if entry.variable not in variables[role]:
-                    raise ValueError(
-                        f"Model {model.label!r}: conditioning {role} variable "
-                        f"{entry.variable!r} is not a selected raw input."
-                    )
-                if entry.periods > steps:
-                    raise ValueError(
-                        f"Model {model.label!r}: variable {entry.variable!r} "
-                        f"conditioning periods must not exceed steps={steps}."
-                    )
-            resolved[f"{role}_sources"] = (
-                {entry.variable: entry.source for entry in entries} if entries else None
-            )
-            resolved[f"{role}_steps_ahead"] = (
-                {entry.variable: entry.periods - 1 for entry in entries}
-                if entries
-                else None
-            )
-        for variable, source in (resolved[f"{role}_sources"] or {}).items():
-            if source not in sources:
-                raise ValueError(
-                    f"Model {model.label!r}: variable {variable!r} has unknown "
-                    f"conditioning source {source!r}."
-                )
-    model._validate_target_conditioning(
-        {
-            variable
-            for variable, horizon in (resolved["y_steps_ahead"] or {}).items()
-            if horizon is not None
-        }
-    )
-    return resolved
 
 
 def _resolve_step_frequency(
@@ -243,6 +155,7 @@ class RealTimeModel:
         self.data = data
         self.decompositions = None
         self.native_forecasts = None
+        self.quantiles = None
 
     def forecast(
         self,
@@ -269,6 +182,8 @@ class RealTimeModel:
         decomp: bool = False,
         X_imputation: str | None = None,
         drop_transformation_nans: bool = True,
+        *,
+        quantiles: bool | list[float] = False,
         **kwargs,
     ):
         """Produce forecasts in real-time.
@@ -392,9 +307,26 @@ class RealTimeModel:
                 calendar-dependent transformations such as ``pop``, ``yoy``,
                 ``diff`` and ``log diff``. Interior missing observations are
                 preserved. Set to False to keep the undefined prefix.
+            quantiles : bool | list[float], optional
+                False returns point forecasts. True selects (0.16, 0.5, 0.84);
+                a sequence selects distinct probabilities between zero and one.
+                Store only native-metric quantiles in ``self.quantiles`` and
+                disable level reconstruction. Decomposition is unavailable.
+                Quantile runs leave earlier point forecasts in ``self.data``
+                unchanged; point runs accumulate forecasts there.
             **kwargs : dict
                 Additional keyword arguments to pass.
         """
+        probabilities = _normalise_quantiles(quantiles)
+        if probabilities is not None:
+            if decomp:
+                raise ValueError("decomp=True is not supported for quantile forecasts.")
+            for model in self.models:
+                if not model._supports_quantiles:
+                    raise ValueError(
+                        f"{type(model).__name__} does not support quantile forecasts."
+                    )
+            reconstruct_levels = False
         if type(steps) is not int or steps < 1:
             raise ValueError("steps must be a positive integer")
 
@@ -625,6 +557,8 @@ class RealTimeModel:
             X_imputation=X_imputation,
             drop_transformation_nans=drop_transformation_nans,
         )
+        if probabilities is not None:
+            common["quantiles"] = probabilities
 
         tasks = self._build_forecast_tasks(
             resolved_model_data,
@@ -648,12 +582,15 @@ class RealTimeModel:
             reconstruct_levels=reconstruct_levels,
             first_vintage=first_vintage,
             last_vintage=last_vintage,
+            quantiles=probabilities is not None,
         )
 
-        self.data.add_forecasts(
-            result.forecasts,
-            compute_levels=reconstruct_levels,
-        )
+        if probabilities is None and not result.forecasts.empty:
+            self.data.add_forecasts(
+                result.forecasts,
+                compute_levels=reconstruct_levels,
+            )
+        self.quantiles = result.quantiles
         self.decompositions = result.decompositions
         self.native_forecasts = result.native_forecasts
         self.first_vintage = first_vintage
@@ -740,6 +677,7 @@ class RealTimeModel:
         reconstruct_levels,
         first_vintage,
         last_vintage,
+        quantiles=False,
     ):
         """Aggregate completed worker output without mutating the realtime model."""
         if not task_results or all(
@@ -748,9 +686,25 @@ class RealTimeModel:
             _raise_no_forecasts_error(
                 y_variables,
                 X_variables,
-                np.array([first_vintage, last_vintage]),
+                pd.DatetimeIndex([first_vintage, last_vintage]),
             )
 
+        if quantiles:
+            nonempty_forecasts = [
+                result.forecasts for result in task_results if not result.forecasts.empty
+            ]
+            if not nonempty_forecasts:
+                _raise_no_forecasts_error(
+                    y_variables,
+                    X_variables,
+                    pd.DatetimeIndex([first_vintage, last_vintage]),
+                )
+            return ForecastRunResult(
+                forecasts=pd.DataFrame(columns=_FORECAST_COLUMNS),
+                decompositions=None,
+                all_vintages_skipped=False,
+                quantiles=pd.concat(nonempty_forecasts, ignore_index=True),
+            )
         forecasts = pd.concat(
             [result.forecasts for result in task_results], ignore_index=True
         )
@@ -803,11 +757,12 @@ def _loop_through_vintages(
     decomp=False,
     drop_transformation_nans=True,
     model_kwargs=None,
+    quantiles=False,
 ):
     """Loop through selected model data by vintage and produce forecasts.
 
     The loop selects vintage-specific history and conditioning paths from
-    ``ModelData``. Each model's ``predict()`` owns transformation, lag
+    ``ModelData``. Each model's forecast data path owns transformation, lag
     construction, formula selection, and design matrices.
 
     Returns:
@@ -922,17 +877,17 @@ def _loop_through_vintages(
             X_steps_ahead=X_steps_ahead,
         )
         forecast_data = model_vintage._raw_data.with_conditioning(future)
-        model_result = model_vintage._predict_from_data(
+        prediction_options = {} if quantiles is False else {"quantiles": quantiles}
+        model_result = model_vintage._predict_data(
             forecast_data,
-            forecast_origin=model_vintage.last_y_fit_date,
+            forecast_origin=model_vintage._fitted_model_configuration.forecast_origin,
             steps=steps,
             decomp=decomp,
-            data_transformation=data_transformation,
-            frequency=frequency,
-            X_imputation=X_imputation,
+            **prediction_options,
             **kwargs,
         )
         model_forecast = model_result.forecast
+        forecast_dates = pd.DatetimeIndex(model_forecast["date"].drop_duplicates())
 
         # =======================
         # Forecast decomposition
@@ -944,7 +899,7 @@ def _loop_through_vintages(
                 label_decomp += " - " + label
             row_decomp = _augment_level_decomp(
                 model_result.decomposition,
-                dates=model_forecast.index,
+                dates=forecast_dates,
                 vintage=vintage,
                 label=label_decomp,
                 y_variables=model_target_variables,
@@ -963,14 +918,12 @@ def _loop_through_vintages(
                     current_model=model_vintage,
                     current_state={
                         "data": forecast_data,
-                        "forecast_origin": model_vintage.last_y_fit_date,
+                        "forecast_origin": (
+                            model_vintage._fitted_model_configuration.forecast_origin
+                        ),
                     },
-                    current_dates=model_forecast.index,
                     prev_state=prev_vintage_state,
                     steps=steps,
-                    data_transformation=data_transformation,
-                    frequency=frequency,
-                    X_imputation=X_imputation,
                     **kwargs,
                 )
                 decomp_rows.extend(revision_rows)
@@ -981,8 +934,9 @@ def _loop_through_vintages(
                 "vintage_date": vintage,
                 "model": model_vintage,
                 "data": forecast_data,
-                "forecast_origin": model_vintage.last_y_fit_date,
-                "forecast_index": model_forecast.index,
+                "forecast_origin": (
+                    model_vintage._fitted_model_configuration.forecast_origin
+                ),
                 "decomp": row_decomp,
             }
             # =======================
@@ -999,26 +953,26 @@ def _loop_through_vintages(
                 UserWarning,
             )
 
-        # Build the per-vintage long table. Date comes straight from the
-        # model's returned index. forecast_evaluation defines the horizon
-        # relative to the final target observation used for fitting.
         forecast_df = model_forecast.copy()
-        output_variables = list(forecast_df.columns)
-        if first_forecast_horizon is None:
-            published = y_vintage.reindex(
-                index=forecast_df.index, columns=output_variables
-            ).notna()
-            forecast_df = forecast_df.mask(published)
-        forecast_df = forecast_df.reset_index()  # date column from index
-        forecast_df["date"] = pd.to_datetime(forecast_df["date"]).dt.normalize()
-        forecast_df["vintage_date"] = vintage
         if model_vintage._forecast_dates_include_origin:
-            forecast_df["forecast_horizon"] = np.arange(len(forecast_df))
+            forecast_df["forecast_horizon"] = forecast_df["date"].map(
+                dict(zip(forecast_dates, range(len(forecast_dates)), strict=True))
+            )
         else:
             forecast_df["forecast_horizon"] = [
-                (pd.Period(d, freq=frequency) - last_observed_period).n - 1
-                for d in forecast_df["date"]
+                (pd.Period(date, freq=frequency) - last_observed_period).n - 1
+                for date in forecast_df["date"]
             ]
+        if first_forecast_horizon is None:
+            published = y_vintage.rename_axis(index="date", columns="variable").stack()
+            published_keys = published[published.notna()].index
+            forecast_df = forecast_df.loc[
+                ~pd.MultiIndex.from_frame(forecast_df[["date", "variable"]]).isin(
+                    published_keys
+                )
+            ].copy()
+        forecast_df["date"] = forecast_df["date"].dt.normalize()
+        forecast_df["vintage_date"] = vintage
 
         # save
         forecasts_list.append(forecast_df)
@@ -1032,18 +986,6 @@ def _loop_through_vintages(
 
     # concatenate all forecasts into a single dataframe
     all_forecasts = pd.concat(forecasts_list, ignore_index=True)
-
-    # reorder columns to have date and vintage_date first
-    all_forecasts = all_forecasts[
-        ["date", "vintage_date", "forecast_horizon"] + output_variables
-    ]
-
-    # melt the dataframe to long format
-    all_forecasts = all_forecasts.melt(
-        id_vars=["date", "vintage_date", "forecast_horizon"],
-        var_name="variable",
-        value_name="value",
-    )
 
     # Filter per-variable by the vintage-relative cutoff. The emitted
     # forecast_horizon is relative to last_observed_period, so it must not be
@@ -1178,18 +1120,14 @@ def _level_contributions(
     data,
     forecast_origin,
     steps,
-    dates,
-    data_transformation,
-    frequency,
-    X_imputation,
     y_variables,
     **kwargs,
 ):
     """Counterfactual level decomposition for an already-fitted ``model``.
 
     Re-runs the model's own ``forecast(decomp=True)`` for a supplied raw
-    history and future conditioning path, then relabels the relative forecast
-    horizons onto the absolute target ``dates``. The fitted model is copied
+    history and future conditioning path, then maps the relative forecast
+    horizons onto its returned target dates. The fitted model is copied
     before its forecast context is installed, so forecast bookkeeping and
     model-specific caches cannot leak into another vintage.
 
@@ -1206,14 +1144,11 @@ def _level_contributions(
     # the vintage loop. Some model implementations cache forecast state even
     # when their public hook appears read-only.
     counterfactual_model = copy.deepcopy(model)
-    result = counterfactual_model._predict_from_data(
+    result = counterfactual_model._predict_data(
         data,
         forecast_origin=forecast_origin,
         steps=steps,
         decomp=True,
-        data_transformation=data_transformation,
-        frequency=frequency,
-        X_imputation=X_imputation,
         **kwargs,
     )
 
@@ -1221,6 +1156,7 @@ def _level_contributions(
     if raw is None:
         return None
     out = raw[["forecast_horizon", "component", "contribution"]].copy()
+    dates = pd.DatetimeIndex(result["date"].drop_duplicates())
     out["date"] = dates[out["forecast_horizon"].to_numpy()]
     if "variable" in raw.columns:
         out["variable"] = raw["variable"].to_numpy()
@@ -1240,12 +1176,8 @@ def _compute_revision_decompositions(
     current_decomp,
     current_model,
     current_state,
-    current_dates,
     prev_state,
     steps,
-    data_transformation,
-    frequency,
-    X_imputation,
     **kwargs,
 ):
     """Decompose the revision between two consecutive vintages.
@@ -1279,7 +1211,6 @@ def _compute_revision_decompositions(
     prev_decomp = prev_state["decomp"]
     prev_model = prev_state["model"]
     prev_origin = prev_state["forecast_origin"]
-    prev_dates = prev_state["forecast_index"]
     prev_vintage_date = prev_state["vintage_date"]
     current_vintage = current_decomp["vintage_date"].iloc[0]
     y_variables = sorted(set(current_decomp["variable"]) | set(prev_decomp["variable"]))
@@ -1305,10 +1236,6 @@ def _compute_revision_decompositions(
         current_state["data"],
         current_state["forecast_origin"],
         steps,
-        current_dates,
-        data_transformation,
-        frequency,
-        X_imputation,
         y_variables,
         **kwargs,
     )
@@ -1317,10 +1244,6 @@ def _compute_revision_decompositions(
         prev_state["data"],
         prev_origin,
         steps,
-        prev_dates,
-        data_transformation,
-        frequency,
-        X_imputation,
         y_variables,
         **kwargs,
     )

@@ -19,7 +19,7 @@ from collections.abc import Iterable
 import numpy as np
 import pandas as pd
 
-from .data_transformation import apply_transformations
+from ._data_transformation import apply_transformations
 
 SEED = 20260101
 N = 10

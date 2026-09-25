@@ -2,73 +2,36 @@
 
 import copy
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
 
+from forecast_realtime._data_transformation import (
+    DataTransformationPipeline,
+    FittedDataTransformation,
+)
 from forecast_realtime._model_data import (
     ModelData,
     ModelInputRequirements,
     _validate_mapping_coverage,
     _validate_metric_mapping,
 )
-from forecast_realtime._utils import build_dummies, build_lagged_design
-from forecast_realtime.data_transformation import (
-    DataTransformationPipeline,
-    FittedDataTransformation,
+from forecast_realtime._utils import (
+    build_dummies,
+    build_lagged_design,
+    dummy_items,
+    resolve_X_lags,
 )
 from forecast_realtime.formula import Formula
+
+from ._conditioning import _parse_conditioning
+from ._forecast_context import ForecastContext
+from .forecast_result import ForecastResult, _normalise_quantiles
 
 # Single source of truth for RealTimeModel's X_imputation strategies, shared
 # with the validation check in RealTimeModel.forecast() and the error below.
 X_IMPUTATION_METHODS = ("zero", "last", "mean", "ar1_t")
-
-
-@dataclass(frozen=True)
-class _ConditioningEntry:
-    variable: str
-    source: str
-    periods: int
-
-
-@dataclass(frozen=True)
-class _ConditioningPolicy:
-    y: tuple[_ConditioningEntry, ...] = ()
-    X: tuple[_ConditioningEntry, ...] = ()
-
-
-def _parse_conditioning(value, label):
-    """Copy and validate a model-owned conditioning policy."""
-    if value is None:
-        return None
-    prefix = f"Model {label!r}: conditioning"
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{prefix} must be a mapping or None.")
-    if set(value) - {"y", "X"}:
-        raise ValueError(f"{prefix} accepts only 'y' and 'X' roles.")
-    roles = {}
-    for role, entries in value.items():
-        if not isinstance(entries, Mapping):
-            raise TypeError(f"{prefix} {role} must be a variable mapping.")
-        parsed = []
-        for variable, entry in entries.items():
-            name = f"{prefix} {role} variable {variable!r}"
-            if not isinstance(variable, str) or not variable:
-                raise TypeError(f"{name} must have a non-empty string name.")
-            if not isinstance(entry, Mapping):
-                raise TypeError(f"{name} must map source and periods.")
-            if set(entry) != {"source", "periods"}:
-                raise ValueError(f"{name} requires exactly source and periods.")
-            source, periods = entry["source"], entry["periods"]
-            if not isinstance(source, str) or not source:
-                raise TypeError(f"{name} source must be a non-empty string.")
-            if type(periods) is not int or periods <= 0:
-                raise ValueError(f"{name} periods must be a positive integer.")
-            parsed.append(_ConditioningEntry(variable, source, periods))
-        roles[role] = tuple(parsed)
-    return _ConditioningPolicy(**roles)
 
 
 class NoUsableTransformedYError(ValueError):
@@ -76,273 +39,60 @@ class NoUsableTransformedYError(ValueError):
 
 
 @dataclass(frozen=True)
-class ForecastContext:
-    """Raw fitted history and future paths for one prediction request."""
+class DesignSpec:
+    """Frozen options that define a model's fitted design matrix."""
 
-    y_history: pd.DataFrame
-    X_history: pd.DataFrame | None
-    y_conditioning: pd.DataFrame | None = None
-    """Raw explicit target constraints, never merged with published observations."""
-    X_conditioning: pd.DataFrame | None = None
-    forecast_origin: pd.Timestamp | None = None
-    y_conditioning_input_metrics: dict[str, str] | None = None
-    X_conditioning_input_metrics: dict[str, str] | None = None
-    y_published: pd.DataFrame | None = None
-    """Published target observations after the fitted history."""
-    y_published_input_metrics: dict[str, str] | None = None
-    """Input units of published targets, independent of explicit constraint units."""
+    y_lags: int = 0
+    X_lags: tuple[tuple[str, int], ...] = ()
+    dummies: tuple[tuple[str, pd.Timestamp], ...] = ()
+    columns: tuple[str, ...] | None = None
+    frequency: str | None = None
+    period_index: bool = False
+    month_start: bool = False
 
-    @classmethod
-    def _from_data(cls, data, forecast_origin):
-        """Materialise raw frames only for a supported public-method override."""
-        return cls(
-            data.to_wide("y"),
-            data.to_wide("X"),
-            data.to_wide("y", "conditioning"),
-            data.to_wide("X", "conditioning"),
-            forecast_origin,
-            data.metrics("y", "conditioning"),
-            data.metrics("X", "conditioning"),
-            data.to_wide("y", "published"),
-            data.metrics("y", "published"),
-        )
+    def build(self, y, X, index=None, formula=None) -> pd.DataFrame | None:
+        """Apply the fitted lags, dummies, formula, and column order."""
+        if index is not None:
+            design_index = y.index.union(index).sort_values()
+            if X is not None:
+                design_index = design_index.union(X.index).sort_values()
+            y = y.reindex(design_index)
+            if X is not None:
+                X = X.reindex(design_index)
+
+        X_lags = dict(self.X_lags)
+        if self.y_lags or any(X_lags.values()):
+            design = build_lagged_design(y, X, self.y_lags, X_lags)
+        else:
+            design = X
+
+        if self.dummies:
+            dummy_index = design.index if design is not None else y.index
+            if isinstance(dummy_index, pd.PeriodIndex):
+                dummy_index = dummy_index.to_timestamp(how="end").normalize()
+            dummies = build_dummies(
+                pd.DatetimeIndex(dummy_index),
+                dict(self.dummies),
+                self.frequency,
+            )
+            design = dummies if design is None else pd.concat([design, dummies], axis=1)
+
+        if formula is not None:
+            design = formula.extract_X(design)
+        if design is not None and self.columns is not None:
+            design = design.reindex(columns=self.columns)
+        return design
 
 
 @dataclass(frozen=True)
 class FittedModelConfiguration:
     """Immutable configuration captured when a model is successfully fitted."""
 
-    data_transformation: FittedDataTransformation
+    inputs: FittedDataTransformation
+    design: DesignSpec
     y_columns: tuple[str, ...]
     X_columns: tuple[str, ...] | None
-    y_lags: int
-    X_lags: int | tuple[tuple[str, int], ...]
-    dummies: tuple | tuple[tuple[str, object], ...] | None
-    dummy_definitions: tuple[tuple[str, object], ...] | None
-    dummy_columns: tuple[str, ...]
     forecast_origin: pd.Timestamp
-    drop_transformation_nans: bool
-
-
-@dataclass(frozen=True)
-class _FitDesignState:
-    """Design data and compatibility metadata produced during fitting."""
-
-    y_history: pd.DataFrame
-    X_history: pd.DataFrame | None
-    dummies: list | dict | None
-    dummy_definitions: dict | None
-    dummy_columns: list[str]
-    last_y_fit_date: pd.Timestamp | pd.Period
-
-
-class ForecastResult(pd.DataFrame):
-    """DataFrame-compatible forecast with explicit prediction metadata."""
-
-    _metadata = ["decomposition", "forecast_origin"]
-
-    @property
-    def _constructor(self):
-        return ForecastResult
-
-    @property
-    def forecast(self) -> pd.DataFrame:
-        """Return the forecast values without result metadata."""
-        return pd.DataFrame(self)
-
-    def __init__(
-        self,
-        forecast=None,
-        decomposition: pd.DataFrame | None = None,
-        forecast_origin: pd.Timestamp | None = None,
-        steps: int | None = None,
-        expected_columns: list[str] | None = None,
-        forecast_dates_include_origin: bool = False,
-    ):
-        super().__init__(forecast)
-        if steps is not None or expected_columns is not None:
-            if steps is None or expected_columns is None or forecast_origin is None:
-                raise ValueError(
-                    "steps, expected_columns, and forecast_origin must be provided "
-                    "together to validate a ForecastResult."
-                )
-            self._validate_forecast(
-                steps,
-                expected_columns,
-                forecast_origin,
-                forecast_dates_include_origin,
-            )
-            decomposition = self._validate_decomposition(
-                decomposition,
-                steps,
-                expected_columns,
-            )
-        self.decomposition = decomposition
-        self.forecast_origin = forecast_origin
-
-    def _validate_forecast(
-        self,
-        steps: int,
-        expected_columns: list[str],
-        forecast_origin: pd.Timestamp,
-        forecast_dates_include_origin: bool,
-    ) -> None:
-        """Validate the shape, target and date contract of this forecast."""
-        if len(self) != steps:
-            raise ValueError(f"Forecast must have {steps} rows, got {len(self)}")
-        if list(self.columns) != expected_columns:
-            raise ValueError(
-                "Forecast columns must match the fitted target columns in order; "
-                f"expected {expected_columns}, got {list(self.columns)}"
-            )
-        if not isinstance(self.index, pd.DatetimeIndex):
-            raise TypeError("Forecast must be indexed by a DatetimeIndex.")
-        if self.index.hasnans:
-            raise ValueError("Forecast index must not contain missing dates.")
-        if self.index.has_duplicates:
-            raise ValueError("Forecast index must not contain duplicate dates.")
-        if not self.index.is_monotonic_increasing:
-            raise ValueError("Forecast index must be sorted in increasing order.")
-
-        origin = pd.Timestamp(forecast_origin)
-        invalid_dates = (
-            self.index < origin if forecast_dates_include_origin else self.index <= origin
-        )
-        if invalid_dates.any():
-            raise ValueError(
-                "Forecast dates do not satisfy their declared relationship to the "
-                "fitted forecast origin; ordinary forecasts must be strictly "
-                "after that origin."
-            )
-
-    def _validate_decomposition(
-        self,
-        decomposition: pd.DataFrame | None,
-        steps: int,
-        expected_columns: list[str],
-    ) -> pd.DataFrame | None:
-        """Validate and normalise a model-local additive decomposition."""
-        if decomposition is None:
-            return None
-        if not isinstance(decomposition, pd.DataFrame):
-            raise TypeError("decomposition must be a pandas DataFrame or None.")
-
-        required_columns = {
-            "forecast_horizon",
-            "component",
-            "contribution",
-            "weight",
-        }
-        missing_columns = required_columns - set(decomposition.columns)
-        if missing_columns:
-            raise ValueError(
-                f"decomposition is missing required columns: {sorted(missing_columns)}"
-            )
-        if decomposition.empty:
-            raise ValueError("decomposition must contain at least one row.")
-
-        result = decomposition.copy()
-        horizon = result["forecast_horizon"]
-        if horizon.isna().any() or not pd.api.types.is_integer_dtype(horizon):
-            raise TypeError("decomposition forecast_horizon must be integers.")
-        if ((horizon < 0) | (horizon >= steps)).any():
-            raise ValueError(
-                f"decomposition forecast_horizon must be in the range 0..{steps - 1}."
-            )
-
-        for column in ("contribution", "weight"):
-            if column not in result:
-                continue
-            values = result[column]
-            numeric = pd.to_numeric(values, errors="coerce")
-            if column == "contribution" and numeric.isna().any():
-                raise TypeError("decomposition contribution values must be numeric.")
-            if (
-                column == "weight"
-                and values.notna().any()
-                and numeric[values.notna()].isna().any()
-            ):
-                raise TypeError("decomposition weight values must be numeric.")
-            if np.isinf(numeric.dropna().to_numpy(dtype=float)).any():
-                raise ValueError(f"decomposition {column} values must be finite.")
-            if column == "contribution":
-                result[column] = numeric
-            elif values.notna().any():
-                result.loc[values.notna(), column] = numeric[values.notna()]
-
-        for column in ("component", "variable"):
-            if column not in result:
-                continue
-            if (
-                result[column].isna().any()
-                or not result[column].map(lambda value: isinstance(value, str)).all()
-            ):
-                raise TypeError(
-                    f"decomposition {column} values must be non-missing strings."
-                )
-
-        if "variable" not in result:
-            if len(expected_columns) != 1:
-                raise ValueError(
-                    "Multi-target decompositions must include a 'variable' column."
-                )
-            variables = pd.Series(expected_columns[0], index=result.index)
-        else:
-            variables = result["variable"]
-        if not set(variables).issubset(expected_columns):
-            unknown = sorted(set(variables) - set(expected_columns))
-            raise ValueError(
-                f"decomposition contains unknown target variable(s): {unknown}"
-            )
-
-        decomposition_keys = pd.DataFrame(
-            {
-                "forecast_horizon": result["forecast_horizon"],
-                "variable": variables,
-                "component": result["component"],
-            }
-        )
-        duplicate_keys = decomposition_keys.duplicated()
-        if duplicate_keys.any():
-            raise ValueError(
-                "decomposition must contain at most one contribution per "
-                "forecast_horizon, variable, and component."
-            )
-
-        expected_pairs = pd.MultiIndex.from_product(
-            [range(steps), expected_columns],
-            names=["forecast_horizon", "variable"],
-        )
-        actual_pairs = pd.MultiIndex.from_frame(
-            pd.DataFrame(
-                {
-                    "forecast_horizon": result["forecast_horizon"],
-                    "variable": variables,
-                }
-            ).drop_duplicates()
-        )
-        if not expected_pairs.isin(actual_pairs).all():
-            raise ValueError(
-                "decomposition must reconcile every forecast horizon for every "
-                "target variable."
-            )
-
-        totals = (
-            result.assign(_variable=variables)
-            .groupby(["forecast_horizon", "_variable"])["contribution"]
-            .sum()
-        )
-        forecast_values = self.to_numpy(dtype=float)
-        for horizon_value in range(steps):
-            for variable_index, variable in enumerate(expected_columns):
-                total = totals.loc[(horizon_value, variable)]
-                forecast_value = forecast_values[horizon_value, variable_index]
-                if not np.isclose(total, forecast_value, equal_nan=True):
-                    raise ValueError(
-                        "decomposition contributions must reconcile to the "
-                        "forecast for every horizon and target variable."
-                    )
-        return result
 
 
 _FITTED_VALUES_NOT_FITTED_MSG = (
@@ -358,24 +108,6 @@ def _validate_X_imputation(value: str | None) -> None:
         )
 
 
-def _coerce_data_transformation(
-    value: dict[str, str] | None,
-) -> DataTransformationPipeline | None:
-    """Normalise a call-level ``data_transformation`` fallback argument.
-
-    Mirrors ``ForecastModel.data_transformation``'s own setter
-    validation for a call-level mapping.
-    """
-    if value is None:
-        return value
-    if isinstance(value, dict):
-        return DataTransformationPipeline(value)
-    raise TypeError(
-        "data_transformation must be None or a dict[str, str] mapping; "
-        f"got {type(value).__name__}."
-    )
-
-
 def _restrict_mapping(value: dict | None, columns) -> dict | None:
     """Return mapping entries belonging to the selected input columns."""
     if value is None:
@@ -383,24 +115,11 @@ def _restrict_mapping(value: dict | None, columns) -> dict | None:
     return {column: value[column] for column in columns if column in value}
 
 
-def _freeze_option(value):
-    """Copy the small option structures that form part of fitted state."""
-    if isinstance(value, dict):
-        return tuple((key, _freeze_option(item)) for key, item in value.items())
-    if isinstance(value, list):
-        return tuple(_freeze_option(item) for item in value)
-    if isinstance(value, tuple):
-        return tuple(_freeze_option(item) for item in value)
-    return value
-
-
-def _thaw_option(value):
-    """Recreate a mutable option structure for an internal model hook."""
-    if isinstance(value, tuple):
-        if value and all(isinstance(item, tuple) and len(item) == 2 for item in value):
-            return {key: _thaw_option(item) for key, item in value}
-        return [_thaw_option(item) for item in value]
-    return value
+def _as_origin(date) -> pd.Timestamp:
+    """Convert a forecast origin to its calendar timestamp."""
+    if isinstance(date, pd.Period):
+        return date.to_timestamp(how="end").normalize()
+    return pd.Timestamp(date)
 
 
 def _validate_fitted_override(name: str, supplied, fitted) -> None:
@@ -457,6 +176,8 @@ class ForecastModel(ABC):
     _supports_multivariate_y: bool = True
 
     _supports_target_conditioning: bool = False
+
+    _supports_quantiles: bool = False
 
     def __init__(
         self,
@@ -536,6 +257,49 @@ class ForecastModel(ABC):
             return list(self._formula.y_cols)
         return list(y_variables)
 
+    @property
+    def y_lags(self) -> int:
+        return self._fitted_model_configuration.design.y_lags
+
+    @property
+    def X_lags(self) -> dict[str, int]:
+        return dict(self._fitted_model_configuration.design.X_lags)
+
+    @property
+    def y_name(self) -> str:
+        return self._fitted_model_configuration.y_columns[0]
+
+    @property
+    def last_y_fit_date(self) -> pd.Timestamp:
+        return self._fitted_model_configuration.forecast_origin
+
+    # Preserve subclasses that set the target's forecast origin after fitting
+    # through a later observation in the multivariate training panel.
+    @last_y_fit_date.setter
+    def last_y_fit_date(self, value) -> None:
+        self._fitted_model_configuration = replace(
+            self._fitted_model_configuration, forecast_origin=_as_origin(value)
+        )
+
+    @property
+    def _dummy_cols(self) -> list[str]:
+        design = self._fitted_model_configuration.design
+        if design.columns is None:
+            return []
+        fitted_columns = set(design.columns)
+        return [name for name, _ in design.dummies if name in fitted_columns]
+
+    def _resolve_mapping(
+        self, fallback: dict[str, str] | None = None
+    ) -> tuple[dict[str, str] | None, str]:
+        """Resolve model, call-level, or identity mapping in precedence order."""
+        mapping = self.data_transformation
+        if mapping is not None:
+            return mapping, "model"
+        if fallback is not None:
+            return _validate_metric_mapping(fallback, "data_transformation"), "fallback"
+        return None, "identity"
+
     def input_requirements(
         self,
         y_variables,
@@ -543,18 +307,19 @@ class ForecastModel(ABC):
         data_transformation=None,
     ) -> tuple[ModelInputRequirements, ...]:
         """Report every formula-selected input, including implicit levels requests."""
-        pipeline = self.resolve_input_data_transformation(
-            data_transformation, y_variables=y_variables, X_variables=X_variables
-        )
-        mapping = pipeline.data_transformation if pipeline is not None else {}
+        mapping, source = self._resolve_mapping(data_transformation)
         if getattr(self, "_formula", None) is not None:
             y_variables, X_variables = self._formula.input_columns(X_variables)
+        if mapping is not None:
+            _validate_mapping_coverage(mapping, y_variables, X_variables)
         return (
             ModelInputRequirements(
                 consumer=self.label,
-                y=tuple((v, mapping.get(v, "levels")) for v in y_variables),
-                X=tuple((v, mapping.get(v, "levels")) for v in (X_variables or [])),
-                explicit=pipeline is not None,
+                y=tuple((v, (mapping or {}).get(v, "levels")) for v in y_variables),
+                X=tuple(
+                    (v, (mapping or {}).get(v, "levels")) for v in (X_variables or [])
+                ),
+                explicit=source != "identity",
             ),
         )
 
@@ -562,6 +327,11 @@ class ForecastModel(ABC):
     def _raw_y_history(self):
         """Retain the established inspection path as an isolated projection."""
         return self._raw_data.to_wide("y")
+
+    @property
+    def _input_frequencies(self):
+        """Expose resolved input calendars to model-specific fit hooks."""
+        return self._raw_data.frequencies("y") | self._raw_data.frequencies("X")
 
     @property
     def _raw_X_history(self):
@@ -582,23 +352,17 @@ class ForecastModel(ABC):
         variables are supplied, the resolved mapping is validated against the
         model input roles using the same coverage rules as the pipeline.
         """
-        mapping = self.data_transformation
-        pipeline = (
-            DataTransformationPipeline(mapping)
-            if mapping is not None
-            else _coerce_data_transformation(data_transformation)
-        )
-
-        if pipeline is not None and y_variables is not None:
+        mapping, _ = self._resolve_mapping(data_transformation)
+        if mapping is not None and y_variables is not None:
             formula = getattr(self, "_formula", None)
             if formula is not None:
                 y_variables, X_variables = formula.input_columns(X_variables)
             _validate_mapping_coverage(
-                pipeline.data_transformation,
+                mapping,
                 y_variables,
                 X_variables,
             )
-        return pipeline
+        return DataTransformationPipeline(mapping) if mapping is not None else None
 
     def native_metric_mapping(
         self, target_variables: list[str] | None = None
@@ -606,7 +370,7 @@ class ForecastModel(ABC):
         """Return the metric space used by the fitted target outputs."""
         target_variables = list(target_variables or self.y.columns)
         configuration = self._fitted_model_configuration
-        mapping = dict(configuration.data_transformation.data_transformation or {})
+        mapping = configuration.inputs.mapping or {}
         return {
             variable: mapping.get(variable, "levels") for variable in target_variables
         }
@@ -772,8 +536,29 @@ class ForecastModel(ABC):
         forecast_origin: pd.Timestamp,
         decomp: bool = False,
         decomp_kwargs: dict | None = None,
+        quantiles=None,
     ) -> ForecastResult:
-        """Validate, normalise, and wrap a model forecast result."""
+        """Normalise hook output, validate the result and attach metadata."""
+        if quantiles is None:
+            forecast = self._normalise_point_forecast(forecast, steps, forecast_origin)
+        decomposition = (
+            self._forecast_decomp(steps=steps, **(decomp_kwargs or {}))
+            if decomp and quantiles is None
+            else None
+        )
+        return ForecastResult(
+            forecast,
+            expected_columns=list(self._fitted_model_configuration.y_columns),
+            steps=steps,
+            forecast_origin=forecast_origin,
+            decomposition=decomposition,
+            quantiles=False if quantiles is None else quantiles,
+            forecast_dates_include_origin=self._forecast_dates_include_origin,
+            decomp=decomp,
+        )
+
+    def _normalise_point_forecast(self, forecast, steps, forecast_origin):
+        """Validate the wide hook contract and convert it to a long table."""
         if forecast is None:
             raise TypeError(
                 f"{self.__class__.__name__}._forecast returned None; it must "
@@ -790,37 +575,46 @@ class ForecastModel(ABC):
                 forecast_origin=forecast_origin,
             )
 
-        if forecast.index.name != "date":
-            forecast = forecast.copy()
-            forecast.index.name = "date"
-
-        decomposition = None
-        if decomp:
-            decomposition = self._forecast_decomp(
-                steps=steps,
-                **(decomp_kwargs or {}),
+        ForecastResult._validate_calendar(
+            forecast.index, steps, forecast_origin, self._forecast_dates_include_origin
+        )
+        expected_columns = list(self._fitted_model_configuration.y_columns)
+        if list(forecast.columns) != expected_columns:
+            raise ValueError(
+                "Forecast columns must match the fitted target columns in order; "
+                f"expected {expected_columns}, got {list(forecast.columns)}"
             )
-
-        configuration = getattr(self, "_fitted_model_configuration", None)
-        expected_columns = (
-            list(configuration.y_columns)
-            if configuration is not None
-            else list(self.y.columns)
-        )
-        return ForecastResult(
-            forecast,
-            decomposition=decomposition,
-            forecast_origin=forecast_origin,
-            steps=steps,
-            expected_columns=expected_columns,
-            forecast_dates_include_origin=self._forecast_dates_include_origin,
+        return pd.DataFrame(
+            {
+                "date": forecast.index.repeat(len(expected_columns)),
+                "variable": np.tile(expected_columns, len(forecast)),
+                "value": forecast.to_numpy().reshape(-1),
+            }
         )
 
-    @staticmethod
-    def _dummy_spec(dummies: list | dict, columns: list[str]) -> dict:
-        if isinstance(dummies, dict):
-            return dict(dummies)
-        return dict(zip(columns, dummies, strict=True))
+    def _forecast_dates(self, origin, steps):
+        """Return the authoritative calendar for a fitted model forecast."""
+        configuration = self._fitted_model_configuration
+        origin = _as_origin(configuration.forecast_origin if origin is None else origin)
+        design = configuration.design
+        if design.period_index:
+            calendar = pd.PeriodIndex([pd.Period(origin, freq=design.frequency)])
+        else:
+            anchor = (
+                origin.to_period(design.frequency).to_timestamp()
+                if design.month_start and design.frequency in ("M", "Q")
+                else origin
+            )
+            calendar = pd.DatetimeIndex([anchor])
+        dates = self._infer_forecast_dates(
+            calendar,
+            steps,
+            frequency=design.frequency,
+            start=origin,
+        )
+        if self._forecast_dates_include_origin:
+            dates = pd.DatetimeIndex([origin]).append(dates[:-1])
+        return dates
 
     @classmethod
     def _infer_forecast_dates(
@@ -858,8 +652,7 @@ class ForecastModel(ABC):
         forecast_origin: pd.Timestamp | None = None,
     ) -> pd.DataFrame:
         """Wrap an ``(steps, n_vars)`` array-like into the standard DataFrame,
-        using :meth:`_infer_forecast_dates` for the index and ``self.y.columns``
-        for the columns.
+        using :meth:`_forecast_dates` for the index and fitted target columns.
 
         ``forecast()`` applies this automatically, so models rarely call it.
         Dates are anchored to ``last_y_fit_date`` unless an explicit origin is
@@ -868,12 +661,8 @@ class ForecastModel(ABC):
         arr = np.asarray(arr)
         if arr.ndim == 1:
             arr = arr.reshape(-1, 1)
-        configuration = getattr(self, "_fitted_model_configuration", None)
-        expected_columns = (
-            list(configuration.y_columns)
-            if configuration is not None
-            else list(self.y.columns)
-        )
+        configuration = self._fitted_model_configuration
+        expected_columns = list(configuration.y_columns)
         n_cols = len(expected_columns)
         if arr.shape != (steps, n_cols):
             methods = "/".join(X_IMPUTATION_METHODS)
@@ -884,25 +673,9 @@ class ForecastModel(ABC):
                 f"X_imputation ({methods}), or use X_steps_ahead/X_sources."
             )
         forecast_origin = (
-            (
-                configuration.forecast_origin
-                if configuration is not None
-                else self.last_y_fit_date
-            )
-            if forecast_origin is None
-            else forecast_origin
+            configuration.forecast_origin if forecast_origin is None else forecast_origin
         )
-        forecast_frequency = (
-            configuration.data_transformation.frequency
-            if configuration is not None
-            else getattr(self, "_forecast_frequency", None)
-        )
-        dates = self._infer_forecast_dates(
-            self.y.index,
-            steps,
-            frequency=forecast_frequency,
-            start=forecast_origin,
-        )
+        dates = self._forecast_dates(forecast_origin, steps)
 
         return pd.DataFrame(arr, index=dates, columns=expected_columns)
 
@@ -958,11 +731,7 @@ class ForecastModel(ABC):
     def _fit_data(self, data: ModelData, **kwargs):
         """Fit a candidate through the single data-based implementation."""
         candidate = copy.deepcopy(self)
-        if type(candidate)._validate_fit_inputs is not ForecastModel._validate_fit_inputs:
-            y, X = candidate._validate_fit_inputs(data.to_wide("y"), data.to_wide("X"))
-            data = ModelData.from_wide(y, X).with_input_metadata(data)
-        else:
-            data = candidate._select_fit_data(data)
+        data = candidate._select_fit_data(data)
         candidate._fit_data_impl(data, **kwargs)
         self._commit_fit(candidate)
         return self
@@ -986,6 +755,21 @@ class ForecastModel(ABC):
         self.__dict__.clear()
         self.__dict__.update(candidate.__dict__)
 
+    def _validate_forecast_options(
+        self, data_transformation, frequency, X_imputation
+    ) -> None:
+        """Reject public preprocessing overrides that conflict with fitted state."""
+        configuration = self._fitted_model_configuration
+        inputs = configuration.inputs
+        if data_transformation is not None and inputs.pipeline_source != "model":
+            mapping = _validate_metric_mapping(data_transformation, "data_transformation")
+            _validate_fitted_override(
+                "data_transformation", mapping, inputs.mapping or {}
+            )
+        _validate_fitted_override("frequency", frequency, configuration.design.frequency)
+        _validate_X_imputation(X_imputation)
+        _validate_fitted_override("X_imputation", X_imputation, inputs.X_imputation)
+
     def _select_fit_data(self, data):
         """Validate fitting capabilities and select raw formula inputs once."""
         for role in ("y", "X"):
@@ -1008,31 +792,22 @@ class ForecastModel(ABC):
             )
         return data.history().subset(y_columns, X_columns)
 
-    def _validate_fit_inputs(
-        self, y: pd.DataFrame, X: pd.DataFrame | None
-    ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
-        """Retain the DataFrame validation hook as an isolated data adapter."""
-        ModelData.validate_frame(y, "y")
-        if X is not None:
-            ModelData.validate_frame(X, "X")
-        selected = self._select_fit_data(ModelData.from_wide(y, X))
-        return selected.to_wide("y"), selected.to_wide("X")
-
     def _resolve_fit_transformation(
         self,
         data: ModelData,
-        data_transformation: dict[str, str] | None,
-        frequency: str | None,
+        mapping: dict[str, str] | None,
+        mapping_source: str,
         X_imputation: str | None,
+        drop_transformation_nans: bool,
     ) -> FittedDataTransformation:
-        """Resolve the transformation and its fit-time frequency metadata."""
+        """Resolve the transformation and validate input frequency compatibility."""
         y_columns = list(data.columns("y"))
         X_columns = list(data.columns("X")) if data.has_path("X") else None
-        pipeline = self.resolve_input_data_transformation(
-            data_transformation,
-            y_variables=y_columns,
-            X_variables=X_columns,
-        )
+        if mapping is not None:
+            formula = getattr(self, "_formula", None)
+            if formula is not None:
+                y_columns, X_columns = formula.input_columns(X_columns)
+            _validate_mapping_coverage(mapping, y_columns, X_columns)
         y_frequency_map = data.frequencies("y")
         X_frequency_map = data.frequencies("X")
         y_frequency_values = {
@@ -1055,30 +830,23 @@ class ForecastModel(ABC):
                     f"y is {y_frequency!r}, X has {sorted(X_frequency_values)!r}."
                 )
         return FittedDataTransformation.from_fit(
-            pipeline,
+            mapping,
             y_variables=y_columns,
             X_variables=X_columns,
-            frequency=frequency,
             X_imputation=X_imputation,
-            pipeline_source=(
-                "model"
-                if self.data_transformation is not None
-                else "fallback"
-                if data_transformation is not None
-                else "identity"
-            ),
+            pipeline_source=mapping_source,
+            drop_transformation_nans=drop_transformation_nans,
         )
 
     def _prepare_training_data(
         self,
         data: ModelData,
         transformation: FittedDataTransformation,
-        drop_transformation_nans: bool,
     ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
         """Transform, impute, regularise, and model-prepare training data."""
-        mapping = transformation.data_transformation
-        prepared = data.transform(dict(mapping) if mapping is not None else None)
-        if mapping is not None and drop_transformation_nans:
+        mapping = transformation.mapping
+        prepared = data.transform(mapping)
+        if mapping is not None and transformation.drop_transformation_nans:
             prepared = prepared.trim_undefined_prefix()
             if not len(prepared.index("y")) or not prepared.last_valid_dates("y"):
                 raise NoUsableTransformedYError(
@@ -1098,57 +866,60 @@ class ForecastModel(ABC):
         X_lags: int | dict,
         dummies: list | dict | None,
         target_frequency: str | None,
-    ) -> tuple[pd.DataFrame, pd.DataFrame | None, _FitDesignState]:
-        """Build the estimation design and capture its history and dummy metadata."""
+    ) -> tuple[pd.DataFrame, pd.DataFrame | None, DesignSpec]:
+        """Build the estimation design and its frozen specification."""
         if prepared_y.empty or prepared_y.dropna(how="all").empty:
             raise NoUsableTransformedYError(
                 "No usable transformed y observations remain after model preparation."
             )
 
-        self.X_lags = X_lags
-        self.y_lags = y_lags
-        self.X_names = list(prepared_X.columns) if prepared_X is not None else None
         y_fit = (
             self._formula.extract_y(prepared_y)
             if getattr(self, "_formula", None)
             else prepared_y
         )
-        self.y_name = list(y_fit.columns)[0]
-        self._prepared_y_history = y_fit.copy()
-        self._prepared_X_history = prepared_X.copy() if prepared_X is not None else None
+        X_lags_map = (
+            resolve_X_lags(X_lags, prepared_X.columns) if prepared_X is not None else {}
+        )
+        design_index = (
+            y_fit.index
+            if prepared_X is None
+            else y_fit.index.union(prepared_X.index).sort_values()
+        )
+        dummy_spec = tuple(
+            (name, _as_origin(date))
+            for name, date in (dummy_items(dummies, target_frequency) if dummies else ())
+        )
+        specification = DesignSpec(
+            y_lags=y_lags,
+            X_lags=tuple(X_lags_map.items()),
+            dummies=dummy_spec,
+            frequency=target_frequency,
+            period_index=isinstance(y_fit.index, pd.PeriodIndex),
+            month_start=bool(
+                isinstance(y_fit.index, pd.DatetimeIndex)
+                and y_fit.index.is_month_start.all()
+            ),
+        )
+        formula = getattr(self, "_formula", None)
+        X_design_df = specification.build(
+            y_fit,
+            prepared_X,
+            index=design_index,
+            formula=formula,
+        )
 
-        if y_lags or X_lags:
-            X_design_df = build_lagged_design(
-                y_fit,
-                prepared_X,
-                y_lags,
-                X_lags,
-            )
-        else:
-            X_design_df = prepared_X
-
-        self.dummies = dummies
-        dummy_definitions = None
-        dummy_columns = []
-        dummy_names = []
-        if dummies:
-            dummy_index = X_design_df.index if X_design_df is not None else y_fit.index
-            D = build_dummies(dummy_index, dummies, target_frequency)
-            dummy_names = list(D.columns)
-            dummy_definitions = self._dummy_spec(dummies, dummy_names)
-            X_design_df = (
-                D if X_design_df is None else pd.concat([X_design_df, D], axis=1)
-            )
-
-        if getattr(self, "_formula", None):
-            X_design_df = self._formula.extract_X(X_design_df)
-
+        dummy_names = [name for name, _ in specification.dummies]
         if dummy_names and X_design_df is not None:
             present = [column for column in dummy_names if column in X_design_df.columns]
             zero = [column for column in present if not (X_design_df[column] != 0).any()]
             if zero:
                 X_design_df = X_design_df.drop(columns=zero)
-            dummy_columns = [column for column in present if column not in zero]
+
+        specification = replace(
+            specification,
+            columns=tuple(X_design_df.columns) if X_design_df is not None else None,
+        )
 
         y_estimation, X_estimation = self._prepare_estimation_inputs(y_fit, X_design_df)
         if not self._handles_missing_values:
@@ -1156,60 +927,29 @@ class ForecastModel(ABC):
                 y_estimation, X_estimation
             )
 
-        self._dummy_definitions = dummy_definitions
-        self._dummy_cols = dummy_columns
         return (
             y_estimation,
             X_estimation,
-            _FitDesignState(
-                y_history=y_fit,
-                X_history=X_design_df,
-                dummies=dummies,
-                dummy_definitions=dummy_definitions,
-                dummy_columns=dummy_columns,
-                last_y_fit_date=y_estimation.index[-1],
-            ),
+            specification,
         )
 
     def _store_fitted_configuration(
         self,
         y_estimation: pd.DataFrame,
         X_estimation: pd.DataFrame | None,
-        transformation: FittedDataTransformation,
-        design_state: _FitDesignState,
-        drop_transformation_nans: bool,
+        inputs: FittedDataTransformation,
+        design: DesignSpec,
     ) -> None:
-        """Store fitted data and the immutable configuration used to forecast."""
-        self._y_history = design_state.y_history
-        self._X_history = design_state.X_history
+        """Publish fitted data and the immutable configuration used to forecast."""
         self.y = y_estimation
         self.X = X_estimation
-        self.y_estimation = y_estimation
-        self.X_estimation = X_estimation
-        self._forecast_frequency = transformation.frequency
         self._fitted_model_configuration = FittedModelConfiguration(
-            data_transformation=transformation,
+            inputs=inputs,
+            design=design,
             y_columns=tuple(y_estimation.columns),
             X_columns=tuple(X_estimation.columns) if X_estimation is not None else None,
-            y_lags=self.y_lags,
-            X_lags=_freeze_option(self.X_lags),
-            dummies=_freeze_option(design_state.dummies)
-            if design_state.dummies is not None
-            else None,
-            dummy_definitions=(
-                _freeze_option(design_state.dummy_definitions)
-                if design_state.dummy_definitions is not None
-                else None
-            ),
-            dummy_columns=tuple(design_state.dummy_columns),
-            forecast_origin=(
-                self.last_y_fit_date.to_timestamp(how="end").normalize()
-                if isinstance(self.last_y_fit_date, pd.Period)
-                else pd.Timestamp(self.last_y_fit_date)
-            ),
-            drop_transformation_nans=drop_transformation_nans,
+            forecast_origin=_as_origin(y_estimation.index[-1]),
         )
-        self._is_fitted = True
 
     def _fit_data_impl(
         self,
@@ -1225,11 +965,7 @@ class ForecastModel(ABC):
     ):
         """Fit the model by orchestrating the preparation stages."""
         _validate_X_imputation(X_imputation)
-        mapping = (
-            self.data_transformation
-            if self.data_transformation is not None
-            else data_transformation
-        )
+        mapping, mapping_source = self._resolve_mapping(data_transformation)
         data, frequency = data.resolve_frequencies(
             mapping,
             frequency,
@@ -1244,38 +980,33 @@ class ForecastModel(ABC):
         self._raw_data = data
         fitted_transformation = self._resolve_fit_transformation(
             data,
-            data_transformation,
-            frequency,
+            mapping,
+            mapping_source,
             X_imputation,
-        )
-        self._input_frequencies = data.frequencies("y") | data.frequencies("X")
-        prepared_y, prepared_X = self._prepare_training_data(
-            data,
-            fitted_transformation,
             drop_transformation_nans,
         )
-        y_estimation, X_estimation, design_state = self._build_fit_design(
+        prepared_y, prepared_X = self._prepare_training_data(data, fitted_transformation)
+        y_estimation, X_estimation, design = self._build_fit_design(
             prepared_y,
             prepared_X,
             y_lags,
             X_lags,
             dummies,
-            fitted_transformation.frequency,
+            frequency,
         )
-        self.last_y_fit_date = design_state.last_y_fit_date
+        self._store_fitted_configuration(
+            y_estimation,
+            X_estimation,
+            fitted_transformation,
+            design,
+        )
         fitted = self._fit(y=y_estimation, X=X_estimation, **kwargs)
         if fitted is not self:
             raise TypeError(
                 f"{self.__class__.__name__}._fit must return self; "
                 f"got {type(fitted).__name__ if fitted is not None else 'None'}."
             )
-        self._store_fitted_configuration(
-            y_estimation,
-            X_estimation,
-            fitted_transformation,
-            design_state,
-            drop_transformation_nans,
-        )
+        self._is_fitted = True
         return self
 
     def forecast(
@@ -1288,11 +1019,18 @@ class ForecastModel(ABC):
         frequency: str | None = None,
         X_imputation: str | None = None,
         context: ForecastContext | None = None,
+        *,
+        quantiles: bool | list[float] = False,
         **kwargs,
     ) -> ForecastResult:
-        """Forecast using the fitted history and captured preprocessing policy."""
-        if not getattr(self, "_is_fitted", False):
+        """Return long point forecasts, or native-metric quantiles when requested.
+
+        Extend models through _forecast(), not by replacing this orchestration.
+        Point hooks remain arrays or wide tables; ForecastResult validates output.
+        """
+        if not self._is_fitted:
             raise AttributeError("Model has not been fitted yet; call fit() first.")
+        self._validate_forecast_options(data_transformation, frequency, X_imputation)
         if context is None:
             for role, frame in (("y", y), ("X", X)):
                 if frame is not None:
@@ -1307,93 +1045,30 @@ class ForecastModel(ABC):
                 y_conditioning_input_metrics=self._raw_data.metrics("y"),
                 X_conditioning_input_metrics=self._raw_data.metrics("X"),
             )
-            return self._predict_from_data(
+            return self._predict_data(
                 self._raw_data.with_conditioning(future),
                 forecast_origin=self._fitted_model_configuration.forecast_origin,
                 steps=steps,
                 decomp=decomp,
-                data_transformation=data_transformation,
-                frequency=frequency,
-                X_imputation=X_imputation,
+                quantiles=quantiles,
                 **kwargs,
             )
-        return self.predict(
-            context,
-            steps=steps,
-            decomp=decomp,
-            data_transformation=data_transformation,
-            frequency=frequency,
-            X_imputation=X_imputation,
-            **kwargs,
-        )
-
-    def predict(
-        self,
-        context: ForecastContext,
-        steps: int = 1,
-        decomp: bool = False,
-        data_transformation: dict[str, str] | None = None,
-        frequency: str | None = None,
-        X_imputation: str | None = None,
-        **kwargs,
-    ) -> pd.DataFrame:
-        """Generate forecasts from a fitted model and a ``ForecastContext`` containing
-        the history, optional conditioning paths, and forecast origin.
-        """
-        if not getattr(self, "_is_fitted", False):
-            raise AttributeError("Model has not been fitted yet; call fit() first.")
-        data = ModelData.from_context(context, self._raw_data)
         return self._predict_data(
-            data,
+            ModelData.from_context(context, self._raw_data),
             forecast_origin=context.forecast_origin,
             steps=steps,
             decomp=decomp,
-            data_transformation=data_transformation,
-            frequency=frequency,
-            X_imputation=X_imputation,
+            quantiles=quantiles,
             **kwargs,
         )
 
-    def _predict_from_data(self, data, *, forecast_origin, **kwargs):
-        """Retain the public predict override used by realtime consumers."""
-        self._validate_explicit_target_path(data, forecast_origin, kwargs.get("steps", 1))
-        if type(self).predict is not ForecastModel.predict:
-            return self.predict(
-                ForecastContext._from_data(data, forecast_origin), **kwargs
-            )
-        return self._predict_data(data, forecast_origin=forecast_origin, **kwargs)
-
-    def _forecast_from_data(self, data, *, forecast_origin, **kwargs):
-        """Retain the public forecast override used by tree components."""
-        self._validate_explicit_target_path(data, forecast_origin, kwargs.get("steps", 1))
-        if type(self).forecast is not ForecastModel.forecast:
-            return self.forecast(
-                context=ForecastContext._from_data(data, forecast_origin), **kwargs
-            )
-        return self._predict_from_data(data, forecast_origin=forecast_origin, **kwargs)
-
-    def _conditioning_dates(self, data, forecast_origin, steps):
-        """Use the model's forecast calendar when inspecting explicit paths."""
-        configuration = self._fitted_model_configuration
-        origin = forecast_origin if forecast_origin is not None else data.index("y")[-1]
-        dates = self._infer_forecast_dates(
-            data.index("y"),
-            steps,
-            frequency=configuration.data_transformation.frequency,
-            start=origin,
-        )
-        if self._forecast_dates_include_origin:
-            dates = pd.DatetimeIndex([pd.Timestamp(origin)]).append(dates[:-1])
-        return dates
-
     def _validate_explicit_target_path(self, data, forecast_origin, steps):
-        """Validate raw explicit constraints before preparation or public overrides."""
-        if type(steps) is not int or steps <= 0:
-            raise ValueError("steps must be an integer greater than zero")
+        """Validate raw explicit constraints before input preparation."""
         frame = data.to_wide("y", "conditioning")
         if frame is None or frame.empty or not frame.notna().any().any():
             return None
-        dates = self._conditioning_dates(data, forecast_origin, steps)
+        origin = forecast_origin if forecast_origin is not None else data.index("y")[-1]
+        dates = self._forecast_dates(origin, steps)
         if isinstance(frame.index, pd.PeriodIndex):
             frame.index = frame.index.to_timestamp(how="end").normalize()
         active = frame.loc[frame.index.isin(dates)].dropna(axis=1, how="all")
@@ -1413,65 +1088,34 @@ class ForecastModel(ABC):
         forecast_origin=None,
         steps=1,
         decomp=False,
-        data_transformation=None,
-        frequency=None,
-        X_imputation=None,
+        quantiles=False,
         **kwargs,
     ):
         """Prepare labelled inputs, construct the design and validate the result."""
-        # Validate that steps is an integer greater than zero
-        if not isinstance(steps, int) or steps <= 0:
+        probabilities = _normalise_quantiles(quantiles)
+        if probabilities is not None:
+            if not self._supports_quantiles:
+                raise ValueError(
+                    f"{type(self).__name__} does not support quantile forecasts."
+                )
+        if type(steps) is not int or steps <= 0:
             raise ValueError("steps must be an integer greater than zero")
-        if not getattr(self, "_is_fitted", False):
+        if not self._is_fitted:
             raise AttributeError("Model has not been fitted yet; call fit() first.")
         configuration = self._fitted_model_configuration
         self._validate_explicit_target_path(data, forecast_origin, steps)
-        fitted_transformation = configuration.data_transformation
-        fitted_pipeline_mapping = (
-            dict(fitted_transformation.data_transformation)
-            if fitted_transformation.data_transformation is not None
-            else {}
-        )
-        forecast_pipeline = (
-            _coerce_data_transformation(data_transformation)
-            if data_transformation is not None
-            else None
-        )
-        if (
-            data_transformation is not None
-            and fitted_transformation.pipeline_source != "model"
-        ):
-            _validate_fitted_override(
-                "data_transformation",
-                (
-                    forecast_pipeline.data_transformation
-                    if forecast_pipeline is not None
-                    else None
-                ),
-                fitted_pipeline_mapping,
-            )
-        _validate_fitted_override("frequency", frequency, fitted_transformation.frequency)
-        _validate_fitted_override(
-            "X_imputation", X_imputation, fitted_transformation.X_imputation
-        )
-        effective_X_imputation = (
-            fitted_transformation.X_imputation if X_imputation is None else X_imputation
-        )
-        _validate_X_imputation(X_imputation)
+        fitted_inputs = configuration.inputs
+        effective_X_imputation = fitted_inputs.X_imputation
         if getattr(self, "_formula", None):
-            data = data.subset(
-                fitted_transformation.y_variables, fitted_transformation.X_variables
-            )
+            data = data.subset(fitted_inputs.y_variables, fitted_inputs.X_variables)
         forecast_origin = (
             forecast_origin if forecast_origin is not None else data.index("y")[-1]
         )
-        mapping = fitted_transformation.data_transformation
+        mapping = fitted_inputs.mapping
         data = data.with_fitted_metadata(self._raw_data)
-        prepared = data.transform(
-            dict(mapping) if mapping is not None else None, combine=True
-        ).regularise()
+        prepared = data.transform(mapping, combine=True).regularise()
         if effective_X_imputation is not None and self._needs_ragged_edge_imputation:
-            target_frequency = fitted_transformation.frequency
+            target_frequency = configuration.design.frequency
             target_period = pd.Period(forecast_origin, freq=target_frequency) + steps
             target_date = target_period.to_timestamp(how="end").normalize()
             prepared = prepared.impute(target_date, method=effective_X_imputation)
@@ -1482,85 +1126,28 @@ class ForecastModel(ABC):
         if getattr(self, "_formula", None) and y_input is not None:
             y_input = self._formula.extract_y(y_input)
 
-        # The public attributes remain mirrored for model implementations, but
-        # prediction decisions use the captured values so later caller
-        # mutation cannot alter a fit.
-        X_lags = _thaw_option(configuration.X_lags)
-        y_lags = configuration.y_lags
-
-        # Build augmented design matrix (full history) using build_lagged_design
-        if y_lags or X_lags:
-            # Use combined inputs when supplied, otherwise use the fitted history.
-            y_design_input = (
-                y_input
-                if y_input is not None
-                else getattr(
-                    self, "_prepared_y_history", getattr(self, "_y_history", self.y)
+        design = configuration.design
+        has_lags = bool(design.y_lags or any(lag for _, lag in design.X_lags))
+        y_design_input, X_design_input = y_input, X_input
+        if y_design_input is None or (has_lags and X_design_input is None):
+            history = data.history().transform(mapping).regularise()
+            if y_design_input is None:
+                y_design_input = history.to_wide("y")
+                if getattr(self, "_formula", None):
+                    y_design_input = self._formula.extract_y(y_design_input)
+            if has_lags and X_design_input is None:
+                _, X_design_input = self._prepare_forecast_inputs(
+                    None, history.to_wide("X")
                 )
-            )
-            X_design_input = (
-                X_input
-                if X_input is not None
-                else getattr(
-                    self, "_prepared_X_history", getattr(self, "_X_history", self.X)
-                )
-            )
-
-            # Build augmented design matrix with full history
-            X_design = build_lagged_design(
-                y_design_input,
-                X_design_input,
-                y_lags,
-                X_lags,
-            )
-        else:
-            X_design = X_input
-
-        # Append all requested dummies BEFORE the formula so it can reference
-        # them by name. They are regenerated here (not imputed) because they are
-        # deterministic functions of the date index, keeping the forecast design
-        # aligned with fit over history + horizon.
-        dummies = _thaw_option(configuration.dummies)
-        dummy_definitions = _thaw_option(configuration.dummy_definitions)
-        dummy_names = []
-        if dummies:
-            target_frequency = fitted_transformation.frequency
-            if X_design is not None:
-                dummy_index = X_design.index
-            else:
-                y_design_history = (
-                    y_input
-                    if y_input is not None
-                    else getattr(
-                        self, "_prepared_y_history", getattr(self, "_y_history", self.y)
-                    )
-                )
-                forecast_dates = self._infer_forecast_dates(
-                    y_design_history.index,
-                    steps,
-                    frequency=target_frequency,
-                )
-                dummy_index = y_design_history.index.append(forecast_dates)
-            D = build_dummies(
-                dummy_index,
-                dummy_definitions or dummies,
-                target_frequency,
-            )
-            dummy_names = list(D.columns)
-            X_design = D if X_design is None else pd.concat([X_design, D], axis=1)
-
-        # Apply formula if provided
-        if getattr(self, "_formula", None):
-            X_design = self._formula.extract_X(X_design)
-
-        # Keep exactly the dummy columns retained at fit time (all-zero or
-        # formula-excluded dummies were dropped there), so the forecast design
-        # matrix matches the fitted one.
-        if dummy_names and X_design is not None:
-            keep = set(configuration.dummy_columns)
-            drop = [c for c in dummy_names if c in X_design.columns and c not in keep]
-            if drop:
-                X_design = X_design.drop(columns=drop)
+        design_index = None
+        if X_input is None and (has_lags or design.dummies):
+            design_index = self._forecast_dates(forecast_origin, steps)
+        X_design = design.build(
+            y_design_input,
+            X_design_input,
+            index=design_index,
+            formula=getattr(self, "_formula", None),
+        )
 
         if not self._handles_missing_values and X_design is not None:
             X_design = X_design.dropna()
@@ -1568,6 +1155,8 @@ class ForecastModel(ABC):
         # Pass full history to _forecast; models handle filtering to forecast rows
         hook_kwargs = dict(kwargs)
         hook_kwargs["forecast_origin"] = forecast_origin
+        if probabilities is not None:
+            hook_kwargs["quantiles"] = probabilities
         forecast = self._forecast(steps=steps, X=X_design, y=y_input, **hook_kwargs)
         return self._finalise_forecast(
             forecast,
@@ -1575,4 +1164,5 @@ class ForecastModel(ABC):
             forecast_origin,
             decomp=decomp,
             decomp_kwargs={"X": X_design, "y": y_input, **hook_kwargs},
+            quantiles=probabilities,
         )

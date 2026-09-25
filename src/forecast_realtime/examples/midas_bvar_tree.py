@@ -41,7 +41,7 @@ class ConditionalBVAR(ForecastBVAR):
     def _validate_explicit_target_path(self, data, forecast_origin, steps):
         active = super()._validate_explicit_target_path(data, forecast_origin, steps)
         if active is not None and self.conditioning_steps is not None:
-            dates = self._conditioning_dates(data, forecast_origin, steps)
+            dates = self._forecast_dates(forecast_origin, steps)
             clipped = active.loc[active.index.isin(dates[self.conditioning_steps :])]
             if clipped.notna().any().any():
                 raise ValueError(
@@ -65,8 +65,9 @@ class ConditionalBVAR(ForecastBVAR):
             future_dates = future_nowcasts.index
             if len(future_dates) >= steps:
                 output_dates = future_dates[:steps]
-                frequency = self._forecast_frequency or self._infer_calendar_frequency(
-                    self.y.index
+                frequency = (
+                    self._fitted_model_configuration.design.frequency
+                    or self._infer_calendar_frequency(self.y.index)
                 )
                 steps = (
                     pd.Period(output_dates[-1], freq=frequency).ordinal

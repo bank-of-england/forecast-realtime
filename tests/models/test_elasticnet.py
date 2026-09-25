@@ -31,7 +31,7 @@ def test_elasticnet_recursive():
     assert np.isclose(beta[0], true_coef["cst"], atol=1e-4)
     assert np.isclose(beta[1], true_coef["b1"], atol=1e-4)
     assert np.isclose(beta[2], true_coef["b2"], atol=1e-4)
-    assert np.allclose(forecasts, y_test, atol=1e-4)
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=1e-4)
 
 
 def test_elasticnet_scaling():
@@ -56,7 +56,7 @@ def test_elasticnet_scaling():
     assert np.isclose(beta[0], true_coef["cst"], atol=1e-4)
     assert np.isclose(beta[1], true_coef["b1"], atol=1e-4)
     assert np.isclose(beta[2], true_coef["b2"], atol=1e-4)
-    assert np.allclose(forecasts, y_test, atol=1e-4)
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=1e-4)
 
 
 def test_elasticnet_recursive_with_ar():
@@ -83,7 +83,7 @@ def test_elasticnet_recursive_with_ar():
     assert np.isclose(beta[1], true_coef["b1"], atol=1e-4)
     assert np.isclose(beta[2], true_coef["b2"], atol=1e-4)
     assert np.isclose(beta[3], true_coef["b_ar"], atol=1e-4)
-    assert np.allclose(forecasts, y_test, atol=1e-3)
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=1e-3)
 
 
 def test_elasticnet_direct_h0():
@@ -112,7 +112,7 @@ def test_elasticnet_direct_h0():
     assert np.isclose(beta[0], true_coef["cst"], atol=1e-4)
     assert np.isclose(beta[1], true_coef["b1"], atol=1e-4)
     assert np.isclose(beta[2], true_coef["b2"], atol=1e-4)
-    assert np.allclose(forecasts.iloc[0], y_test.iloc[0], atol=1e-4)
+    assert np.isclose(forecasts["value"].iloc[0], y_test.iloc[0, 0], atol=1e-4)
 
 
 def test_elasticnet_direct_h1():
@@ -141,7 +141,9 @@ def test_elasticnet_direct_h1():
     assert np.isclose(beta[0], true_coef["cst"], atol=1e-4)
     assert np.isclose(beta[1], true_coef["b1"], atol=1e-4)
     assert np.isclose(beta[2], true_coef["b2"], atol=1e-4)
-    assert np.allclose(forecasts.iloc[horizon], y_test.iloc[horizon], atol=1e-4)
+    assert np.isclose(
+        forecasts["value"].iloc[horizon], y_test.iloc[horizon, 0], atol=1e-4
+    )
 
 
 def test_elasticnet_cv():
@@ -242,7 +244,7 @@ def test_elasticnet_decomposition_recursive_reconstructs_forecast():
 
     for h in range(len(y_test)):
         decomp_sum = decomps.loc[decomps["forecast_horizon"] == h, "contribution"].sum()
-        np.testing.assert_allclose(decomp_sum, forecast.iloc[h, 0], atol=1e-9)
+        np.testing.assert_allclose(decomp_sum, forecast["value"].iloc[h], atol=1e-9)
 
 
 def test_elasticnet_decomposition_direct_reconstructs_forecast():
@@ -274,7 +276,7 @@ def test_elasticnet_decomposition_direct_reconstructs_forecast():
 
     for h in range(steps):
         decomp_sum = decomps.loc[decomps["forecast_horizon"] == h, "contribution"].sum()
-        np.testing.assert_allclose(decomp_sum, forecast.iloc[h, 0], atol=1e-9)
+        np.testing.assert_allclose(decomp_sum, forecast["value"].iloc[h], atol=1e-9)
 
 
 def test_fitted_values_recovers_insample():

@@ -121,6 +121,37 @@ Models that determine publication availability and forecast dates from raw X
 data themselves, such as the MIDAS family, use this setting. The flag does not
 enable imputation unless `X_imputation` is also supplied.
 
+## Direct model results
+
+For a fitted model, `forecast()` returns a validated,
+DataFrame-compatible `ForecastResult`. Point results are long tables with a
+`RangeIndex` and the columns `date`, `variable`, and `value`. Quantile results
+add `quantile`. The `.forecast` property returns the same payload as an
+ordinary long DataFrame; `forecast_origin` and `decomposition` remain on the
+original result. Point and quantile forecasts may use custom dates. Slices and
+copies return ordinary DataFrames without result metadata.
+
+Use an explicit pivot when downstream code needs a point matrix:
+
+```python
+y = (
+    sample_data.loc[
+        (sample_data["vintage_date"] == sample_data["vintage_date"].max())
+        & (sample_data["variable"] == "quarterly_1")
+        & (sample_data["metric"] == "levels")
+    ]
+    .set_index("date")[["value"]]
+    .rename(columns={"value": "quarterly_1"})
+)
+model = rt.models.ForecastOLS().fit(y)
+point_result = model.forecast(steps=4)
+point_matrix = point_result.pivot(
+    index="date",
+    columns="variable",
+    values="value",
+)
+```
+
 ## Data transformations
 
 `data_transformation` maps each variable to the space the model is estimated in.
@@ -133,7 +164,7 @@ use the same metric as their transformed target input, so no separate output
 metric argument is needed:
 
 ```python
-model = rt.models.ForecastOLS(
+transformed_model = rt.models.ForecastOLS(
     data_transformation={"quarterly_1": "diff"},
 )
 ```
@@ -156,6 +187,54 @@ column has an ambiguous frequency, provide it through the resolved
 | `"logs"` | Log levels |
 | `"log diff"` | Log difference |
 | `"diff"` | First difference |
+
+## Density forecasts
+
+Pass the keyword-only `quantiles` argument to a fitted model's `forecast()` call:
+
+```python
+density = model.forecast(steps=4, quantiles=[0.9, 0.1, 0.5])
+```
+
+`quantiles=False` (the default) returns the long point result. `True` uses
+the default probabilities `(0.16, 0.5, 0.84)`. A supplied sequence must contain
+distinct, finite probabilities strictly between 0 and 1; the package sorts the
+sequence before forecasting. Density mode returns one long, DataFrame-compatible
+`ForecastResult` with the columns `date`, `variable`, `quantile`, and `value`.
+It contains only the requested quantile rows, in the model's native forecast
+metric, and does not include a point forecast.
+
+For realtime forecasts, pass the same argument to `RealTimeModel.forecast()`:
+
+```python
+forecast_data = fe.NowcastData(outturns_data=sample_data.copy())
+rt_model = rt.RealTimeModel(
+    data=forecast_data,
+    models=rt.models.ForecastOLS(),
+)
+rt_model.forecast(
+    y_variables=["quarterly_1"],
+    data_transformation={"quarterly_1": "levels"},
+    steps=2,
+    quantiles=True,
+    first_vintage="2024-01-31",
+    last_vintage="2024-06-30",
+)
+quantiles = rt_model.quantiles
+```
+
+Density mode stores only native-metric rows in `rt_model.quantiles`. Rows
+include `date`, `variable`, `quantile`, `value`, `metric`, `source`,
+`frequency`, `vintage_date`, and `forecast_horizon`. It sets
+`reconstruct_levels=False` internally, even when the argument is `True`. It
+does not add point rows to `data.forecasts` or change rows already there.
+`decomp=True` is not supported with quantiles.
+
+Built-in density support is currently available for `ForecastOLS` and
+`ForecastBVAR`. Models without quantile support, including penalised
+regressions and tree models, reject the request.
+The package does not expose predictive draws, derive growth or level quantiles
+from marginal quantiles, or ingest these rows through `forecast-evaluation`.
 
 ## News decomposition
 

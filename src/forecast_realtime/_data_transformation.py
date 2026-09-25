@@ -380,30 +380,37 @@ class FittedDataTransformation:
     data_transformation: tuple[tuple[str, str], ...] | None
     y_variables: tuple[str, ...]
     X_variables: tuple[str, ...] | None
-    frequency: str | None
     X_imputation: str | None
     pipeline_source: str
+    drop_transformation_nans: bool
+
+    @property
+    def mapping(self) -> dict[str, str] | None:
+        """Return an isolated mapping view of the frozen configuration."""
+        return (
+            dict(self.data_transformation)
+            if self.data_transformation is not None
+            else None
+        )
 
     @classmethod
     def from_fit(
         cls,
-        pipeline: DataTransformationPipeline | None,
+        mapping: dict[str, str] | None,
         *,
         y_variables: list[str],
         X_variables: list[str] | None,
-        frequency: str | None,
         X_imputation: str | None,
         pipeline_source: str,
+        drop_transformation_nans: bool,
     ) -> "FittedDataTransformation":
         return cls(
             data_transformation=(
-                tuple(sorted(pipeline.data_transformation.items()))
-                if pipeline is not None
-                else None
+                tuple(sorted(mapping.items())) if mapping is not None else None
             ),
             y_variables=tuple(y_variables),
             X_variables=tuple(X_variables) if X_variables is not None else None,
-            frequency=frequency,
             X_imputation=X_imputation,
             pipeline_source=pipeline_source,
+            drop_transformation_nans=drop_transformation_nans,
         )

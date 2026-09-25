@@ -82,7 +82,9 @@ option.
 Set `cv` to an integer or a scikit-learn-compatible splitter. An integer uses
 unshuffled K-fold cross-validation; a splitter, such as `TimeSeriesSplit`, is
 used as supplied. Choose a splitter that matches the time ordering and
-information available at the forecast origin.
+information available at the forecast origin. Ordinary K-fold CV can be valid
+for autoregressive prediction when the fitted model captures the dependence
+and its errors are uncorrelated (Bergmeir, Hyndman and Koo, 2018).
 
 CV supports unpenalised AR terms and dummies. These fits minimise mean
 validation squared error in the target's units, with FWL projection and scaling
@@ -110,6 +112,11 @@ from sklearn.model_selection import TimeSeriesSplit
 ridge = rt.models.ForecastRidge(cv=TimeSeriesSplit(n_splits=5), scale=True)
 ```
 
+Reference: Bergmeir, C., Hyndman, R. J. and Koo, B. (2018), "A note on the
+validity of cross-validation for evaluating autoregressive time series
+prediction", *Computational Statistics & Data Analysis*, 120, 70-83.
+https://doi.org/10.1016/j.csda.2017.11.003
+
 ## Models in other languages
 
 Models written in R, MATLAB or Julia can be wrapped with `RModel`,
@@ -136,6 +143,50 @@ arima = rt.models.RFableARIMA(p=1, d=0, q=0)
 
 See [adding_a_model.md](adding_a_model.md) for the expected function
 signatures.
+
+## Density forecasts
+
+Built-in density support is available for `ForecastOLS` and `ForecastBVAR`.
+Penalised regressions (`ForecastRidge`, `ForecastLasso`, and
+`ForecastElasticNet`), `ForecastBridgeOLS`, `RandomForest`, and `XGBoost` do
+not support quantile forecasts.
+
+### `ForecastOLS`
+
+OLS quantiles are the textbook prediction interval, the one returned by R's
+`predict.lm(interval = "prediction")` and statsmodels'
+`get_prediction().summary_frame()`. For `n` retained observations, design
+rank `r`, and a forecast row `x0` (intercept included):
+
+$$
+\hat{y}_0 + s\sqrt{1 + x_0^\top (X^\top X)^{+} x_0}\; t^{-1}_{n - r}(q),
+\qquad s^2 = \frac{\text{RSS}}{n - r}
+$$
+
+The interval accounts for residual noise, coefficient uncertainty, and
+uncertainty in `s`. The pseudo-inverse keeps rank-deficient designs valid. The
+median equals the point forecast, and quantiles require positive residual
+degrees of freedom.
+
+Both forecast strategies are supported:
+
+- **Recursive**: one regression; each future row has its own leverage. Target
+  lags are not supported, because later rows would contain earlier forecasts
+  and no closed form exists.
+- **Direct**: one regression per horizon `h`, of `y[t + h]` on the origin row.
+  Target lags are supported, because at the origin they are observed.
+
+Future regressor rows must be complete. Supplied or imputed regressor paths are
+treated as known and add no regressor uncertainty.
+
+### `ForecastBVAR`
+
+`ForecastBVAR` density forecasts require posterior draws. Keep
+`mode_only=False`, the default; `mode_only=True` rejects quantile requests.
+Leave `N_burn=None` unless you need to set it explicitly, so the backend can
+derive burn-in from the effective draw count.
+Quantiles are returned in the fitted model's native metric. Realtime does not
+reconstruct levels or derive another metric from marginal quantile curves.
 
 ### Regressor imputation
 

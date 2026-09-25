@@ -1,5 +1,6 @@
 """Wrapper around the bvar package for Bayesian VAR forecasting."""
 
+from numbers import Integral
 from typing import Literal
 
 import numpy as np
@@ -57,7 +58,8 @@ class ForecastBVAR(ForecastModel):
     N_draws : int
         Number of draws for forecast uncertainty simulation. Default is 5000.
     N_burn : int | None
-        Burn-in draws to discard during forecasting. Default is ``N_draws // 2``.
+        Burn-in draws to discard. None lets the backend use half the effective
+        forecast draw count, capped by the retained posterior count.
     base_value : np.ndarray | None
         Base value for converting differenced forecasts back to levels.
     optim_random_state : int | None
@@ -74,6 +76,7 @@ class ForecastBVAR(ForecastModel):
 
     _handles_missing_values = False
     _supports_target_conditioning = True
+    _supports_quantiles = True
 
     def __init__(
         self,
@@ -108,8 +111,16 @@ class ForecastBVAR(ForecastModel):
     ):
         if forecasts_type not in ("mean", "median"):
             raise ValueError(
-                "forecasts_type must be 'mean' or 'median'; density forecasts "
-                "are not supported."
+                "forecasts_type must be 'mean' or 'median'; "
+                "use quantiles for density forecasts."
+            )
+        if N_burn is not None and (
+            isinstance(N_burn, bool)
+            or not isinstance(N_burn, Integral)
+            or not 0 <= N_burn < min(N_draws, n_samples)
+        ):
+            raise ValueError(
+                "N_burn must be an integer in [0, the effective draw count)."
             )
 
         import bvar as bv
@@ -160,7 +171,7 @@ class ForecastBVAR(ForecastModel):
         self.forecasts_type = forecasts_type
         self.method = method
         self.N_draws = N_draws
-        self.N_burn = N_burn if N_burn is not None else N_draws // 2
+        self.N_burn = N_burn
         self.base_value = base_value
 
         self.optim_random_state = optim_random_state
@@ -220,9 +231,6 @@ class ForecastBVAR(ForecastModel):
             columns=y.columns,
         ).reindex(y.index)
 
-        # store last training date for filtering conditioning data
-        self.last_y_fit_date = y.index[-1]
-
         return self
 
     def _forecast(
@@ -231,6 +239,7 @@ class ForecastBVAR(ForecastModel):
         X: np.ndarray | None = None,
         y: np.ndarray | None = None,
         forecast_origin=None,
+        quantiles=None,
         **kwargs,
     ):
         """
@@ -255,13 +264,19 @@ class ForecastBVAR(ForecastModel):
             raise RuntimeError(
                 "Model must be fitted before forecasting. Call fit() first."
             )
-
+        if quantiles is not None and (self.mode_only or self.bvar.point_only):
+            raise ValueError(
+                "BVAR quantiles require posterior draws; mode_only=True is unsupported."
+            )
         # Align sparse or longer supplied paths to the requested forecast calendar.
         if y is not None:
-            dates = self._conditioning_dates(self._raw_data, forecast_origin, steps)
+            dates = self._forecast_dates(forecast_origin, steps)
             y = y.reindex(index=dates, columns=self.y.columns)
             y = y.to_numpy() if y.notna().any().any() else None
 
+        density_options = (
+            {} if quantiles is None else {"format": True, "quantiles": list(quantiles)}
+        )
         self.bvar.forecast(
             H=steps,
             constraint_mean=y,
@@ -272,7 +287,25 @@ class ForecastBVAR(ForecastModel):
             base_value=self.base_value,
             progressbar=False,
             random_state=self.forecast_random_state,
+            **density_options,
         )
+
+        if quantiles is not None:
+            formatted = (
+                self.bvar.df_forecasts_conditional
+                if y is not None
+                else self.bvar.df_forecasts_unconditional
+            )
+            periods = formatted["date"].drop_duplicates().sort_values().iloc[-steps:]
+            result = formatted.loc[formatted["date"].isin(periods)].copy()
+            dates = self._forecast_dates(forecast_origin, steps)
+            result["date"] = result["date"].map(dict(zip(periods, dates, strict=True)))
+            # Predictive draws are not part of the public contract, so release them.
+            self.bvar.forecast_unconditional = None
+            self.bvar.forecast_conditional = None
+            self.bvar.df_forecasts_unconditional = None
+            self.bvar.df_forecasts_conditional = None
+            return result
 
         # Pick the right forecast array
         if y is not None:

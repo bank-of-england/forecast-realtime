@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from forecast_realtime.data_transformation import DataTransformationPipeline
+from forecast_realtime._data_transformation import DataTransformationPipeline
 
 
 def _dates(*strings):
@@ -1275,7 +1275,7 @@ def test_transform_forecast_inputs_conditioning_unknown_column_raises():
 def test_wide_methods_do_not_depend_on_long_form_wide_conversion_helpers():
     """The legacy wide<->long conversion helpers are gone entirely, so the
     wide-input methods cannot route transformed values through them."""
-    import forecast_realtime.data_transformation as data_transformation
+    import forecast_realtime._data_transformation as data_transformation
 
     assert not hasattr(data_transformation, "_wide_to_long")
     assert not hasattr(data_transformation, "_long_to_wide")

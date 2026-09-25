@@ -13,8 +13,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from forecast_realtime.forecast_model import ForecastContext, ForecastModel
-from forecast_realtime.forecast_tree import ForecastTree, TreeNode
+from forecast_realtime.forecast_model import (
+    ForecastContext,
+    ForecastModel,
+)
+from forecast_realtime.forecast_tree import (
+    ForecastTree,
+    TreeNode,
+    _point_forecast_to_wide,
+)
 
 
 class StubForecastModel(ForecastModel):
@@ -49,7 +56,7 @@ class RecordingStubForecastModel(ForecastModel):
                 X=X,
                 y_lags=self.y_lags,
                 X_lags=self.X_lags,
-                dummies=self.dummies,
+                dummies=self._fitted_model_configuration.design.dummies,
                 kwargs=kwargs,
             )
         )
@@ -103,15 +110,7 @@ class CommitRecordingModel(RecordingTransformModel):
 
 
 class FitKwargsSpyModel(ForecastModel):
-    """ForecastModel transform recording the exact kwargs its *public*
-    ``fit()``/``forecast()`` receive, before delegating to the base class.
-
-    Unlike recording ``_fit``/``_forecast``, this captures named parameters
-    (``data_transformation``/``frequency``/``X_imputation``/
-    ``drop_transformation_nans``) too, since the base ``ForecastModel``
-    consumes those as explicit parameters and never forwards them into
-    ``_fit``/``_forecast``'s own ``**kwargs``.
-    """
+    """Spy on fit and prediction options before preparation consumes them."""
 
     def __init__(self, label, data_transformation=None):
         super().__init__(label=label, data_transformation=data_transformation)
@@ -123,9 +122,9 @@ class FitKwargsSpyModel(ForecastModel):
         self.fit_kwargs_calls.append(dict(kwargs))
         return super().fit(y, X=X, **kwargs)
 
-    def forecast(self, steps=1, X=None, y=None, **kwargs):
+    def _predict_data(self, data, **kwargs):
         self.forecast_kwargs_calls.append(dict(kwargs))
-        return super().forecast(steps=steps, X=X, y=y, **kwargs)
+        return super()._predict_data(data, **kwargs)
 
     def _fit(self, y, X=None, **kwargs):
         self.fit_calls.append({"y": y.copy(), "X": X.copy(), "kwargs": dict(kwargs)})
@@ -453,6 +452,15 @@ def test_forecasttree_rejects_non_treenode():
         ForecastTree(spec="not_a_treenode")
 
 
+def test_forecasttree_rejects_forecast_before_fit():
+    leaf = StubForecastModel("model_a")
+    spec = TreeNode(transform=_first_value, children=[leaf], name="outer")
+    tree = ForecastTree(spec=spec)
+
+    with pytest.raises(AttributeError, match="Model has not been fitted yet"):
+        tree.forecast()
+
+
 def test_forecasttree_flat_tree_fits_every_leaf():
     leaf_a = RecordingStubForecastModel("model_a")
     leaf_b = RecordingStubForecastModel("model_b")
@@ -539,8 +547,8 @@ def test_forecasttree_forwards_lags_and_dummies_uniformly():
     for leaf in tree.spec.all_leaves():
         call = leaf.fit_calls[0]
         assert call["y_lags"] == 2
-        assert call["X_lags"] == 1
-        assert call["dummies"] == ["2020-03-31"]
+        assert call["X_lags"] == {"x1": 1}
+        assert call["dummies"] == (("D_2020M3", pd.Timestamp("2020-03-31")),)
 
 
 def test_forecasttree_infers_target_from_single_column_y():
@@ -636,11 +644,10 @@ def test_forecasttree_flat_forecast_applies_transform():
 
     fc = tree.forecast(steps=3)
 
-    assert list(fc.columns) == ["target"]
+    assert list(fc.columns) == ["date", "variable", "value"]
     assert len(fc) == 3
-    assert isinstance(fc.index, pd.DatetimeIndex)
     # 0.25 * 10 + 0.75 * 20 = 17.5
-    assert (fc["target"] == 17.5).all()
+    assert (fc["value"] == 17.5).all()
 
 
 def test_forecasttree_two_stage_nested_forecast():
@@ -664,7 +671,7 @@ def test_forecasttree_two_stage_nested_forecast():
     fc = tree.forecast(steps=2)
 
     # stage1 = 0.5*10 + 0.5*20 = 15; final = 0.5*15 + 0.5*30 = 22.5
-    assert (fc["target"] == 22.5).all()
+    assert (fc["value"] == 22.5).all()
     # Intermediate node forecasts are exposed for inspection.
     assert (tree.node_forecasts_["stage1"]["target"] == 15.0).all()
     assert (tree.node_forecasts_["final"]["target"] == 22.5).all()
@@ -743,9 +750,10 @@ def test_forecasttree_forecast_selects_target_from_multivariate_leaf():
 
     fc = tree.forecast(steps=2)
 
-    assert list(fc.columns) == ["cpi"]
-    assert list(fc.index) == list(pd.date_range("2020-07-31", periods=2, freq="ME"))
-    assert (fc["cpi"] == 5.0).all()
+    assert list(fc.columns) == ["date", "variable", "value"]
+    assert fc["date"].tolist() == list(pd.date_range("2020-07-31", periods=2, freq="ME"))
+    assert (fc["variable"] == "cpi").all()
+    assert (fc["value"] == 5.0).all()
 
 
 def test_forecasttree_two_stage_with_ols_matches_manual():
@@ -784,11 +792,12 @@ def test_forecasttree_two_stage_with_ols_matches_manual():
     manual_stage1 = 0.6 * fc1 + 0.4 * fc2
     manual_final = 0.5 * manual_stage1 + 0.5 * fc3
 
-    assert tree_fc.shape == (2, 1)
+    assert len(tree_fc) == 2
+    assert list(tree_fc.columns) == ["date", "variable", "value"]
     pd.testing.assert_series_equal(
         tree.node_forecasts_["stage1"]["gdp"], manual_stage1, check_names=False
     )
-    pd.testing.assert_series_equal(tree_fc["gdp"], manual_final, check_names=False)
+    np.testing.assert_allclose(tree_fc["value"], manual_final.to_numpy())
 
 
 # ---------------------------------------------------------------------- #
@@ -817,11 +826,13 @@ def test_forecasttree_model_transform_stacks_children():
 
     fc = tree.forecast(steps=2, X=X_full)
 
-    assert fc.shape == (2, 1)
-    assert list(fc.columns) == ["gdp"]
+    assert len(fc) == 2
+    assert list(fc.columns) == ["date", "variable", "value"]
     assert tree.y_name == "gdp"
     # The stacking transform's own forecast is the root node's output.
-    pd.testing.assert_frame_equal(tree.node_forecasts_["stack"], fc.forecast)
+    pd.testing.assert_frame_equal(
+        tree.node_forecasts_["stack"], _point_forecast_to_wide(fc, ["gdp"])
+    )
 
 
 def test_forecasttree_model_transform_needs_no_target():
@@ -846,7 +857,7 @@ def test_forecasttree_model_transform_needs_no_target():
 
     fc = tree.forecast(steps=2, X=X_full)
 
-    assert list(fc.columns) == ["gdp"]
+    assert list(fc.columns) == ["date", "variable", "value"]
     assert list(tree.y.columns) == ["gdp"]
 
 
@@ -873,8 +884,8 @@ def test_forecasttree_forwards_extra_kwargs_to_every_leaf():
     for leaf in tree.spec.all_leaves():
         call = leaf.fit_calls[0]
         assert call["y_lags"] == 2
-        assert call["X_lags"] == 1
-        assert call["dummies"] == ["2020-03-31"]
+        assert call["X_lags"] == {"x1": 1}
+        assert call["dummies"] == (("D_2020M3", pd.Timestamp("2020-03-31")),)
         assert leaf.recorded_kwargs["some_custom_kwarg"] == 123
 
 
@@ -1000,7 +1011,7 @@ def test_forecasttree_callable_root_uses_last_usable_fitted_output_origin():
 
     effective_origin = pd.Timestamp("2020-03-31")
     assert tree.last_y_fit_date == effective_origin
-    assert forecast.index.equals(pd.DatetimeIndex([pd.Timestamp("2020-04-30")]))
+    assert forecast["date"].tolist() == [pd.Timestamp("2020-04-30")]
     assert leaf.forecast_calls[0]["X"].loc[pd.Timestamp("2020-04-30"), "x1"] == 13.0
 
 
@@ -1020,7 +1031,7 @@ def test_forecasttree_model_root_uses_root_transform_origin():
 
     assert tree.last_y_fit_date == transform.last_y_fit_date
     assert tree.last_y_fit_date == pd.Timestamp("2020-03-31")
-    assert forecast.index.equals(pd.DatetimeIndex([pd.Timestamp("2020-04-30")]))
+    assert forecast["date"].tolist() == [pd.Timestamp("2020-04-30")]
 
 
 def test_forecasttree_callable_root_exposes_in_sample_fitted_values_after_fit():
@@ -1384,8 +1395,8 @@ def test_forecasttree_leaf_forecast_transforms_history_and_conditioning_once():
         y_published=y_cond,
         forecast_origin=y_hist.index[-1],
     )
-    tree.predict(
-        context,
+    tree.forecast(
+        context=context,
         steps=2,
         frequency="M",
         data_transformation={"target": "levels"},
@@ -1435,7 +1446,7 @@ def test_forecasttree_node_transform_without_own_pipeline_ignores_raw_input_cont
         X_imputation="last",
     )
     forecast_kwargs = transform.forecast_kwargs_calls[0]
-    assert forecast_kwargs["data_transformation"] is None
+    assert "data_transformation" not in forecast_kwargs
     assert "X_imputation" not in forecast_kwargs
     assert "frequency" not in forecast_kwargs
 
@@ -1722,7 +1733,7 @@ def test_forecasttree_owned_mapping_uses_fitted_policy_after_mapping_mutates(
 
     forecast = tree.forecast(steps=1, frequency="M")
 
-    np.testing.assert_allclose(baseline["target"], [12.1])
+    np.testing.assert_allclose(baseline["value"], [12.1])
     pd.testing.assert_frame_equal(forecast, baseline)
 
 
@@ -1748,7 +1759,7 @@ def test_forecasttree_stacker_uses_captured_fit_policy_after_mapping_mutates(
 
     forecast = tree.forecast(steps=1, frequency="M")
 
-    np.testing.assert_allclose(forecast["target"].to_numpy(), [11.0])
+    np.testing.assert_allclose(forecast["value"].to_numpy(), [11.0])
     assert tree.native_metric_mapping() == {"target": "diff"}
 
 

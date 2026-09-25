@@ -174,9 +174,6 @@ class TreeRegression(ForecastModel):
         common = y_idx.intersection(X_idx)
         y = y.loc[common]
         X = X.loc[common]
-        if len(common):
-            self.last_y_fit_date = common[-1]
-
         y_ori = y.copy()
 
         y_arr = y.iloc[:, 0].astype(float).values

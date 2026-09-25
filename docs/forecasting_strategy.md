@@ -153,8 +153,8 @@ do not collapse them with truthiness. A legacy horizon of `None` still selects
 its source without imposing an explicit target constraint.
 
 Conditioning policies select source paths only during realtime orchestration.
-Direct `model.forecast(y=..., X=...)` and `model.predict(...)` calls continue to
-use the frames supplied by the caller: they do not look up sources or
+Direct `model.forecast(y=..., X=...)` and `model.forecast(context=...)` calls
+continue to use the frames supplied by the caller: they do not look up sources or
 clip those frames with the model's policy. Models that cannot enforce target
 conditioning reject an explicit future y constraint; historical rows, empty
 frames and all-NaN future paths do not constitute a constraint. See

@@ -3,7 +3,6 @@
 import numpy as np
 import pandas as pd
 
-from forecast_realtime.forecast_model import ForecastModel
 from forecast_realtime.models.ols import ForecastOLS
 
 # ForecastBridgeOLS only supports a quarterly target with regressors that are
@@ -57,6 +56,7 @@ class ForecastBridgeOLS(ForecastOLS):
     """
 
     _handles_mixed_frequencies = True
+    _supports_quantiles = False
 
     def __init__(
         self,
@@ -158,10 +158,6 @@ class ForecastBridgeOLS(ForecastOLS):
     # ------------------------------------------------------------------ #
     # Model-specific input preparation                                  #
     # ------------------------------------------------------------------ #
-
-    def _validate_fit_inputs(self, y, X):
-        """Validate inputs without aligning before mixed-frequency aggregation."""
-        return ForecastModel._validate_fit_inputs(self, y, X)
 
     def _prepare_fit_inputs(self, y, X):
         if X is not None:

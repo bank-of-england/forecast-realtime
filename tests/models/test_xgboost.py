@@ -34,15 +34,15 @@ def test_xgb_recursive_noiseless():
     forecasts = model.forecast(steps=len(y_test), X=X_test)
 
     assert isinstance(forecasts, pd.DataFrame)
-    assert forecasts.shape == (len(y_test), 1)
-    assert isinstance(forecasts.index, pd.DatetimeIndex)
-    np.testing.assert_allclose(forecasts.values, y_test.values, atol=0.5)
+    assert len(forecasts) == len(y_test)
+    assert list(forecasts.columns) == ["date", "variable", "value"]
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=0.5)
 
     model_std = rt.models.XGBoost(n_estimators=80, random_state=42, standardise=True)
     model_std.fit(y_train, X=X_train)
     fc_std = model_std.forecast(steps=len(y_test), X=X_test)
 
-    np.testing.assert_allclose(forecasts.values, fc_std.values, atol=0.5)
+    np.testing.assert_allclose(forecasts["value"], fc_std["value"], atol=0.5)
 
 
 def test_xgb_recursive_with_ar():
@@ -63,8 +63,8 @@ def test_xgb_recursive_with_ar():
     forecasts = model.forecast(steps=len(y_test), X=X_test)
 
     assert isinstance(forecasts, pd.DataFrame)
-    assert forecasts.shape == (len(y_test), 1)
-    np.testing.assert_allclose(forecasts.values, y_test.values, atol=1.0)
+    assert len(forecasts) == len(y_test)
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=1.0)
 
 
 def test_xgb_direct_h0():
@@ -89,8 +89,8 @@ def test_xgb_direct_h0():
     model.fit(y_train, X=X_train)
     forecasts = model.forecast(steps=steps, X=X_test)
 
-    assert forecasts.shape == (steps, 1)
-    np.testing.assert_allclose(forecasts.iloc[0].values, y_test.iloc[0].values, atol=0.5)
+    assert len(forecasts) == steps
+    np.testing.assert_allclose(forecasts["value"].iloc[0], y_test.iloc[0, 0], atol=0.5)
 
 
 def test_xgb_direct_h1():
@@ -115,9 +115,9 @@ def test_xgb_direct_h1():
     model.fit(y_train, X=X_train)
     forecasts = model.forecast(steps=steps, X=X_test)
 
-    assert forecasts.shape == (steps, 1)
+    assert len(forecasts) == steps
     np.testing.assert_allclose(
-        forecasts.iloc[horizon].values, y_test.iloc[horizon].values, atol=0.5
+        forecasts["value"].iloc[horizon], y_test.iloc[horizon, 0], atol=0.5
     )
 
 

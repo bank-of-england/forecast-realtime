@@ -107,7 +107,8 @@ class TestMovingAveragePython:
         fc = model.forecast(steps=8)
 
         assert isinstance(fc, pd.DataFrame)
-        assert fc.shape == (8, 1)
+        assert list(fc.columns) == ["date", "variable", "value"]
+        assert len(fc) == 8
 
     def test_values_equal_window_mean(self, quarterly_data):
         model = MovingAverage(window_size=4)
@@ -115,7 +116,7 @@ class TestMovingAveragePython:
         fc = model.forecast(steps=3)
 
         expected = quarterly_data["gdp"].iloc[-4:].mean()
-        np.testing.assert_allclose(fc.values[:, 0], expected)
+        np.testing.assert_allclose(fc["value"], expected)
 
     def test_all_horizons_identical(self, quarterly_data):
         model = MovingAverage(window_size=4)
@@ -123,7 +124,7 @@ class TestMovingAveragePython:
         fc = model.forecast(steps=6)
 
         # Every row should be the same value
-        np.testing.assert_array_equal(fc.values[0], fc.values[-1])
+        np.testing.assert_array_equal(fc["value"].iloc[0], fc["value"].iloc[-1])
 
     def test_multivariate(self):
         dates = pd.date_range("2000-03-31", periods=10, freq="QE")
@@ -136,9 +137,14 @@ class TestMovingAveragePython:
         model.fit(y)
         fc = model.forecast(steps=4)
 
-        assert fc.shape == (4, 2)
-        np.testing.assert_allclose(fc.values[0, 0], y["a"].iloc[-3:].mean())
-        np.testing.assert_allclose(fc.values[0, 1], y["b"].iloc[-3:].mean())
+        assert len(fc) == 8
+        assert fc["variable"].drop_duplicates().tolist() == ["a", "b"]
+        np.testing.assert_allclose(
+            fc.loc[fc["variable"] == "a", "value"].iloc[0], y["a"].iloc[-3:].mean()
+        )
+        np.testing.assert_allclose(
+            fc.loc[fc["variable"] == "b", "value"].iloc[0], y["b"].iloc[-3:].mean()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -158,20 +164,17 @@ class TestBareArrayForecast:
         model.fit(quarterly_data)
         fc = model.forecast(steps=5)
 
-        assert isinstance(fc.index, pd.DatetimeIndex)
-        assert fc.index.name == "date"
-        assert list(fc.columns) == list(quarterly_data.columns)
-        assert fc.index[0] > quarterly_data.index[-1]
+        assert isinstance(fc.index, pd.RangeIndex)
+        assert list(fc.columns) == ["date", "variable", "value"]
+        assert fc["date"].iloc[0] > quarterly_data.index[-1]
 
     def test_one_dimensional_array_is_reshaped(self, quarterly_data):
         model = SeriesMovingAverage(window_size=4)
         model.fit(quarterly_data)
         fc = model.forecast(steps=6)
 
-        assert fc.shape == (6, 1)
-        np.testing.assert_allclose(
-            fc.values[:, 0], quarterly_data["gdp"].iloc[-4:].mean()
-        )
+        assert len(fc) == 6
+        np.testing.assert_allclose(fc["value"], quarterly_data["gdp"].iloc[-4:].mean())
 
     def test_wrong_length_array_raises(self, quarterly_data):
         class ShortMovingAverage(MovingAverage):
@@ -219,7 +222,8 @@ class TestMovingAverageR:
         r_fc = r_model.forecast(steps=steps)
 
         assert isinstance(r_fc, pd.DataFrame)
-        assert r_fc.shape == (steps, 1)
-        np.testing.assert_allclose(r_fc.values[:, 0], expected, rtol=1e-6)
-        np.testing.assert_array_equal(r_fc.values[0], r_fc.values[-1])
-        np.testing.assert_allclose(r_fc.values, py_fc.values, rtol=1e-6)
+        assert list(r_fc.columns) == ["date", "variable", "value"]
+        assert len(r_fc) == steps
+        np.testing.assert_allclose(r_fc["value"], expected, rtol=1e-6)
+        np.testing.assert_array_equal(r_fc["value"].iloc[0], r_fc["value"].iloc[-1])
+        pd.testing.assert_frame_equal(r_fc, py_fc, check_dtype=False)

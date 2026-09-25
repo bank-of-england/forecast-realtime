@@ -272,8 +272,8 @@ class TestFormulaWithForecastModel:
 
         # Pass full X - formula will filter to feature1 only
         forecast = model.forecast(steps=2, X=X_future)
-        assert forecast.shape == (2, 1)
-        assert list(forecast.columns) == ["target"]
+        assert len(forecast) == 2
+        assert list(forecast.columns) == ["date", "variable", "value"]
 
     def test_model_without_formula_uses_all_columns(self, forecast_data):
         """Test that models without formula use all provided columns."""
