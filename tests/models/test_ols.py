@@ -61,11 +61,12 @@ def test_ols_scaling():
     model.fit(y_train, X=X_train)
     forecasts = model.forecast(steps=len(y_test), X=X_test)
 
+    assert list(forecasts.columns) == ["date", "variable", "value"]
     beta = model.beta_
     assert np.isclose(beta[0], true_coef["cst"], atol=1e-8)
     assert np.isclose(beta[1], true_coef["b1"], atol=1e-8)
     assert np.isclose(beta[2], true_coef["b2"], atol=1e-8)
-    assert np.allclose(forecasts, y_test, atol=1e-8)
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=1e-8)
 
 
 def test_ols_recursive():
@@ -89,7 +90,7 @@ def test_ols_recursive():
     assert np.isclose(beta[0], true_coef["cst"], atol=1e-8)
     assert np.isclose(beta[1], true_coef["b1"], atol=1e-8)
     assert np.isclose(beta[2], true_coef["b2"], atol=1e-8)
-    assert np.allclose(forecasts, y_test, atol=1e-8)
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=1e-8)
 
 
 def test_ols_rejects_multiple_left_hand_side_variables():
@@ -244,7 +245,7 @@ def test_ols_recursive_intercept_only():
     forecasts = model.forecast(steps=2)
 
     expected = y["target"].mean()
-    assert np.allclose(forecasts["target"], expected)
+    assert np.allclose(forecasts["value"], expected)
 
 
 def test_ols_direct_intercept_only():
@@ -257,7 +258,7 @@ def test_ols_direct_intercept_only():
     forecasts = model.forecast(steps=3)
 
     expected = [model.betas_[h].reshape(-1)[0] for h in range(3)]
-    assert np.allclose(forecasts["target"], expected)
+    assert np.allclose(forecasts["value"], expected)
 
 
 def test_ols_direct_rejects_excessive_forecast_horizon():
@@ -329,7 +330,7 @@ def test_ols_recursive_with_ar():
     assert np.isclose(beta[1], true_coef["b1"], atol=1e-8)
     assert np.isclose(beta[2], true_coef["b2"], atol=1e-8)
     assert np.isclose(beta[3], true_coef["b_ar"], atol=1e-8)
-    assert np.allclose(forecasts, y_test, atol=1e-8)
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=1e-8)
 
 
 def test_ols_direct_h0():
@@ -357,7 +358,7 @@ def test_ols_direct_h0():
     assert np.isclose(beta[0], true_coef["cst"], atol=1e-8)
     assert np.isclose(beta[1], true_coef["b1"], atol=1e-8)
     assert np.isclose(beta[2], true_coef["b2"], atol=1e-8)
-    assert np.allclose(forecasts.iloc[0], y_test.iloc[0], atol=1e-8)
+    assert np.isclose(forecasts["value"].iloc[0], y_test.iloc[0, 0], atol=1e-8)
 
 
 def test_ols_direct_h1():
@@ -384,7 +385,9 @@ def test_ols_direct_h1():
     assert np.isclose(beta[0], true_coef["cst"], atol=1e-8)
     assert np.isclose(beta[1], true_coef["b1"], atol=1e-8)
     assert np.isclose(beta[2], true_coef["b2"], atol=1e-8)
-    assert np.allclose(forecasts.iloc[horizon], y_test.iloc[horizon], atol=1e-8)
+    assert np.isclose(
+        forecasts["value"].iloc[horizon], y_test.iloc[horizon, 0], atol=1e-8
+    )
 
 
 def test_ols_recursive_two_y_lags():
@@ -405,7 +408,7 @@ def test_ols_recursive_two_y_lags():
     assert np.isclose(beta[1], true_coef["b1"], atol=1e-8)
     assert np.isclose(beta[2], true_coef["a1"], atol=1e-8)
     assert np.isclose(beta[3], true_coef["a2"], atol=1e-8)
-    assert np.allclose(forecasts.values, y_test.values, atol=1e-8)
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=1e-8)
 
 
 def test_ols_recursive_four_y_lags():
@@ -427,7 +430,7 @@ def test_ols_recursive_four_y_lags():
     assert np.isclose(beta[3], true_coef["a2"], atol=1e-8)
     assert np.isclose(beta[4], true_coef["a3"], atol=1e-8)
     assert np.isclose(beta[5], true_coef["a4"], atol=1e-8)
-    assert np.allclose(forecasts.values, y_test.values, atol=1e-8)
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=1e-8)
 
 
 def test_ols_decomposition_two_y_lags_matches_forecast():
@@ -446,7 +449,7 @@ def test_ols_decomposition_two_y_lags_matches_forecast():
     n_components = decomps.shape[0] // steps
     totals = decomps["contribution"].values.reshape(steps, n_components).sum(axis=1)
 
-    assert np.allclose(totals, forecast.values.ravel(), atol=1e-8)
+    np.testing.assert_allclose(totals, forecast["value"].to_numpy(), atol=1e-8)
     assert np.allclose(totals, y_test.values.ravel(), atol=1e-8)
 
 
@@ -474,7 +477,7 @@ def test_ols_decomposition_recursive_reconstructs_forecast():
     # Check that contributions sum to forecast for each horizon
     for h in range(len(y_test)):
         decomp_sum = decomps.loc[decomps["forecast_horizon"] == h, "contribution"].sum()
-        np.testing.assert_allclose(decomp_sum, forecast.iloc[h, 0], atol=1e-9)
+        np.testing.assert_allclose(decomp_sum, forecast["value"].iloc[h], atol=1e-9)
 
 
 def test_ols_recursive_decomposition_ignores_surplus_forecast_rows():
@@ -498,7 +501,7 @@ def test_ols_recursive_decomposition_ignores_surplus_forecast_rows():
 
     assert decomp["forecast_horizon"].unique().tolist() == [0, 1]
     totals = decomp.groupby("forecast_horizon")["contribution"].sum()
-    np.testing.assert_allclose(totals.to_numpy(), forecast.iloc[:, 0], atol=1e-9)
+    np.testing.assert_allclose(totals.to_numpy(), forecast["value"], atol=1e-9)
 
 
 def test_ols_decomposition_direct_reconstructs_forecast():
@@ -529,7 +532,7 @@ def test_ols_decomposition_direct_reconstructs_forecast():
     # Check that contributions sum to forecast for each horizon
     for h in range(steps):
         decomp_sum = decomps.loc[decomps["forecast_horizon"] == h, "contribution"].sum()
-        np.testing.assert_allclose(decomp_sum, forecast.iloc[h, 0], atol=1e-9)
+        np.testing.assert_allclose(decomp_sum, forecast["value"].iloc[h], atol=1e-9)
 
 
 def test_ols_direct_decomposition_uses_first_forecast_row():
@@ -562,7 +565,7 @@ def test_ols_direct_decomposition_uses_first_forecast_row():
             horizon_decomp["contribution"], expected_contributions, atol=1e-9
         )
         np.testing.assert_allclose(
-            horizon_decomp["contribution"].sum(), forecast.iloc[h, 0], atol=1e-9
+            horizon_decomp["contribution"].sum(), forecast["value"].iloc[h], atol=1e-9
         )
 
 
@@ -585,7 +588,7 @@ def test_ols_recursive_lag_decomposition_labels_each_horizon():
     for h in range(len(y_test)):
         horizon_decomp = decomp[decomp["forecast_horizon"] == h]
         np.testing.assert_allclose(
-            horizon_decomp["contribution"].sum(), forecast.iloc[h, 0], atol=1e-9
+            horizon_decomp["contribution"].sum(), forecast["value"].iloc[h], atol=1e-9
         )
 
 
@@ -635,7 +638,7 @@ def test_ols_dummy_absorbs_outlier():
 
     # Forecasts on clean test data are exact (the dummy is zero over the horizon).
     forecasts = model.forecast(steps=len(y_test), X=X_test)
-    np.testing.assert_allclose(forecasts.values.ravel(), y_test.values.ravel(), atol=1e-8)
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=1e-8)
 
 
 def test_ols_dummy_with_scaling_recovers_coefs():
@@ -676,7 +679,7 @@ def test_ols_dummy_with_scaling_recovers_coefs():
     assert np.isclose(beta[cols.index(dummy_name)], outlier_size, atol=1e-8)
 
     forecasts = model.forecast(steps=len(y_test), X=X_test)
-    np.testing.assert_allclose(forecasts.values.ravel(), y_test.values.ravel(), atol=1e-8)
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=1e-8)
 
     """Each dummy date gets its own design column and coefficient.
 
@@ -764,7 +767,7 @@ def test_ols_all_zero_dummy_dropped():
 
     # Forecast still runs and matches truth (design stays aligned with fit).
     forecasts = model.forecast(steps=len(y_test), X=X_test)
-    np.testing.assert_allclose(forecasts.values.ravel(), y_test.values.ravel(), atol=1e-8)
+    np.testing.assert_allclose(forecasts["value"], y_test.to_numpy().ravel(), atol=1e-8)
 
 
 def test_ols_formula_selects_dummies():
@@ -801,7 +804,7 @@ def test_ols_formula_selects_dummies():
     # Forecast design stays aligned with the fitted design.
     forecasts = model.forecast(steps=len(y_test), X=X_test)
     assert len(forecasts) == len(y_test)
-    assert np.isfinite(forecasts.values).all()
+    assert np.isfinite(forecasts["value"]).all()
 
 
 # ============================================================================
@@ -875,7 +878,9 @@ def test_forecast_fewer_future_rows_than_steps_ok_direct():
     forecasts = model.forecast(steps=steps, X=X_test.iloc[:1])
 
     assert len(forecasts) == steps
-    np.testing.assert_allclose(forecasts.iloc[horizon], y_test.iloc[horizon], atol=1e-8)
+    assert np.isclose(
+        forecasts["value"].iloc[horizon], y_test.iloc[horizon, 0], atol=1e-8
+    )
 
 
 def test_forecast_exactly_steps_future_rows_ok_recursive():
@@ -897,7 +902,7 @@ def test_forecast_exactly_steps_future_rows_ok_recursive():
 
     assert len(forecasts) == steps
     np.testing.assert_allclose(
-        forecasts.values.ravel(), y_test.iloc[:steps, 0].values, atol=1e-8
+        forecasts["value"], y_test.iloc[:steps, 0].values, atol=1e-8
     )
 
 
@@ -922,7 +927,9 @@ def test_forecast_exactly_steps_future_rows_ok_direct():
     forecasts = model.forecast(steps=steps, X=X_test.iloc[:steps])
 
     assert len(forecasts) == steps
-    np.testing.assert_allclose(forecasts.iloc[horizon], y_test.iloc[horizon], atol=1e-8)
+    assert np.isclose(
+        forecasts["value"].iloc[horizon], y_test.iloc[horizon, 0], atol=1e-8
+    )
 
 
 def test_fitted_values_recovers_insample():

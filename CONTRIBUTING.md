@@ -51,7 +51,7 @@ When the public API changes, update its exports and docstrings; the hooks genera
 
 `ModelData` is the private consolidation point for labelled observations,
 provenance, conditioning paths, and archive selection. Keep the public
-`fit()`, `forecast()`, `predict()`, and `ForecastContext` interfaces stable,
+`fit()`, `forecast()`, and `ForecastContext` interfaces stable,
 including the DataFrame-based preparation and model hooks
 `_prepare_fit_inputs()`, `_prepare_forecast_inputs()`,
 `_prepare_estimation_inputs()`, `_fit()`, `_forecast()`, and
@@ -74,8 +74,8 @@ The following private removals are deliberate: `RawInputBundle`,
 `InputMetricMapping`, `PreparedModelInputs`, and `ResolvedTransformationPlan`;
 the changed `ForecastTask` shape; and the operation wrappers formerly on
 `FittedDataTransformation`. Do not use these names as extension points.
-`DataTransformationPipeline` and the module helpers remain import-compatible
-adapters where existing internal integrations need them.
+The private `_data_transformation.py` module contains the pipeline and helpers;
+they are internal implementation details, not extension points.
 
 ## 3. Behavioural decisions
 
@@ -89,6 +89,21 @@ multivariate synthetic metrics are resolved per column.
 one complete vintage batch per model to retain revision continuity. Run tests in
 the `forecast-realtime` conda environment with `pytest -n auto`; this work
 does not add a runtime dependency.
+
+Direct `ForecastModel.forecast()` calls return validated
+`ForecastResult` objects. The constructor validates and orders the long
+payload, which has a `RangeIndex` and the columns `date`, `variable`, and
+`value`; quantile results add `quantile`. Point forecasts may use custom dates;
+quantile forecasts require an explicit requested calendar. The original result
+retains `.forecast`, `.forecast_origin`, and `.decomposition`, while slices and
+copies return ordinary DataFrames without result metadata.
+
+This change does not alter model hooks: `_fit()`, `_forecast()`, and
+`_forecast_decomp()` keep their existing array and wide DataFrame contracts.
+The existing preparation hooks remain supported as well. Fitting inputs,
+conditioning inputs, fitted values, tree callables, and realtime storage remain
+stable. Replacing public `forecast()` orchestration is not a supported model
+extension point.
 
 ## 4. Code
 

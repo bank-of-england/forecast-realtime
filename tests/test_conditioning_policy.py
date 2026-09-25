@@ -6,16 +6,14 @@ from dataclasses import FrozenInstanceError
 import numpy as np
 import pytest
 
-from forecast_realtime.external_model import ExternalModel
-from forecast_realtime.forecast_model import (
-    ForecastModel,
+from forecast_realtime._conditioning import (
     _ConditioningPolicy,
     _parse_conditioning,
-)
-from forecast_realtime.real_time_model import (
     _resolve_conditioning,
     _validate_conditioning,
 )
+from forecast_realtime.external_model import ExternalModel
+from forecast_realtime.forecast_model import ForecastModel
 
 
 class _ConditioningModel(ForecastModel):

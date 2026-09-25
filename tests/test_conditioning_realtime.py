@@ -19,12 +19,7 @@ class EchoAdditiveModel(ForecastModel):
         return self
 
     def _forecast(self, steps, X=None, y=None, **kwargs):
-        forecast_dates = self._infer_forecast_dates(
-            (y if y is not None else X).index,
-            steps,
-            frequency=self._forecast_frequency,
-            start=kwargs["forecast_origin"],
-        )
+        forecast_dates = self._forecast_dates(kwargs["forecast_origin"], steps)
 
         def requested(frame):
             return frame.reindex(forecast_dates)
@@ -39,12 +34,7 @@ class EchoAdditiveModel(ForecastModel):
         return result
 
     def _forecast_decomp(self, steps, X=None, y=None, **kwargs):
-        forecast_dates = self._infer_forecast_dates(
-            (y if y is not None else X).index,
-            steps,
-            frequency=self._forecast_frequency,
-            start=kwargs["forecast_origin"],
-        )
+        forecast_dates = self._forecast_dates(kwargs["forecast_origin"], steps)
 
         def requested(frame):
             return frame.reindex(forecast_dates)
@@ -211,17 +201,6 @@ def _run(data, models, **kwargs):
         steps=3,
         first_forecast_horizon=0,
         **options,
-    )
-
-
-def _values(model):
-    """Return the newly published compact forecast values by source."""
-    return (
-        model.data.forecasts.query("source in ['left', 'right', 'EchoAdditiveModel']")
-        .sort_values(["source", "variable", "date"])[
-            ["source", "variable", "date", "forecast_horizon", "value"]
-        ]
-        .reset_index(drop=True)
     )
 
 
@@ -558,6 +537,11 @@ def test_real_bvar_uses_actual_conditional_horizons(sample_realtime_ragged, requ
     constraint.iloc[:, 0] = y.iloc[-1, 0]
     plain = plain_model.forecast(steps=horizon)
     constrained = constrained_model.forecast(steps=horizon, y=constraint)
-    assert list(constrained.index) == list(dates)
-    assert constrained.shape == (horizon, 2)
-    assert not np.allclose(plain.iloc[:, 0], constrained.iloc[:, 0])
+    assert constrained["date"].drop_duplicates().tolist() == list(dates)
+    assert len(constrained) == horizon * 2
+    assert list(constrained.columns) == ["date", "variable", "value"]
+    plain_target = plain.loc[plain["variable"] == "quarterly_1", "value"]
+    constrained_target = constrained.loc[
+        constrained["variable"] == "quarterly_1", "value"
+    ]
+    assert not np.allclose(plain_target, constrained_target)

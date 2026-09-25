@@ -118,7 +118,7 @@ date
 
 ---
 
-### `_forecast(steps, X=None, y=None, **kwargs)` — Forecasting
+### `_forecast(steps, X=None, y=None, quantiles=None, **kwargs)` — Forecasting
 
 Produce multi-step-ahead forecasts using the fitted model. This method is called after `_fit()` and should return predicted values for the next `steps` periods. Each row of the output corresponds to a forecast horizon; row 0 is the first forecast row, row 1 is the next row, and so on.
 
@@ -129,9 +129,10 @@ Produce multi-step-ahead forecasts using the fitted model. This method is called
 | `steps` | `int` | Number of periods ahead to forecast (always ≥ 1). |
 | `X` | `pd.DataFrame` or `None` | Prepared design over history and any supplied forecast conditioning, indexed by a `DatetimeIndex`. Select forecast rows by date or forecast origin; they are not guaranteed to be the final `steps` rows. Column order matches the `X` passed to `_fit`. `None` when omitted; lag or dummy settings may still create a design. |
 | `y` | `pd.DataFrame` or `None` | Prepared target history plus conditioning paths over the horizon when conditioning is supplied, indexed by a `DatetimeIndex`. With an explicit transformation, `y` includes prepared history even without conditioning; with implicit identity, it may be `None` when no conditioning is supplied. Column order matches the `y` passed to `_fit`. Non-missing future values provide conditioning; `NaN` values are unconstrained. |
+| `quantiles` | `tuple[float, ...]` or `None` | `None` requests the point payload. A tuple requests native-metric quantiles for the sorted probabilities supplied to the public call. |
 | `**kwargs` | | Additional keyword arguments. |
 
-**Output:**
+**Hook output:**
 
 Must return either a `pd.DataFrame` or an array-like object of shape `(steps, n_y_variables)`:
 - **Index:** a supplied `pd.DataFrame` must have its own `pd.DatetimeIndex` of length `steps`, one date per horizon. For an array-like result, the base class supplies standard dates from the effective forecast origin. By default, the first date is one period after that origin. Mixed-frequency models (e.g. MIDAS) can build a DataFrame with their own anchor dates.
@@ -140,6 +141,10 @@ Must return either a `pd.DataFrame` or an array-like object of shape `(steps, n_
 - Values must be in the metric declared by the model's `data_transformation`
     (or the call-level fallback). `RealTimeModel` handles back-transformation to
     levels automatically; model code must not back-transform its own output.
+
+The hook keeps this array or wide-DataFrame contract. `ForecastModel` converts
+the payload to the public long form, then constructs a `ForecastResult`, whose
+constructor performs the final validation.
 
 **Example output for `steps=4`, 1 variable:**
 
@@ -161,6 +166,82 @@ pd.DataFrame(
 )  # shape: (4, 2)
 ```
 
+#### Public point results
+
+Public `forecast()` calls return a DataFrame-compatible
+`ForecastResult` with a `RangeIndex` and the long columns `date`, `variable`,
+and `value`. Rows are ordered by date and fitted target order. The result keeps
+`forecast_origin` and `decomposition` as metadata, while `.forecast` returns
+the same long payload as an ordinary DataFrame.
+
+`ForecastResult` validates and orders the payload at construction. Its
+signature is:
+
+```python
+ForecastResult(
+    forecast,
+    *,
+    expected_columns,
+    steps,
+    forecast_origin,
+    decomposition=None,
+    quantiles=False,
+    forecast_dates_include_origin=False,
+)
+```
+
+Point and quantile results may use a custom calendar supplied by the hook,
+subject to the step count and forecast-origin rules. Quantile probabilities
+within float noise of a requested probability are replaced by it. The original
+result retains `.forecast`, `.forecast_origin`, and `.decomposition`; slices and
+copies return ordinary DataFrames without result metadata. Validation occurs at
+construction, not after later mutation.
+
+Use an explicit pivot when a downstream calculation needs a wide point matrix:
+
+```python
+point_result = model.forecast(steps=4)
+point_matrix = point_result.pivot(
+    index="date",
+    columns="variable",
+    values="value",
+)
+```
+
+Model extensions implement `_fit()`, `_forecast()`, and the optional
+`_forecast_decomp()` hooks, together with the existing preparation hooks.
+Replacing public `forecast()` orchestration is not a supported extension point.
+
+#### Quantile forecasts
+
+Opt in explicitly by setting `_supports_quantiles = True` on the model class.
+The default is `False`, so the base class rejects quantile requests for models
+that have not implemented this contract. The public `quantiles=False` becomes
+`None` here; `True` becomes `(0.16, 0.5, 0.84)`, and a supplied sequence arrives
+as sorted, distinct, finite probabilities between 0 and 1.
+
+When `quantiles` is not `None`, return one `pd.DataFrame` with exactly these
+columns:
+
+```text
+date, variable, quantile, value
+```
+
+Return one row for every requested date, fitted target variable, and
+probability. Values must be finite, and the quantiles for each date and
+variable must not cross. Result construction checks the columns, complete
+coverage, unique keys, finite values, and ordering, then wraps the table in a
+single `ForecastResult`. Do not return a point forecast alongside the quantile
+table.
+
+The quantile table uses the model's native forecast metric. A model may compute
+quantiles analytically or summarise joint paths privately, but predictive draws
+are not part of the public model contract and must not be returned or stored.
+
+The public quantile `ForecastResult` keeps a `RangeIndex` and the same column
+order shown above. It contains only the requested quantile rows, not a point
+forecast alongside them.
+
 The base class validates the returned shape and the number of target columns. A returned DataFrame must supply a `DatetimeIndex`; array-like results receive the standard forecast dates when the base class wraps them.
 
 ### Target conditioning capability
@@ -179,18 +260,18 @@ argument to `ForecastModel`, but must not pass it as an estimator or script
 parameter. Source policies do not create constrained forecasting for a
 model that has not opted in.
 
-### `ForecastContext` migration
+### `ForecastContext` data
 
-Public `forecast()` and `predict()` overrides that inspect `ForecastContext`
-must keep explicit constraints and published observations separate:
+Preparation logic that inspects `ForecastContext` must keep explicit constraints
+and published observations separate:
 
 - `context.y_conditioning` contains only explicit caller-supplied target
     constraints, with `y_conditioning_input_metrics` for their input units.
 - `context.y_published` contains published target observations retained for the
     forecast, with `y_published_input_metrics` for their input units.
 
-Use `y_published` when an override needs ordinary published observations. Do
-not read those observations from `y_conditioning` or merge the two frames at
+Use `y_published` when preparation logic needs ordinary published observations.
+Do not read those observations from `y_conditioning` or merge the two frames at
 the context boundary; the preparation pipeline combines them after validation.
 This preserves explicit constraints even when a later transformation produces
 NaNs.
@@ -203,7 +284,7 @@ update it as part of the release handoff rather than adding a local copy here.
 
 ## Data and Extension Boundary
 
-Model authors use the public `fit()`, `forecast()`, `predict()`, and
+Model authors use the public `fit()`, `forecast()`, and
 `ForecastContext` interfaces. The existing DataFrame contracts for
 `_prepare_fit_inputs()`, `_prepare_forecast_inputs()`,
 `_prepare_estimation_inputs()`, `_fit()`, `_forecast()`, and
@@ -564,6 +645,10 @@ language, but this does not sandbox the script or its parameters. Fable
 `forecast(model, steps, X, y, params)` returns a data frame or matrix. The
 argument order mirrors `ForecastModel._fit` and `_forecast`, with `model`
 standing in for `self` and `params` for `**kwargs`.
+
+The external forecast function returns the model hook payload, so point output
+may remain an array or wide table here. The Python wrapper converts it to the
+public long `ForecastResult` contract, whose constructor validates the result.
 
 The inputs follow the Python forecasting contract above. Supplied `X` can
 contain prepared history and conditioning, not just one row per forecast step.

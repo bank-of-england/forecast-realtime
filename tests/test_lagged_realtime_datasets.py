@@ -539,7 +539,7 @@ def test_realtime_bridge_ols_mixed_frequency_quarterly_target(mixed_frequency_ou
     assert model_forecasts["forecast_horizon"].tolist() == [0, 1]
     np.testing.assert_allclose(
         model_forecasts["value"].to_numpy(),
-        manual_forecast.to_numpy().ravel(),
+        manual_forecast["value"].to_numpy(),
         atol=1e-8,
     )
 
@@ -624,7 +624,7 @@ def test_realtime_bridge_ols_respects_publication_lags(mixed_frequency_outturns)
 
     np.testing.assert_allclose(
         imputed_forecast["value"].to_numpy(),
-        manual_forecast.to_numpy().ravel(),
+        manual_forecast["value"].to_numpy(),
         atol=1e-8,
     )
 

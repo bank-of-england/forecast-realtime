@@ -12,8 +12,8 @@ from forecast_evaluation import ForecastData
 
 import forecast_realtime as rt
 import forecast_realtime._model_data as model_data
+from forecast_realtime._data_transformation import DataTransformationPipeline
 from forecast_realtime._utils import impute_X
-from forecast_realtime.data_transformation import DataTransformationPipeline
 from forecast_realtime.forecast_model import ForecastModel
 from forecast_realtime.forecast_tree import ForecastTree, TreeNode
 
@@ -34,24 +34,41 @@ class _RecordingModel(ForecastModel):
         return np.zeros((steps, len(self.y.columns)))
 
 
-class _PublicOverrideModel(_RecordingModel):
-    """Record calls to public ``fit`` and ``forecast`` before delegation."""
+class _FitRecordingModel(_RecordingModel):
+    """Record calls to public fit before delegation."""
 
     fit_calls = []
-    forecast_calls = []
-    predict_calls = []
 
     def fit(self, *args, **kwargs):
         type(self).fit_calls.append(1)
         return super().fit(*args, **kwargs)
 
-    def forecast(self, *args, **kwargs):
-        type(self).forecast_calls.append(1)
-        return super().forecast(*args, **kwargs)
 
-    def predict(self, *args, **kwargs):
-        type(self).predict_calls.append(1)
-        return super().predict(*args, **kwargs)
+@pytest.fixture
+def result_constructions(monkeypatch):
+    results = []
+    original = rt.ForecastResult.__init__
+
+    def record(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        results.append(self)
+
+    monkeypatch.setattr(rt.ForecastResult, "__init__", record)
+    return results
+
+
+@pytest.mark.parametrize("boundary", ["forecast", "context"])
+@pytest.mark.parametrize("quantiles", [False, True])
+def test_prediction_constructs_one_result(boundary, quantiles, result_constructions):
+    history = _monthly_y([1.0, 2.0, 4.0, 3.0])
+    model = rt.models.ForecastOLS().fit(history)
+    context = rt.ForecastContext(history, None, forecast_origin=history.index[-1])
+    if boundary == "forecast":
+        result = model.forecast(steps=2, quantiles=quantiles)
+    elif boundary == "context":
+        result = model.forecast(steps=2, context=context, quantiles=quantiles)
+    assert len(result_constructions) == 1
+    assert result_constructions[0] is result
 
 
 def _monthly_y(values, start="2020-01-31"):
@@ -106,7 +123,9 @@ def test_direct_daily_inputs_without_transformation_round_trip():
     model.fit(pd.DataFrame({"target": [1.0, 2.0, 3.0]}, index=index))
     result = model.forecast(steps=2)
 
-    assert result.index.equals(pd.date_range("2020-01-04", periods=2, freq="D"))
+    assert result["date"].equals(
+        pd.Series(pd.date_range("2020-01-04", periods=2, freq="D"))
+    )
 
 
 def test_period_index_direct_fit_and_forecast_but_not_explicit_transformation():
@@ -116,7 +135,9 @@ def test_period_index_direct_fit_and_forecast_but_not_explicit_transformation():
     model.fit(pd.DataFrame({"target": [1.0, 2.0, 3.0]}, index=index))
     result = model.forecast(steps=2)
 
-    assert result.index.equals(pd.DatetimeIndex(["2020-12-31", "2021-03-31"]))
+    assert result["date"].equals(
+        pd.Series(pd.DatetimeIndex(["2020-12-31", "2021-03-31"]))
+    )
 
     with pytest.raises(ValueError, match="DatetimeIndex"):
         _RecordingModel().fit(
@@ -236,10 +257,8 @@ def test_ar1_t_imputation_consumes_one_seeded_rng_in_declared_column_order(monke
     pd.testing.assert_frame_equal(first, second)
 
 
-def test_realtime_reaches_public_fit_and_predict_not_forecast():
-    _PublicOverrideModel.fit_calls = []
-    _PublicOverrideModel.forecast_calls = []
-    _PublicOverrideModel.predict_calls = []
+def test_realtime_constructs_one_result_per_vintage(result_constructions):
+    _FitRecordingModel.fit_calls = []
     vintage = pd.Timestamp("2020-03-31")
     outturns = pd.DataFrame(
         {
@@ -253,7 +272,7 @@ def test_realtime_reaches_public_fit_and_predict_not_forecast():
     )
     realtime = rt.RealTimeModel(
         data=ForecastData(outturns_data=outturns, compute_levels=False, data_check=False),
-        models=_PublicOverrideModel(),
+        models=_FitRecordingModel(),
     )
 
     realtime.forecast(
@@ -265,15 +284,13 @@ def test_realtime_reaches_public_fit_and_predict_not_forecast():
         last_vintage=str(vintage.date()),
     )
 
-    assert _PublicOverrideModel.fit_calls
-    assert _PublicOverrideModel.predict_calls
-    assert not _PublicOverrideModel.forecast_calls
+    assert _FitRecordingModel.fit_calls
+    assert len(result_constructions) == 1
 
 
-def test_forecast_tree_reaches_component_public_fit_and_forecast_overrides():
-    _PublicOverrideModel.fit_calls = []
-    _PublicOverrideModel.forecast_calls = []
-    leaf = _PublicOverrideModel(label="leaf")
+def test_forecast_tree_constructs_one_result_per_model(result_constructions):
+    _FitRecordingModel.fit_calls = []
+    leaf = _FitRecordingModel(label="leaf")
     tree = ForecastTree(
         TreeNode(
             transform=lambda components: next(iter(components.values())),
@@ -287,5 +304,5 @@ def test_forecast_tree_reaches_component_public_fit_and_forecast_overrides():
     tree.fit(y)
     tree.forecast(steps=1)
 
-    assert _PublicOverrideModel.fit_calls
-    assert _PublicOverrideModel.forecast_calls
+    assert _FitRecordingModel.fit_calls
+    assert len(result_constructions) == 2

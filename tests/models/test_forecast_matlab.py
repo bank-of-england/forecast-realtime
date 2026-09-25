@@ -43,8 +43,9 @@ def test_forecast_matlab_lm(fitted_model):
     fc = fitted_model.forecast(steps=4)
 
     assert isinstance(fc, pd.DataFrame)
-    assert fc.shape == (4, 1)
-    assert not fc.isna().any().any()
+    assert len(fc) == 4
+    assert list(fc.columns) == ["date", "variable", "value"]
+    assert not fc["value"].isna().any()
 
 
 @requires_matlab
@@ -80,11 +81,11 @@ def test_forecast_matlab_uses_future_regressor_rows():
 
     model = MATLABModel(_MATLAB_SCRIPT, subprocess_timeout=_TIMEOUT)
     model.fit(y, X=X_train)
-    baseline = model.forecast(steps=4, X=X_all).to_numpy()
+    baseline = model.forecast(steps=4, X=X_all)["value"].to_numpy()
 
     changed_X = X_all.copy()
     changed_X.iloc[-4:, 0] += 100.0
-    changed = model.forecast(steps=4, X=changed_X).to_numpy()
+    changed = model.forecast(steps=4, X=changed_X)["value"].to_numpy()
 
     assert not np.allclose(baseline, changed)
 

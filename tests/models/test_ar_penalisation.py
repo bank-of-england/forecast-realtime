@@ -232,7 +232,7 @@ def test_internal_cv_matches_training_fold_reference(
     result = model.forecast(steps=2, X=X, decomp=True)
     np.testing.assert_allclose(
         result.decomposition.groupby("forecast_horizon")["contribution"].sum(),
-        result.iloc[:, 0],
+        result["value"],
         atol=1e-9,
     )
 
@@ -445,7 +445,7 @@ def test_collinear_penalised_column_is_zero(ar_data, model_class, cv):
     )
     forecast = model.forecast(steps=1, X=future)
     expected = model.beta_[0, 0] + model.beta_[names.index("y_lag1"), 0] * y.iloc[-1, 0]
-    np.testing.assert_allclose(forecast.iloc[0, 0], expected)
+    np.testing.assert_allclose(forecast["value"].iloc[0], expected)
 
 
 @pytest.mark.parametrize("model_class", REGULARISED)
@@ -644,6 +644,6 @@ def test_raw_fitted_values_forecasts_and_decomposition(
         expected.append(value)
         if strategy == "recursive":
             recent = [value, recent[0]]
-    np.testing.assert_allclose(result.iloc[:, 0], expected, atol=1e-10)
+    np.testing.assert_allclose(result["value"], expected, atol=1e-10)
     totals = result.decomposition.groupby("forecast_horizon")["contribution"].sum()
     np.testing.assert_allclose(totals, expected, atol=1e-10)

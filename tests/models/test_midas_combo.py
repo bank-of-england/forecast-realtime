@@ -83,7 +83,7 @@ def test_midas_combo_native_fit_and_forecast():
     wrapper_forecasts = wrapper.forecast(steps=horizons)
 
     np.testing.assert_allclose(
-        native_forecasts, wrapper_forecasts.values, rtol=1e-5, atol=1e-5
+        native_forecasts.ravel(), wrapper_forecasts["value"], rtol=1e-5, atol=1e-5
     )
 
 

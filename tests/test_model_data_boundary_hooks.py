@@ -13,22 +13,17 @@ from forecast_realtime.forecast_tree import ForecastTree, TreeNode
 
 
 class _BoundaryModel(ForecastModel):
-    validation_calls = 0
+    fit_calls = 0
 
-    def __init__(self, *args, fail_validation=False, **kwargs):
+    def __init__(self, *args, fail_fit=False, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fail_validation = fail_validation
-
-    def _validate_fit_inputs(self, y, X):
-        type(self).validation_calls += 1
-        self.validation_marker = "candidate"
-        y.iloc[0, 0] = -999.0
-        if self.fail_validation:
-            raise RuntimeError("validation hook failed")
-        return y, X
+        self.fail_fit = fail_fit
 
     def _fit(self, y, X=None, **kwargs):
+        type(self).fit_calls += 1
         self.fitted_values_ = y.copy()
+        if self.fail_fit:
+            raise RuntimeError("fit hook failed")
         return self
 
     def _forecast(self, steps=1, X=None, y=None, **kwargs):
@@ -80,22 +75,6 @@ class _LogFitOverride(_RecordingModel):
     def _fit(self, y, X=None, **kwargs):
         type(self).fits.append((y.copy(), X.copy(), self._raw_data))
         return super()._fit(y, X, **kwargs)
-
-
-class _ContextOverrideModel(_RecordingModel):
-    def __init__(self, *args, replacement=False, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.replacement = replacement
-
-    def predict(self, context, *args, **kwargs):
-        if self.replacement:
-            context = replace(
-                context,
-                y_conditioning=context.y_conditioning.assign(target=888.0),
-            )
-        else:
-            context.y_conditioning.loc[:, "target"] = 777.0
-        return super().predict(context, *args, **kwargs)
 
 
 def _monthly_y(values, start="2020-01-31"):
@@ -185,29 +164,27 @@ def test_realtime_formula_skips_unselected_X_conditioning_sources():
     )
 
 
-def test_failed_validation_hook_isolated_from_fitted_model_and_model_data():
+def test_failed_fit_hook_isolated_from_fitted_model_and_model_data():
     source = _monthly_y([100.0, 110.0, 121.0])
     model = _BoundaryModel()
-    _BoundaryModel.validation_calls = 0
+    _BoundaryModel.fit_calls = 0
     model.fit(source)
-    model.validation_marker = "published"
     fitted_before = model.fitted_values_.copy()
     shared = ModelData.from_wide(y=source)
 
-    model.fail_validation = True
-    with pytest.raises(RuntimeError, match="validation hook failed"):
+    model.fail_fit = True
+    with pytest.raises(RuntimeError, match="fit hook failed"):
         model._fit_from_data(shared)
 
-    assert _BoundaryModel.validation_calls == 2
-    assert model.validation_marker == "published"
+    assert _BoundaryModel.fit_calls == 2
     pd.testing.assert_frame_equal(model.fitted_values_, fitted_before)
     pd.testing.assert_frame_equal(shared.to_wide("y"), source)
     pd.testing.assert_frame_equal(source, _monthly_y([100.0, 110.0, 121.0]))
 
 
-def test_validation_hook_is_reached_once_through_realtime_and_tree_paths():
+def test_fit_hook_is_reached_once_through_realtime_and_tree_paths():
     realtime_data, vintage = _realtime_data()
-    _BoundaryModel.validation_calls = 0
+    _BoundaryModel.fit_calls = 0
     rt.RealTimeModel(data=realtime_data, models=_BoundaryModel()).forecast(
         y_variables=["target"],
         data_transformation={"target": "levels"},
@@ -216,9 +193,9 @@ def test_validation_hook_is_reached_once_through_realtime_and_tree_paths():
         first_vintage=str(vintage.date()),
         last_vintage=str(vintage.date()),
     )
-    assert _BoundaryModel.validation_calls == 1
+    assert _BoundaryModel.fit_calls == 1
 
-    _BoundaryModel.validation_calls = 0
+    _BoundaryModel.fit_calls = 0
     tree = ForecastTree(
         TreeNode(
             transform=lambda components: next(iter(components.values())),
@@ -228,7 +205,7 @@ def test_validation_hook_is_reached_once_through_realtime_and_tree_paths():
         )
     )
     tree.fit(_monthly_y([100.0, 110.0, 121.0]))
-    assert _BoundaryModel.validation_calls == 1
+    assert _BoundaryModel.fit_calls == 1
 
 
 @pytest.mark.parametrize("boundary", ["direct", "tree", "realtime"])
@@ -308,13 +285,10 @@ def test_public_fit_override_preserves_changed_units_and_calendars(
     pd.testing.assert_frame_equal(X, y.rename(columns={"target": "feature"}) * 2)
 
 
-def test_public_fit_and_validation_hooks_retain_component_provenance():
+def test_public_fit_override_retains_component_provenance():
     class HookModel(_RecordingModel):
         def fit(self, y, X=None, **kwargs):
             return super().fit(y, X, **kwargs)
-
-        def _validate_fit_inputs(self, y, X):
-            return super()._validate_fit_inputs(y, X)
 
     history = _monthly_y([10.0, 20.0, 30.0])
     components = np.log(history)
@@ -352,10 +326,10 @@ def test_direct_fit_resolves_step_from_supplied_target_calendar(mapping, calenda
     model.fit(y, input_frequencies={"target": calendar})
     result = model.forecast(steps=1)
 
-    assert model._fitted_model_configuration.data_transformation.frequency == calendar
+    assert model._fitted_model_configuration.design.frequency == calendar
     pd.testing.assert_frame_equal(model.fitted_values_.dropna(), y, check_freq=False)
     expected_date = (pd.Period(y.index[-1], freq=calendar) + 1).end_time.normalize()
-    assert result.index[0] == expected_date
+    assert result["date"].iloc[0] == expected_date
 
 
 def test_inferred_series_calendar_does_not_replace_the_forecast_step():
@@ -365,10 +339,10 @@ def test_inferred_series_calendar_does_not_replace_the_forecast_step():
     model = _RecordingModel(data_transformation={"target": "diff"}).fit(history)
 
     assert model._raw_data.frequencies("y") == {"target": "Q"}
-    assert model._fitted_model_configuration.data_transformation.frequency == "M"
+    assert model._fitted_model_configuration.design.frequency == "M"
 
 
-@pytest.mark.parametrize("boundary", ["forecast", "predict", "internal"])
+@pytest.mark.parametrize("boundary", ["forecast", "context", "internal"])
 @pytest.mark.parametrize("replace_context", [False, True])
 def test_tree_forecast_hook_preserves_context_and_conditioning(boundary, replace_context):
     class ContextTree(ForecastTree):
@@ -422,10 +396,10 @@ def test_tree_forecast_hook_preserves_context_and_conditioning(boundary, replace
         result = tree.forecast(
             steps=2, y=conditioning, X=X_conditioning, decomp=True, marker="forwarded"
         )
-    elif boundary == "predict":
-        result = tree.predict(context, steps=2, decomp=True, marker="forwarded")
+    elif boundary == "context":
+        result = tree.forecast(context=context, steps=2, decomp=True, marker="forwarded")
     else:
-        result = tree._predict_from_data(
+        result = tree._predict_data(
             ModelData.from_context(context, tree._raw_data),
             forecast_origin=context.forecast_origin,
             steps=2,
@@ -434,7 +408,7 @@ def test_tree_forecast_hook_preserves_context_and_conditioning(boundary, replace
         )
 
     assert tree.hook_calls == 1
-    assert result.index.equals(conditioning.index)
+    assert result["date"].drop_duplicates().tolist() == conditioning.index.tolist()
     expected_hook_y = conditioning.assign(target=777.0)
     expected_hook_X = X_conditioning.assign(feature=888.0)
     pd.testing.assert_frame_equal(tree.hook_y, expected_hook_y)
@@ -476,22 +450,10 @@ def test_tree_forecast_preserves_the_public_context_position(positional_context)
         else tree.forecast(steps=2, context=context)
     )
 
-    assert result.forecast.index.equals(conditioning.index)
-    assert leaf.received_forecast_y is None
-
-
-@pytest.mark.parametrize("replacement", [False, True])
-def test_public_predict_override_preserves_context_changes(replacement):
-    model = _ContextOverrideModel(replacement=replacement)
-    model.fit(_monthly_y([100.0, 110.0, 121.0]))
-    conditioning = _monthly_y([130.0], start="2020-04-30")
-
-    model.forecast(steps=1, y=conditioning)
-
-    assert model.received_forecast_y.loc[pd.Timestamp("2020-04-30"), "target"] == (
-        888.0 if replacement else 777.0
+    assert result.forecast["date"].drop_duplicates().tolist() == (
+        conditioning.index.tolist()
     )
-    assert conditioning.loc[pd.Timestamp("2020-04-30"), "target"] == 130.0
+    assert leaf.received_forecast_y is None
 
 
 def test_forecast_context_exposes_published_paths_and_reconciles_native_conditioning():
@@ -536,7 +498,7 @@ def test_forecast_context_exposes_published_paths_and_reconciles_native_conditio
 
     model = _RecordingModel(data_transformation={"target": "pop"})
     model.fit(fit_history, frequency="M")
-    model.predict(context, steps=2)
+    model.forecast(context=context, steps=2)
     pd.testing.assert_frame_equal(
         model.received_forecast_y.loc[native_future.index], native_future
     )
@@ -631,7 +593,9 @@ def test_mapping_free_daily_fit_and_forecast_remain_supported():
     result.fit(daily)
     forecast = result.forecast(steps=2)
 
-    assert forecast.index.equals(pd.date_range("2020-01-04", periods=2, freq="D"))
+    assert forecast["date"].equals(
+        pd.Series(pd.date_range("2020-01-04", periods=2, freq="D"))
+    )
 
 
 def test_public_model_signatures_and_context_shape_remain_stable():
@@ -661,18 +625,12 @@ def test_public_model_signatures_and_context_shape_remain_stable():
         "frequency",
         "X_imputation",
         "context",
+        "quantiles",
         "kwargs",
     )
-    assert tuple(inspect.signature(ForecastModel.predict).parameters) == (
-        "self",
-        "context",
-        "steps",
-        "decomp",
-        "data_transformation",
-        "frequency",
-        "X_imputation",
-        "kwargs",
-    )
+    parameter = inspect.signature(ForecastModel.forecast).parameters["quantiles"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is False
     assert tuple(inspect.signature(ForecastTree.forecast).parameters) == (
         "self",
         "steps",

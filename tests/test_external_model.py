@@ -93,7 +93,7 @@ def _fit_and_report(payload):
     model, y = payload
     model.fit(y)
     fc = model.forecast(steps=2)
-    return str(model.cache_dir), float(fc.values[0, 0])
+    return str(model.cache_dir), float(fc["value"].iloc[0])
 
 
 @pytest.fixture

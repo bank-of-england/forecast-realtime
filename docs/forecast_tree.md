@@ -12,6 +12,11 @@ tree.fit(y, X=X, **kwargs)
 tree.forecast(steps=4, X=X, y=y)
 ```
 
+The public tree result follows the same `ForecastResult` contract as any other
+`ForecastModel`: point results use the long columns `date`, `variable`, and
+`value`, while quantile results add `quantile`. Tree callables, leaves, and
+nodes continue to exchange wide DataFrames internally.
+
 ---
 
 ## The shape of a tree
@@ -287,6 +292,9 @@ tree.leaf_forecasts_["wage_model"]  # an individual leaf's forecast
 Both hold each source's raw/natural forecast: a callable node's entry is its
 single target-column output, while a `ForecastModel` leaf or node keeps its own
 natural (possibly multi-column) forecast.
+
+These intermediate attributes are internal wide forecast tables. Pivot only
+the public result returned by `tree.forecast()` when a matrix is required.
 
 ---
 

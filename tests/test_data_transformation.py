@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 from forecast_evaluation import ForecastData
 
-from forecast_realtime.data_transformation import DataTransformationPipeline
+from forecast_realtime._data_transformation import DataTransformationPipeline
 
 
 def _levels_frame(variable, dates, vintages, values):
