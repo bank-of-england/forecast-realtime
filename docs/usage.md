@@ -128,9 +128,8 @@ DataFrame-compatible `ForecastResult`. Point results are long tables with a
 `RangeIndex` and the columns `date`, `variable`, and `value`. Quantile results
 add `quantile`. The `.forecast` property returns the same payload as an
 ordinary long DataFrame; `forecast_origin` and `decomposition` remain on the
-original result. Point forecasts may use custom dates, while quantile forecasts
-require an explicit requested calendar. Slices and copies return ordinary
-DataFrames without result metadata.
+original result. Point and quantile forecasts may use custom dates. Slices and
+copies return ordinary DataFrames without result metadata.
 
 Use an explicit pivot when downstream code needs a point matrix:
 

@@ -1092,7 +1092,7 @@ class ForecastModel(ABC):
                 )
         if type(steps) is not int or steps <= 0:
             raise ValueError("steps must be an integer greater than zero")
-        if not getattr(self, "_is_fitted", False):
+        if not self._is_fitted:
             raise AttributeError("Model has not been fitted yet; call fit() first.")
         configuration = self._fitted_model_configuration
         self._validate_explicit_target_path(data, forecast_origin, steps)

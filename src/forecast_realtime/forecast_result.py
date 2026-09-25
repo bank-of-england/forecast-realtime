@@ -36,6 +36,14 @@ def _normalise_quantiles(quantiles):
     return tuple(sorted(values.tolist()))
 
 
+def _snap_probabilities(supplied, probabilities):
+    """Replace supplied probabilities within float noise of a requested one."""
+    supplied = pd.to_numeric(supplied, errors="coerce").to_numpy(dtype=float)
+    requested = np.asarray(probabilities)
+    nearest = requested[np.abs(supplied[:, None] - requested).argmin(axis=1)]
+    return np.where(np.isclose(supplied, nearest, rtol=0, atol=1e-9), nearest, supplied)
+
+
 class ForecastResult(pd.DataFrame):
     """Long forecast table with origin and decomposition metadata.
 
@@ -64,7 +72,6 @@ class ForecastResult(pd.DataFrame):
         forecast_origin: pd.Timestamp,
         decomposition: pd.DataFrame | None = None,
         quantiles: bool | list[float] = False,
-        forecast_dates: pd.DatetimeIndex | None = None,
         forecast_dates_include_origin: bool = False,
         decomp: bool = False,
     ):
@@ -80,7 +87,6 @@ class ForecastResult(pd.DataFrame):
             raise ValueError("decomp=True is not supported for quantile forecasts.")
         forecast = ForecastResult._validate_result(
             forecast,
-            forecast_dates,
             expected_columns,
             steps,
             forecast_origin,
@@ -114,7 +120,7 @@ class ForecastResult(pd.DataFrame):
 
     @staticmethod
     def _validate_result(
-        forecast, dates, variables, steps, origin, include_origin, probabilities=None
+        forecast, variables, steps, origin, include_origin, probabilities=None
     ):
         """Validate complete forecast keys and the shared date contract."""
         columns = (
@@ -131,8 +137,11 @@ class ForecastResult(pd.DataFrame):
             raise ValueError(f"{mode} forecasts must have columns {columns}.")
         if not pd.api.types.is_datetime64_any_dtype(forecast["date"]):
             raise TypeError("Forecast date must have a datetime dtype.")
-        if dates is None:
-            dates = pd.DatetimeIndex(forecast["date"].dropna().unique()).sort_values()
+        if probabilities is not None:
+            forecast = forecast.assign(
+                quantile=_snap_probabilities(forecast["quantile"], probabilities)
+            )
+        dates = pd.DatetimeIndex(forecast["date"].dropna().unique()).sort_values()
         ForecastResult._validate_calendar(dates, steps, origin, include_origin)
         result = ForecastResult._order_forecast_keys(
             forecast.loc[:, columns], dates, variables, probabilities

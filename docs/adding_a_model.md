@@ -186,17 +186,16 @@ ForecastResult(
     forecast_origin,
     decomposition=None,
     quantiles=False,
-    forecast_dates=None,
     forecast_dates_include_origin=False,
 )
 ```
 
-Point results may use a custom calendar supplied by the hook, subject to the
-step count and forecast-origin rules. Quantile results require `forecast_dates`
-to provide the explicit requested calendar, and the constructor checks its
-exact coverage. The original result retains `.forecast`, `.forecast_origin`,
-and `.decomposition`; slices and copies return ordinary DataFrames without
-result metadata. Validation occurs at construction, not after later mutation.
+Point and quantile results may use a custom calendar supplied by the hook,
+subject to the step count and forecast-origin rules. Quantile probabilities
+within float noise of a requested probability are replaced by it. The original
+result retains `.forecast`, `.forecast_origin`, and `.decomposition`; slices and
+copies return ordinary DataFrames without result metadata. Validation occurs at
+construction, not after later mutation.
 
 Use an explicit pivot when a downstream calculation needs a wide point matrix:
 

@@ -111,10 +111,9 @@ date, variable, quantile, value
 ```
 
 Rows are ordered by date, fitted target order, and probability when present.
-Point results may use custom dates. Quantile results require an explicit
-requested calendar. The original result retains `.forecast`,
-`.forecast_origin`, and `.decomposition`, while slices and copies return
-ordinary DataFrames without result metadata. To use a point result as a
+Point and quantile results may use custom dates. The original result retains
+`.forecast`, `.forecast_origin`, and `.decomposition`, while slices and copies
+return ordinary DataFrames without result metadata. To use a point result as a
 conventional date-by-variable matrix, pivot it explicitly:
 
 ```python

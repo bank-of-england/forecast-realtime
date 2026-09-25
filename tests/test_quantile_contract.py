@@ -326,7 +326,6 @@ def test_forecast_result_reorders_complete_quantile_keys():
         steps=len(dates),
         forecast_origin=pd.Timestamp("2020-12-31"),
         quantiles=probabilities,
-        forecast_dates=dates,
     )
 
     pd.testing.assert_frame_equal(result.forecast, expected)
@@ -345,7 +344,6 @@ def test_forecast_result_accepts_reordered_columns(quantiles):
         steps=len(dates),
         forecast_origin=pd.Timestamp("2020-12-31"),
         quantiles=quantiles,
-        forecast_dates=dates,
     )
 
     pd.testing.assert_frame_equal(result.forecast, expected)
@@ -362,7 +360,6 @@ def test_forecast_result_rejects_non_datetime_quantile_dates():
             steps=len(dates),
             forecast_origin=pd.Timestamp("2020-12-31"),
             quantiles=probabilities,
-            forecast_dates=dates,
         )
 
 
@@ -399,14 +396,13 @@ def test_forecast_result_rejects_invalid_quantile_key_coverage(operation, dimens
         extra[dimension] = extra_values[dimension]
         invalid = pd.concat([rows, extra], ignore_index=True)
 
-    with pytest.raises(ValueError, match="Quantile"):
+    with pytest.raises(ValueError, match="Quantile|Forecast must have"):
         ForecastResult(
             invalid,
             expected_columns=variables,
             steps=len(dates),
             forecast_origin=pd.Timestamp("2020-12-31"),
             quantiles=probabilities,
-            forecast_dates=dates,
         )
 
 
@@ -422,7 +418,6 @@ def test_forecast_result_rejects_nonfinite_quantile_values(invalid_value):
             steps=len(dates),
             forecast_origin=pd.Timestamp("2020-12-31"),
             quantiles=probabilities,
-            forecast_dates=dates,
         )
 
 
@@ -438,7 +433,6 @@ def test_forecast_result_rejects_crossing_quantile_values():
             steps=len(dates),
             forecast_origin=pd.Timestamp("2020-12-31"),
             quantiles=probabilities,
-            forecast_dates=dates,
         )
 
 
@@ -454,35 +448,36 @@ def test_forecast_result_rejects_quantile_decomposition(decomp):
             forecast_origin=pd.Timestamp("2020-12-31"),
             decomposition=None if decomp else pd.DataFrame(),
             quantiles=probabilities,
-            forecast_dates=dates,
             decomp=decomp,
         )
 
 
-@pytest.mark.parametrize(
-    ("forecast_dates", "error_type", "message"),
-    [
-        (pd.Index(["2021-01-31", "2021-02-28"]), TypeError, "DatetimeIndex"),
-        (
-            pd.date_range("2021-02-28", periods=2, freq="ME"),
-            ValueError,
-            "cover every",
-        ),
-    ],
-)
-def test_forecast_result_requires_exact_quantile_calendar(
-    forecast_dates, error_type, message
-):
-    dates, variables, probabilities, rows = _quantile_rows()
+def test_forecast_result_snaps_quantile_float_noise_to_requested_probabilities():
+    dates, variables, probabilities, expected = _quantile_rows()
+    noisy = expected.assign(quantile=expected["quantile"] + 1e-15)
 
-    with pytest.raises(error_type, match=message):
+    result = ForecastResult(
+        noisy,
+        expected_columns=variables,
+        steps=len(dates),
+        forecast_origin=pd.Timestamp("2020-12-31"),
+        quantiles=probabilities,
+    )
+
+    pd.testing.assert_frame_equal(result.forecast, expected)
+
+
+def test_forecast_result_rejects_quantiles_beyond_float_noise():
+    dates, variables, probabilities, rows = _quantile_rows()
+    rows["quantile"] = rows["quantile"] + 1e-3
+
+    with pytest.raises(ValueError, match="cover every"):
         ForecastResult(
             rows,
             expected_columns=variables,
             steps=len(dates),
             forecast_origin=pd.Timestamp("2020-12-31"),
             quantiles=probabilities,
-            forecast_dates=forecast_dates,
         )
 
 

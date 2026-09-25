@@ -288,3 +288,14 @@ def test_rf_requires_x():
         assert False, "Should have raised ValueError"
     except ValueError:
         pass
+
+
+def test_rf_forecast_origin_is_last_target_date_when_x_ends_earlier():
+    index = pd.date_range("2015-01-31", periods=60, freq="ME")
+    rng = np.random.default_rng(0)
+    y = pd.DataFrame({"y": rng.normal(size=60)}, index=index)
+    X = pd.DataFrame({"x": rng.normal(size=58)}, index=index[:58])
+
+    model = rt.models.RandomForest(n_estimators=5).fit(y, X=X)
+
+    assert model._fitted_model_configuration.forecast_origin == index[-1]
