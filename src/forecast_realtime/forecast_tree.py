@@ -512,6 +512,11 @@ class ForecastTree(ForecastModel):
                 )
         return tuple(requirements)
 
+    def _select_fit_data(self, data):
+        """Keep the shared panel whole:
+        each child selects and validates its own inputs."""
+        return data.history()
+
     def input_metric_requirements(
         self, y_variables, X_variables=None, data_transformation=None
     ):
