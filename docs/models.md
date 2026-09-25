@@ -82,7 +82,9 @@ option.
 Set `cv` to an integer or a scikit-learn-compatible splitter. An integer uses
 unshuffled K-fold cross-validation; a splitter, such as `TimeSeriesSplit`, is
 used as supplied. Choose a splitter that matches the time ordering and
-information available at the forecast origin.
+information available at the forecast origin. Ordinary K-fold CV can be valid
+for autoregressive prediction when the fitted model captures the dependence
+and its errors are uncorrelated (Bergmeir, Hyndman and Koo, 2018).
 
 CV supports unpenalised AR terms and dummies. These fits minimise mean
 validation squared error in the target's units, with FWL projection and scaling
@@ -109,6 +111,11 @@ from sklearn.model_selection import TimeSeriesSplit
 
 ridge = rt.models.ForecastRidge(cv=TimeSeriesSplit(n_splits=5), scale=True)
 ```
+
+Reference: Bergmeir, C., Hyndman, R. J. and Koo, B. (2018), "A note on the
+validity of cross-validation for evaluating autoregressive time series
+prediction", *Computational Statistics & Data Analysis*, 120, 70-83.
+https://doi.org/10.1016/j.csda.2017.11.003
 
 ## Models in other languages
 
