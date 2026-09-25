@@ -4,8 +4,6 @@ Mirrors ``opera-ijf-paper/application/backtest_ukmd_inflation.py`` without the
 R-backed Fable model: keep the model classes in step with that script.
 """
 
-from dataclasses import replace
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -37,10 +35,7 @@ class MonthlyConditionalBVAR(ForecastBVAR):
 
     def _fit(self, y, X=None):
         super()._fit(y, X)
-        # The script assigns ``last_y_fit_date``, which is now read-only.
-        self._fitted_model_configuration = replace(
-            self._fitted_model_configuration, forecast_origin=self.target_origin_
-        )
+        self.last_y_fit_date = self.target_origin_
         return self
 
     def _forecast(self, steps=1, X=None, y=None, **kwargs):

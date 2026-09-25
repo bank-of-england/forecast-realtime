@@ -273,6 +273,14 @@ class ForecastModel(ABC):
     def last_y_fit_date(self) -> pd.Timestamp:
         return self._fitted_model_configuration.forecast_origin
 
+    # Preserve subclasses that set the target's forecast origin after fitting
+    # through a later observation in the multivariate training panel.
+    @last_y_fit_date.setter
+    def last_y_fit_date(self, value) -> None:
+        self._fitted_model_configuration = replace(
+            self._fitted_model_configuration, forecast_origin=_as_origin(value)
+        )
+
     @property
     def _dummy_cols(self) -> list[str]:
         design = self._fitted_model_configuration.design

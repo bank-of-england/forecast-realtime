@@ -134,6 +134,16 @@ copies return ordinary DataFrames without result metadata.
 Use an explicit pivot when downstream code needs a point matrix:
 
 ```python
+y = (
+    sample_data.loc[
+        (sample_data["vintage_date"] == sample_data["vintage_date"].max())
+        & (sample_data["variable"] == "quarterly_1")
+        & (sample_data["metric"] == "levels")
+    ]
+    .set_index("date")[["value"]]
+    .rename(columns={"value": "quarterly_1"})
+)
+model = rt.models.ForecastOLS().fit(y)
 point_result = model.forecast(steps=4)
 point_matrix = point_result.pivot(
     index="date",
@@ -154,7 +164,7 @@ use the same metric as their transformed target input, so no separate output
 metric argument is needed:
 
 ```python
-model = rt.models.ForecastOLS(
+transformed_model = rt.models.ForecastOLS(
     data_transformation={"quarterly_1": "diff"},
 )
 ```
@@ -197,11 +207,18 @@ metric, and does not include a point forecast.
 For realtime forecasts, pass the same argument to `RealTimeModel.forecast()`:
 
 ```python
+forecast_data = fe.NowcastData(outturns_data=sample_data.copy())
+rt_model = rt.RealTimeModel(
+    data=forecast_data,
+    models=rt.models.ForecastOLS(),
+)
 rt_model.forecast(
     y_variables=["quarterly_1"],
     data_transformation={"quarterly_1": "levels"},
     steps=2,
     quantiles=True,
+    first_vintage="2024-01-31",
+    last_vintage="2024-06-30",
 )
 quantiles = rt_model.quantiles
 ```

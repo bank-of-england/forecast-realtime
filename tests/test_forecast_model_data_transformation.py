@@ -576,8 +576,6 @@ def test_forecast_uses_fitted_configuration_after_public_state_mutation():
     y = _levels_y([100.0, 110.0, 121.0])
     model.fit(y, frequency="M")
 
-    with pytest.raises(AttributeError):
-        model.last_y_fit_date = pd.Timestamp("2021-12-31")
     model.data_transformation = {"gdp": "levels"}
     conditioning = _levels_y([130.0], start="2020-04-30", freq="ME")
 
@@ -588,6 +586,19 @@ def test_forecast_uses_fitted_configuration_after_public_state_mutation():
         model.received_forecast_y.loc[conditioning.index, "gdp"].to_numpy(),
         [9.0],
     )
+
+
+def test_last_y_fit_date_reanchors_forecasts_without_changing_fitted_design():
+    model = _RecordingModel()
+    model.fit(_levels_y([100.0, 110.0, 121.0]), frequency="M")
+    previous_configuration = model._fitted_model_configuration
+
+    model.last_y_fit_date = pd.Timestamp("2020-02-29")
+
+    assert previous_configuration.forecast_origin == pd.Timestamp("2020-03-31")
+    assert model._fitted_model_configuration.design is previous_configuration.design
+    assert model.last_y_fit_date == pd.Timestamp("2020-02-29")
+    assert model.forecast(steps=1)["date"].iloc[0] == pd.Timestamp("2020-03-31")
 
 
 def test_fit_drops_leading_nan_row_for_pop_by_default():
