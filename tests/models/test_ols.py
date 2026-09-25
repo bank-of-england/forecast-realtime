@@ -15,50 +15,6 @@ from .sample_regression import sample_ar2_data, sample_ar4_data, sample_regressi
 pytest.importorskip("sklearn")
 
 
-@pytest.mark.parametrize("scale", [False, True])
-@pytest.mark.parametrize("regressors", [False, True])
-def test_ols_quantiles_use_residual_uncertainty(scale, regressors):
-    import statsmodels.api as sm
-    from scipy.stats import norm
-
-    generator = np.random.default_rng(427)
-    index = pd.date_range("2000-01-31", periods=43, freq="ME")
-    drivers = pd.DataFrame({"driver": generator.normal(size=43)}, index=index)
-    target = pd.DataFrame(
-        {"target": 3 + 2 * drivers.driver.iloc[:40] + generator.normal(size=40)},
-        index=index[:40],
-    )
-    training = drivers.iloc[:40] if regressors else None
-    future = drivers.iloc[40:] if regressors else None
-    model = rt.models.ForecastOLS(scale=scale).fit(target, X=training)
-    point = model.forecast(steps=3, X=future)
-    result = model.forecast(steps=3, X=future, quantiles=[0.95, 0.05, 0.5])
-    design = sm.add_constant(training) if regressors else np.ones((40, 1))
-    fitted = sm.OLS(target, design).fit()
-    residual_se = np.sqrt(np.sum(fitted.resid**2) / fitted.df_resid)
-    np.testing.assert_allclose(model._std_error, residual_se)
-    expected = point["value"].to_numpy()[:, None] + residual_se * norm.ppf(
-        [0.05, 0.5, 0.95]
-    )
-    actual = result.pivot(index="date", columns="quantile", values="value")
-    np.testing.assert_allclose(actual[[0.05, 0.5, 0.95]], expected)
-    pd.testing.assert_frame_equal(point, model.forecast(steps=3, X=future))
-
-
-@pytest.mark.parametrize(
-    "model_class",
-    [rt.models.ForecastRidge, rt.models.ForecastLasso, rt.models.ForecastElasticNet],
-)
-def test_penalised_regressions_do_not_compute_residual_spread(model_class):
-    target, regressors, _, _, _ = sample_regression_data(
-        n_train=40, n_test=3, random_seed=427
-    )
-    model = model_class(alpha=0.1).fit(target, X=regressors)
-
-    assert not hasattr(model, "_std_error")
-    assert not hasattr(model, "_degrees_freedom")
-
-
 def test_build_lagged_design_uses_previous_calendar_period():
     """A missing quarter produces a missing lag instead of skipping it."""
     index = pd.to_datetime(["2020-03-31", "2020-09-30"])

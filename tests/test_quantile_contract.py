@@ -2,7 +2,6 @@ import forecast_evaluation as fe
 import numpy as np
 import pandas as pd
 import pytest
-import statsmodels.api as sm
 from scipy import stats
 
 import forecast_realtime as rt
@@ -22,6 +21,15 @@ class _FitQuantileSpyOLS(rt.models.ForecastOLS):
     def _fit(self, y, X=None, **kwargs):
         type(self).fit_kwargs.append(kwargs.copy())
         return super()._fit(y, X=X, **kwargs)
+
+
+class _QuantileRejectingOLS(rt.models.ForecastOLS):
+    """Fail only when quantiles are requested."""
+
+    def _forecast(self, *args, quantiles=None, **kwargs):
+        if quantiles is not None:
+            raise ValueError("Quantiles rejected.")
+        return super()._forecast(*args, **kwargs)
 
 
 class _OriginInclusiveOLS(rt.models.ForecastOLS):
@@ -191,11 +199,11 @@ def test_realtime_rejected_density_model_keeps_other_models(parallel, inline_exe
         _realtime_data(),
         [
             rt.models.ForecastOLS(label="fixed"),
-            rt.models.ForecastOLS(label="direct", forecast_strategy="direct", steps=3),
+            _QuantileRejectingOLS(label="rejecting"),
         ],
     )
     original = runner.data.forecasts.copy(deep=True)
-    with pytest.warns(UserWarning, match="Model 'direct' failed"):
+    with pytest.warns(UserWarning, match="Model 'rejecting' failed"):
         runner.forecast(**_realtime_options(parallel=parallel), quantiles=True)
     assert runner.quantiles is not None
     assert not runner.quantiles.empty
@@ -247,7 +255,21 @@ def _quantile_rows():
     return dates, variables, probabilities, pd.DataFrame(rows)
 
 
-def _assert_matches_residual_se_quantiles(
+def _prediction_quantiles(y, X, rows, probabilities):
+    """Textbook OLS prediction quantiles for a full-rank design with intercept."""
+    y = np.asarray(y, dtype=float).ravel()
+    X = np.column_stack([np.ones(len(y)), np.asarray(X, dtype=float)])
+    rows = np.column_stack([np.ones(len(rows)), np.asarray(rows, dtype=float)])
+    XtX_inv = np.linalg.inv(X.T @ X)
+    beta = XtX_inv @ X.T @ y
+    df = len(y) - X.shape[1]
+    s = np.sqrt(np.sum((y - X @ beta) ** 2) / df)
+    leverage = np.einsum("ij,jk,ik->i", rows, XtX_inv, rows)
+    scale = s * np.sqrt(1 + leverage)
+    return (rows @ beta)[:, None] + scale[:, None] * stats.t.ppf(probabilities, df)
+
+
+def _assert_matches_prediction_intervals(
     model,
     future,
     training_target,
@@ -262,24 +284,11 @@ def _assert_matches_residual_se_quantiles(
     assert result["quantile"].drop_duplicates().tolist() == list(probabilities)
 
     actual = result.pivot(index="date", columns="quantile", values="value")
-    fitted = sm.OLS(
-        training_target,
-        sm.add_constant(training_design, has_constant="add"),
-    ).fit()
-    residual_se = np.sqrt(np.sum(fitted.resid**2) / fitted.df_resid)
-    np.testing.assert_allclose(model._std_error, residual_se)
-    expected = np.asarray(
-        fitted.predict(sm.add_constant(future_design, has_constant="add"))
-    )[:, None] + residual_se * stats.norm.ppf(probabilities)
-
+    expected = _prediction_quantiles(
+        training_target, training_design, future_design, probabilities
+    )
     assert actual.index.equals(future.index)
-    np.testing.assert_allclose(
-        actual[probabilities[0]], expected[:, 0], rtol=1e-10, atol=1e-9
-    )
-    np.testing.assert_allclose(
-        actual[probabilities[-1]], expected[:, -1], rtol=1e-10, atol=1e-9
-    )
-    np.testing.assert_allclose(actual[0.5], expected[:, 1], rtol=1e-10, atol=1e-9)
+    np.testing.assert_allclose(actual.to_numpy(), expected, rtol=1e-10, atol=1e-9)
 
 
 @pytest.mark.parametrize(
@@ -502,18 +511,67 @@ def test_ols_density_is_deterministic():
     )
 
 
-def test_ols_rank_deficient_density_uses_residual_se_and_preserves_point_forecast():
+@pytest.mark.parametrize("scale", [False, True])
+@pytest.mark.parametrize("regressors", [False, True])
+def test_ols_recursive_density_matches_prediction_intervals(scale, regressors):
+    target, training, future = _regression_data()
+    model = rt.models.ForecastOLS(scale=scale).fit(
+        target, X=training if regressors else None
+    )
+    point = model.forecast(steps=len(future), X=future if regressors else None)
+    result = model.forecast(
+        steps=len(future), X=future if regressors else None, quantiles=[0.05, 0.5, 0.95]
+    )
+
+    actual = result.pivot(index="date", columns="quantile", values="value")
+    expected = _prediction_quantiles(
+        target,
+        training if regressors else np.empty((len(target), 0)),
+        future if regressors else np.empty((len(future), 0)),
+        [0.05, 0.5, 0.95],
+    )
+    np.testing.assert_allclose(actual.to_numpy(), expected, rtol=1e-10, atol=1e-9)
+    pd.testing.assert_frame_equal(
+        point, model.forecast(steps=len(future), X=future if regressors else None)
+    )
+
+
+@pytest.mark.parametrize("y_lags", [0, 1])
+def test_ols_direct_density_matches_prediction_intervals_per_horizon(y_lags):
+    target, regressors, future = _regression_data(n_train=20)
+    steps = 3
+    model = rt.models.ForecastOLS(forecast_strategy="direct", steps=steps).fit(
+        target, X=regressors, y_lags=y_lags
+    )
+    probabilities = [0.05, 0.5, 0.95]
+    result = model.forecast(
+        steps=steps, X=pd.concat([regressors, future]), quantiles=probabilities
+    )
+
+    origin = future.iloc[[0]]
+    if y_lags:
+        origin = origin.assign(target_lag1=target.iloc[-1, 0])
+    y, X, n = model.y.to_numpy(), model.X.to_numpy(), len(model.y)
+    expected = np.vstack(
+        [
+            _prediction_quantiles(y[h:], X[: n - h], origin, probabilities)
+            for h in range(steps)
+        ]
+    )
+    actual = result.pivot(index="date", columns="quantile", values="value")
+    np.testing.assert_allclose(actual.to_numpy(), expected, rtol=1e-10, atol=1e-9)
+
+
+def test_ols_rank_deficient_density_matches_full_rank_design():
     target, regressors, future = _regression_data()
     rank_deficient = regressors.assign(duplicate=regressors["x"])
     future_rank_deficient = future.assign(duplicate=future["x"])
     model = rt.models.ForecastOLS().fit(target, X=rank_deficient)
     expected_point = model.forecast(steps=len(future), X=future_rank_deficient)
 
-    density = model.forecast(
-        steps=len(future), X=future_rank_deficient, quantiles=[0.1, 0.9]
+    _assert_matches_prediction_intervals(
+        model, future_rank_deficient, target, regressors, future
     )
-
-    assert np.isfinite(density["value"]).all()
     pd.testing.assert_frame_equal(
         model.forecast(steps=len(future), X=future_rank_deficient), expected_point
     )
@@ -533,18 +591,11 @@ def test_ols_nonpositive_residual_degrees_of_freedom_preserves_point_forecast():
     pd.testing.assert_frame_equal(model.forecast(steps=1, X=future), expected_point)
 
 
-@pytest.mark.parametrize(
-    ("model_kwargs", "fit_kwargs"),
-    [
-        ({}, {"y_lags": 1}),
-        ({"forecast_strategy": "direct", "steps": 2}, {}),
-    ],
-)
-def test_ols_density_rejects_target_lags_and_direct_strategy(model_kwargs, fit_kwargs):
+def test_ols_recursive_density_rejects_target_lags():
     target, regressors, future = _regression_data()
-    model = rt.models.ForecastOLS(**model_kwargs).fit(target, X=regressors, **fit_kwargs)
+    model = rt.models.ForecastOLS().fit(target, X=regressors, y_lags=1)
 
-    with pytest.raises(ValueError, match="target lags or direct strategies"):
+    with pytest.raises(ValueError, match="Recursive quantiles do not support target"):
         model.forecast(steps=2, X=future, quantiles=[0.1, 0.9])
 
 
@@ -620,7 +671,7 @@ def test_ols_forecast_accepts_an_explicit_forecast_context():
     pd.testing.assert_frame_equal(result, expected)
 
 
-def test_ols_formula_selection_matches_statsmodels_prediction_intervals():
+def test_ols_formula_selection_matches_prediction_intervals():
     target, regressors, future = _regression_data()
     training_design = regressors.rename(columns={"x": "used"})
     training_design["unused"] = np.linspace(2.0, 3.0, len(training_design))
@@ -628,7 +679,7 @@ def test_ols_formula_selection_matches_statsmodels_prediction_intervals():
     future_design["unused"] = np.linspace(3.0, 3.5, len(future_design))
     model = rt.models.ForecastOLS(formula="target ~ used").fit(target, X=training_design)
 
-    _assert_matches_residual_se_quantiles(
+    _assert_matches_prediction_intervals(
         model,
         future_design,
         target["target"],
@@ -637,7 +688,7 @@ def test_ols_formula_selection_matches_statsmodels_prediction_intervals():
     )
 
 
-def test_ols_dummy_selection_matches_statsmodels_prediction_intervals():
+def test_ols_dummy_selection_matches_prediction_intervals():
     target, regressors, future = _regression_data()
     dummy_date = target.index[4]
     training_dummy = (regressors.index == dummy_date).astype(float)
@@ -648,7 +699,7 @@ def test_ols_dummy_selection_matches_statsmodels_prediction_intervals():
         target, X=regressors, dummies={"event": dummy_date}
     )
 
-    _assert_matches_residual_se_quantiles(
+    _assert_matches_prediction_intervals(
         model,
         future,
         target["target"],
@@ -657,7 +708,7 @@ def test_ols_dummy_selection_matches_statsmodels_prediction_intervals():
     )
 
 
-def test_ols_missing_row_selection_matches_statsmodels_prediction_intervals():
+def test_ols_missing_row_selection_matches_prediction_intervals():
     target, regressors, future = _regression_data()
     target_with_missing = target.copy()
     regressors_with_missing = regressors.copy()
@@ -670,7 +721,7 @@ def test_ols_missing_row_selection_matches_statsmodels_prediction_intervals():
         target_with_missing, X=regressors_with_missing
     )
 
-    _assert_matches_residual_se_quantiles(
+    _assert_matches_prediction_intervals(
         model,
         future,
         target_with_missing.loc[complete, "target"],

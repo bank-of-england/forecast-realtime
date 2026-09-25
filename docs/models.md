@@ -139,34 +139,38 @@ signatures.
 
 ## Density forecasts
 
-Built-in density support is available for recursive fixed-regressor
-`ForecastOLS` and `ForecastBVAR`. Penalised regressions (`ForecastRidge`,
-`ForecastLasso`, and `ForecastElasticNet`), `ForecastBridgeOLS`,
-`RandomForest`, and `XGBoost` do not support quantile forecasts.
+Built-in density support is available for `ForecastOLS` and `ForecastBVAR`.
+Penalised regressions (`ForecastRidge`, `ForecastLasso`, and
+`ForecastElasticNet`), `ForecastBridgeOLS`, `RandomForest`, and `XGBoost` do
+not support quantile forecasts.
 
 ### `ForecastOLS`
 
-OLS density forecasts use an optional intercept and fixed, known
-future regressors. They support recursive fixed-regressor fits only: target
-lags and `forecast_strategy="direct"` are not supported. Future regressor rows
-must be complete. Supplied or imputed regressor paths are treated as known and
-add no regressor uncertainty.
+OLS quantiles are the textbook prediction interval, the one returned by R's
+`predict.lm(interval = "prediction")` and statsmodels'
+`get_prediction().summary_frame()`. For `n` retained observations, design
+rank `r`, and a forecast row `x0` (intercept included):
 
-For `n` retained observations and `k` design columns, OLS estimates the
-residual standard error using `n - k` residual degrees of freedom. A requested
-quantile `q` is calculated from normal forecast noise, treating the fitted
-coefficients and residual standard error as fixed:
+$$
+\hat{y}_0 + s\sqrt{1 + x_0^\top (X^\top X)^{+} x_0}\; t^{-1}_{n - r}(q),
+\qquad s^2 = \frac{\text{RSS}}{n - r}
+$$
 
-```text
-s = sqrt(sum(residual^2) / (n - k))
-quantile(q) = point_forecast + s * normal_ppf(q)
-```
+The interval accounts for residual noise, coefficient uncertainty, and
+uncertainty in `s`. The pseudo-inverse keeps rank-deficient designs valid. The
+median equals the point forecast, and quantiles require positive residual
+degrees of freedom.
 
-These plug-in quantiles model residual noise only: they omit uncertainty in the
-coefficients, residual standard error, and regressor paths. The median equals
-the point forecast. Density forecasts require
-positive residual degrees of freedom; rank-deficient designs remain valid for
-point and density forecasts.
+Both forecast strategies are supported:
+
+- **Recursive**: one regression; each future row has its own leverage. Target
+  lags are not supported, because later rows would contain earlier forecasts
+  and no closed form exists.
+- **Direct**: one regression per horizon `h`, of `y[t + h]` on the origin row.
+  Target lags are supported, because at the origin they are observed.
+
+Future regressor rows must be complete. Supplied or imputed regressor paths are
+treated as known and add no regressor uncertainty.
 
 ### `ForecastBVAR`
 

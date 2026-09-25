@@ -269,64 +269,13 @@ class LinearRegression(ForecastModel):
             steps = self.steps
 
         self._validate_direct_forecast_steps(steps)
+        X_aug = self._forecast_design(steps, X, y, forecast_origin)
 
-        if X is None:
-            if not self.fit_intercept:
-                raise ValueError("Forecast X matrix is None and fit_intercept=False")
-            # Intercept-only forecast
-            if self.forecast_strategy == "direct":
-                intercepts = [
-                    np.asarray(self.betas_[h]).reshape(-1)[0] for h in range(steps)
-                ]
-                forecasts = np.asarray(intercepts).reshape(-1, 1)
-            else:
-                intercept = np.asarray(self.beta_).reshape(-1)[0]
-                forecasts = np.full((steps, 1), intercept)
-            return self._wrap_forecast(forecasts, steps, forecast_origin=forecast_origin)
-
-        # Filter X to rows after y (forecast rows only).
-        last_y_index = (
-            forecast_origin
-            if forecast_origin is not None
-            else self._fitted_model_configuration.forecast_origin
-        )
-
-        # Availability check: recursive needs `steps` future rows (one per
-        # horizon); direct only ever uses the first future row (each horizon
-        # has its own fitted beta for the origin-t regressors).
-        X_aug = self._select_forecast_rows(X, last_y_index, steps, y)
-        required_rows = 1 if self.forecast_strategy == "direct" else steps
-        if X_aug.shape[0] < required_rows:
-            methods = "/".join(X_IMPUTATION_METHODS)
-            raise ValueError(
-                f"{self.__class__.__name__}._forecast: X has {X_aug.shape[0]} "
-                f"row(s) after {last_y_index}, need {required_rows}. Extend X, "
-                f"set X_imputation ({methods}), or use X_steps_ahead/X_sources."
-            )
-
-        # Add intercept column if needed
-        if self.fit_intercept:
-            X_aug.insert(0, "intercept", 1.0)
-
-        # X_aug and self.beta_ should have compatible shapes
-        # TODO: replace this check with an exact name check
-        if X_aug.shape[1] != self.N_regressors:
-            raise ValueError(
-                "Missing regressors during forecasting.",
-                f" Expected {self.N_regressors} features, got {X_aug.shape[1]}.",
-            )
-
-        # Filter to forecast rows
         if self.forecast_strategy == "direct":
-            # Direct forecasting uses only the first row of X_aug for each horizon.
-            forecasts = []
-            for h in range(steps):
-                beta_h = self.betas_[h]
-                forecast_h = _forecast_reg(beta=beta_h, X=X_aug.iloc[[0]])
-                forecasts.append(forecast_h)
-
-            # Concatenate forecasts for all horizons
-            forecasts = np.concatenate(forecasts, axis=0)
+            # Each horizon applies its own beta to the origin row.
+            forecasts = np.concatenate(
+                [_forecast_reg(beta=self.betas_[h], X=X_aug) for h in range(steps)]
+            )
         else:
             # If X contains y lags, use a recursive loop.
             # forecasts are used as regressor for the next step
@@ -359,12 +308,47 @@ class LinearRegression(ForecastModel):
                     forecasts.append(forecast_step)
                 forecasts = np.concatenate(forecasts, axis=0)
             else:
-                # X_aug may extend further than requested (e.g. a ragged
-                # regressor published ahead of others); only the first
-                # `steps` rows are used.
-                forecasts = _forecast_reg(beta=self.beta_, X=X_aug.iloc[:steps])
+                forecasts = _forecast_reg(beta=self.beta_, X=X_aug)
 
         return self._wrap_forecast(forecasts, steps, forecast_origin=forecast_origin)
+
+    def _forecast_design(self, steps, X, y=None, forecast_origin=None) -> pd.DataFrame:
+        """Return the design rows, intercept first, that the forecast uses.
+
+        Direct forecasts use the origin row only; recursive forecasts use one
+        row per step.
+        """
+        required_rows = 1 if self.forecast_strategy == "direct" else steps
+        if X is None:
+            if not self.fit_intercept:
+                raise ValueError("Forecast X matrix is None and fit_intercept=False")
+            return pd.DataFrame({"intercept": np.ones(required_rows)})
+
+        last_y_index = (
+            forecast_origin
+            if forecast_origin is not None
+            else self._fitted_model_configuration.forecast_origin
+        )
+        X_aug = self._select_forecast_rows(X, last_y_index, steps, y)
+        if X_aug.shape[0] < required_rows:
+            methods = "/".join(X_IMPUTATION_METHODS)
+            raise ValueError(
+                f"{self.__class__.__name__}._forecast: X has {X_aug.shape[0]} "
+                f"row(s) after {last_y_index}, need {required_rows}. Extend X, "
+                f"set X_imputation ({methods}), or use X_steps_ahead/X_sources."
+            )
+
+        if self.fit_intercept:
+            X_aug.insert(0, "intercept", 1.0)
+
+        # TODO: replace this check with an exact name check
+        if X_aug.shape[1] != self.N_regressors:
+            raise ValueError(
+                "Missing regressors during forecasting.",
+                f" Expected {self.N_regressors} features, got {X_aug.shape[1]}.",
+            )
+        # A ragged regressor may extend X beyond the rows the forecast needs.
+        return X_aug.iloc[:required_rows]
 
     def _forecast_decomp(
         self,
