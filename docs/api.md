@@ -147,3 +147,13 @@ current source.
     options:
       show_source: false
       show_root_heading: true
+
+::: forecast_realtime.models.timestral.ForecastTimestral
+    options:
+      show_source: false
+      show_root_heading: true
+
+::: forecast_realtime.models.t0.ForecastT0
+    options:
+      show_source: false
+      show_root_heading: true

@@ -15,6 +15,8 @@ Install the extra for the model you use, for example `pip install
 | `ForecastBVAR` | Bayesian VAR with conditional forecasting |
 | `ForecastMIDAS`, `ForecastMultiMIDAS`, `ForecastMIDASCombo` | Mixed-frequency (MIDAS) models |
 | `ForecastRlm` | Wrapper for an R-based `lm()` model |
+| `ForecastTimestral` | Local Mistral Timestral forecasts with pretrained weights |
+| `ForecastT0` | Local forecasts with The Forecasting Company's t0 weights |
 
 ```python
 import forecast_evaluation as fe
@@ -117,6 +119,74 @@ validity of cross-validation for evaluating autoregressive time series
 prediction", *Computational Statistics & Data Analysis*, 120, 70-83.
 https://doi.org/10.1016/j.csda.2017.11.003
 
+## Foundation models
+
+`ForecastTimestral` and `ForecastT0` store their input history
+during `fit()` and run inference during `forecast()`. They do not train or
+fine-tune the pretrained models. They accept the usual `label`, `formula`,
+`data_transformation` and `conditioning` options and work with `RealTimeModel`.
+Point forecasts are medians; both wrappers support quantile forecasts.
+They require a common frequency and do not support target conditioning or
+forecast decomposition.
+
+Local dependencies and model weights are loaded during `fit()`. Loaded
+weights are reused within each process, rather than copied for every vintage.
+Each worker in a parallel run loads its own weights, so choose parallelism
+with available memory in mind. The local model dependencies are not included
+in the default `[models]` extra.
+
+### Local Timestral
+
+Install the [official Timestral package](https://github.com/mistralai/timestral):
+
+```bash
+pip install git+https://github.com/mistralai/timestral.git
+```
+
+Timestral is not currently published on PyPI. The default checkpoint is
+`mistralai/Timestral-209M`; `model_id` can also name another supported
+checkpoint or a local checkpoint directory. `device` defaults to `"cpu"`;
+use `"cuda"` when a compatible PyTorch installation and GPU are available.
+The first `fit()` downloads the weights if they are not already cached.
+
+```python
+timestral = rt.models.ForecastTimestral(
+    model_id="mistralai/Timestral-209M",
+    device="cpu",
+    formula="quarterly_1 ~ quarterly_2",
+)
+```
+
+Timestral forecasts multiple targets jointly and accepts missing observations.
+Regressors are passed as known covariates over the history and forecast
+horizon; missing entries remain missing unless `X_imputation` is requested.
+Covariate support depends on the checkpoint. Requested quantile levels must
+be present in its output; unsupported levels raise `ValueError`.
+
+### Local t0
+
+```bash
+pip install "forecast-realtime[t0]"
+```
+
+`ForecastT0` uses [`tfc-t0`](https://github.com/theforecastingcompany/tfc-t0)
+with its PyTorch runtime. It defaults to `theforecastingcompany/t0-gamma` and
+does not require an API key. Like Timestral, it forecasts targets jointly and
+accepts missing observations and covariates. The backend treats missing
+future covariate values as zero. Supply future paths or set `X_imputation`
+when this is not appropriate. t0 interpolates or extrapolates requested
+quantiles from its trained distribution.
+
+```python
+t0 = rt.models.ForecastT0(device="cpu")
+t0.fit(y)
+point_forecast = t0.forecast(steps=4)
+density_forecast = t0.forecast(steps=4, quantiles=[0.1, 0.5, 0.9])
+```
+
+Here, `y` is a date-indexed DataFrame with one column per target. The first
+`fit()` downloads the pretrained weights if needed.
+
 ## Models in other languages
 
 Models written in R, MATLAB or Julia can be wrapped with `RModel`,
@@ -146,7 +216,8 @@ signatures.
 
 ## Density forecasts
 
-Built-in density support is available for `ForecastOLS` and `ForecastBVAR`.
+Built-in density support is available for `ForecastOLS`, `ForecastBVAR`,
+`ForecastTimestral` and `ForecastT0`.
 Penalised regressions (`ForecastRidge`, `ForecastLasso`, and
 `ForecastElasticNet`), `ForecastBridgeOLS`, `RandomForest`, and `XGBoost` do
 not support quantile forecasts.

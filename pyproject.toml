@@ -76,6 +76,7 @@ random_forest = ["scikit-learn >= 1.8.0"]
 xgboost = ["xgboost >= 3.2.0"]
 bvar = ["bvar >= 0.3.1"]
 nowcast_midas = ["nowcast-midas>=0.0.2"]
+t0 = ["tfc-t0[torch]>=0.6.0"]
 
 [build-system]
 requires = ["setuptools"]
