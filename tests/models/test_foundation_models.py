@@ -7,6 +7,7 @@ Run those tests with ``pytest -n auto --dist loadgroup -k pretrained``.
 import gc
 import os
 import sys
+from dataclasses import replace
 from functools import lru_cache
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -16,26 +17,68 @@ import pandas as pd
 import pytest
 
 import forecast_realtime as rt
+from forecast_realtime.models.chronos2 import ForecastChronos2
 from forecast_realtime.models.t0 import ForecastT0
+from forecast_realtime.models.timesfm import ForecastTimesFM
 from forecast_realtime.models.timestral import ForecastTimestral
 
 
-@pytest.fixture(params=[ForecastTimestral, ForecastT0])
+@pytest.fixture(params=[ForecastTimestral, ForecastT0, ForecastChronos2, ForecastTimesFM])
 def local_model(request, monkeypatch):
     calls = []
 
     def predict(context, **kwargs):
-        calls.append((context.copy(), kwargs))
+        timesfm = "return_quantiles" in kwargs
+        if timesfm:
+            context = context[None, ...]
+            recorded = kwargs.copy()
+            covariates = kwargs.get("past_future_covariates")
+            recorded["known_covariates"] = (
+                None if covariates is None else covariates[None, ...]
+            )
+        else:
+            recorded = kwargs
+        calls.append((context.copy(), recorded))
         steps = kwargs.get("prediction_length", kwargs.get("horizon"))
-        levels = np.array([0.1, 0.5, 0.9])
+        levels = np.asarray(kwargs.get("quantile_levels", [0.1, 0.5, 0.9]))
         point = np.tile(np.arange(context.shape[1])[None, :, None], (1, 1, steps))
+        if timesfm:
+            return SimpleNamespace(
+                forecast=point[0], quantiles=point[0, ..., None] + levels
+            )
         return SimpleNamespace(
             median=point,
             quantiles=point[..., None] + levels,
             quantile_levels=levels,
         )
 
-    backend = SimpleNamespace(forecast=predict, predict=predict)
+    def predict_quantiles(inputs, prediction_length, quantile_levels):
+        task = inputs[0]
+        known = task.get("future_covariates", {})
+        covariates = (
+            np.stack(
+                [
+                    np.concatenate([task["past_covariates"][name], values])
+                    for name, values in known.items()
+                ]
+            )[None, ...]
+            if known
+            else None
+        )
+        prediction = predict(
+            task["target"][None, ...],
+            prediction_length=prediction_length,
+            known_covariates=covariates,
+        )
+        point = prediction.median[0]
+        return [point[..., None] + np.asarray(quantile_levels)], [point]
+
+    backend = SimpleNamespace(
+        forecast=predict,
+        predict=predict,
+        predict_quantiles=predict_quantiles,
+        config=SimpleNamespace(quantiles=[0.1, 0.5, 0.9]),
+    )
     module = request.param.__module__
     monkeypatch.setattr(f"{module}._load_forecaster", lambda *args: backend)
     return request.param(), calls
@@ -67,7 +110,9 @@ def test_local_loads_backend_during_fit(local_model, targets, monkeypatch):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("model_class", [ForecastTimestral, ForecastT0])
+@pytest.mark.parametrize(
+    "model_class", [ForecastTimestral, ForecastT0, ForecastChronos2, ForecastTimesFM]
+)
 @pytest.mark.parametrize("error_class", [ModuleNotFoundError, MemoryError])
 def test_local_loading_errors_surface_during_fit(
     model_class, error_class, targets, monkeypatch
@@ -113,6 +158,60 @@ def test_local_delegates_full_horizon_to_backend(local_model, targets, steps):
     assert result["date"].nunique() == steps
 
 
+def test_chronos2_local_forecast_contract(targets, monkeypatch):
+    calls = []
+
+    def predict_quantiles(inputs, prediction_length, quantile_levels):
+        calls.append((inputs, prediction_length, quantile_levels))
+        point = np.tile(np.arange(2.0)[:, None], (1, prediction_length))
+        return [point[..., None] + np.asarray(quantile_levels)], [point]
+
+    backend = SimpleNamespace(predict_quantiles=predict_quantiles)
+    loader = Mock(return_value=backend)
+    monkeypatch.setattr("forecast_realtime.models.chronos2._load_forecaster", loader)
+    model = ForecastChronos2()
+    loader.assert_not_called()
+    model.fit(targets)
+    loader.assert_called_once_with("amazon/chronos-2", "cpu")
+    assert not calls
+
+    point = model.forecast(steps=3)
+    assert point["value"].tolist() == [0.0, 1.0] * 3
+    np.testing.assert_array_equal(calls[0][0][0]["target"], targets.to_numpy().T)
+    density = model.forecast(steps=3, quantiles=[0.1, 0.9])
+    assert density["value"].tolist() == [0.1, 0.9, 1.1, 1.9] * 3
+    assert density["variable"].tolist() == ["first", "first", "second", "second"] * 3
+
+
+def test_timesfm_local_forecast_contract(targets, monkeypatch):
+    calls = []
+    levels = [0.1, 0.5, 0.9]
+
+    def predict(context, horizon, **kwargs):
+        calls.append((context.copy(), horizon, kwargs))
+        point = np.tile(np.arange(2.0)[:, None], (1, horizon))
+        return SimpleNamespace(forecast=point, quantiles=point[..., None] + levels)
+
+    backend = SimpleNamespace(predict=predict, config=SimpleNamespace(quantiles=levels))
+    loader = Mock(return_value=backend)
+    monkeypatch.setattr("forecast_realtime.models.timesfm._load_forecaster", loader)
+    model = ForecastTimesFM()
+    loader.assert_not_called()
+    model.fit(targets)
+    loader.assert_called_once_with("google/timesfm-3.0-pytorch", "cpu")
+    assert not calls
+
+    point = model.forecast(steps=3)
+    assert point["value"].tolist() == [0.0, 1.0] * 3
+    np.testing.assert_array_equal(calls[0][0], targets.to_numpy().T)
+    density = model.forecast(steps=3, quantiles=[0.1, 0.9])
+    assert density["value"].tolist() == [0.1, 0.9, 1.1, 1.9] * 3
+    assert density["variable"].tolist() == ["first", "first", "second", "second"] * 3
+    with pytest.raises(ValueError, match="does not provide quantile"):
+        model.forecast(steps=3, quantiles=[0.05])
+    assert len(calls) == 2
+
+
 def test_local_multivariate_point_forecast(local_model, targets):
     model, calls = local_model
     assert model.fit(targets) is model
@@ -133,6 +232,20 @@ def test_local_quantiles_keep_variable_and_date_order(local_model, targets):
     result = model.forecast(steps=3, quantiles=[0.1, 0.9])
     assert result["value"].tolist() == [0.1, 0.9, 1.1, 1.9] * 3
     assert result["variable"].tolist() == ["first", "first", "second", "second"] * 3
+
+
+@pytest.mark.parametrize("quantiles", [True, [0.2, 0.8]])
+def test_local_interpolated_quantiles(local_model, targets, quantiles):
+    model, _ = local_model
+    model.fit(targets)
+    result = model.forecast(steps=3, quantiles=quantiles)
+    probabilities = [0.16, 0.5, 0.84] if quantiles is True else quantiles
+    assert result["quantile"].drop_duplicates().tolist() == probabilities
+    expected = np.tile((np.arange(2.0)[:, None] + probabilities).reshape(-1), 3)
+    np.testing.assert_allclose(result["value"], expected)
+    assert result["date"].drop_duplicates().tolist() == list(
+        pd.date_range("2020-09-30", periods=3, freq="ME")
+    )
 
 
 def test_local_covariates_cover_history_and_future(local_model, targets):
@@ -159,8 +272,12 @@ def test_local_missing_dates_preserve_calendar_spacing(local_model, targets):
 def test_local_rejects_unavailable_quantiles(local_model, targets):
     model, _ = local_model
     model.fit(targets)
+    if isinstance(model, (ForecastChronos2, ForecastT0)):
+        result = model.forecast(steps=2, quantiles=[0.05, 0.95])
+        assert result["quantile"].unique().tolist() == [0.05, 0.95]
+        return
     with pytest.raises(ValueError, match="does not provide quantile"):
-        model.forecast(steps=2, quantiles=[0.2, 0.8])
+        model.forecast(steps=2, quantiles=[0.05, 0.95])
 
 
 def test_timestral_loader_passes_device_and_reuses_weights(monkeypatch):
@@ -181,7 +298,9 @@ def test_timestral_loader_passes_device_and_reuses_weights(monkeypatch):
         _load_forecaster.cache_clear()
 
 
-@pytest.mark.parametrize("model_class", [ForecastTimestral, ForecastT0])
+@pytest.mark.parametrize(
+    "model_class", [ForecastTimestral, ForecastT0, ForecastChronos2, ForecastTimesFM]
+)
 def test_foundation_models_are_public_and_lightweight(model_class):
     assert model_class.__bases__ == (rt.ForecastModel,)
     assert getattr(rt.models, model_class.__name__) is model_class
@@ -220,6 +339,97 @@ def test_local_rejects_mixed_target_frequencies(local_model, with_regressors):
         )
     assert not calls
     assert not model._is_fitted
+
+
+@pytest.mark.parametrize(
+    "model_class", [ForecastTimestral, ForecastChronos2, ForecastTimesFM]
+)
+@pytest.mark.parametrize("future_known", [False, True])
+def test_new_foundation_covariate_roles(model_class, future_known, targets, monkeypatch):
+    calls = []
+
+    def predict_quantiles(inputs, prediction_length, **kwargs):
+        calls.append(inputs[0])
+        point = np.zeros((2, prediction_length))
+        return [point[..., None]], [point]
+
+    def predict(context, horizon, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(forecast=np.zeros((2, horizon)))
+
+    def forecast(context, prediction_length, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(median=np.zeros((1, 2, prediction_length)))
+
+    backend = SimpleNamespace(
+        predict_quantiles=predict_quantiles, predict=predict, forecast=forecast
+    )
+    monkeypatch.setattr(
+        f"{model_class.__module__}._load_forecaster", lambda *args: backend
+    )
+    dates = pd.date_range(targets.index[-1], periods=3, freq="ME")[1:]
+    regressors = pd.DataFrame({"indicator": np.arange(8.0)}, index=targets.index)
+    future = pd.DataFrame({"indicator": [8.0, 9.0]}, index=dates)
+    model = model_class()
+    model.fit(targets, X=regressors)
+    model.forecast(steps=2, X=future if future_known else None)
+
+    if model_class is ForecastChronos2:
+        np.testing.assert_array_equal(
+            calls[0]["past_covariates"]["indicator"], np.arange(8.0)
+        )
+        if future_known:
+            np.testing.assert_array_equal(
+                calls[0]["future_covariates"]["indicator"], [8.0, 9.0]
+            )
+        else:
+            assert not calls[0]["future_covariates"]
+    elif model_class is ForecastTimestral:
+        if future_known:
+            assert calls[0]["past_covariates"] is None
+            np.testing.assert_array_equal(
+                calls[0]["known_covariates"], np.arange(10.0)[None, None, :]
+            )
+        else:
+            assert calls[0]["known_covariates"] is None
+            np.testing.assert_array_equal(
+                calls[0]["past_covariates"], np.arange(8.0)[None, None, :]
+            )
+    elif future_known:
+        assert calls[0]["past_only_covariates"] is None
+        np.testing.assert_array_equal(
+            calls[0]["past_future_covariates"], np.arange(10.0)[None, :]
+        )
+    else:
+        assert calls[0]["past_future_covariates"] is None
+        np.testing.assert_array_equal(
+            calls[0]["past_only_covariates"], np.arange(8.0)[None, :]
+        )
+
+
+def test_timestral_mixed_covariate_roles(targets, monkeypatch):
+    backend = SimpleNamespace(
+        forecast=Mock(return_value=SimpleNamespace(median=np.zeros((1, 2, 2))))
+    )
+    monkeypatch.setattr(
+        "forecast_realtime.models.timestral._load_forecaster", lambda *args: backend
+    )
+    regressors = pd.DataFrame(
+        {"past": np.arange(8.0), "known": np.arange(8.0) + 10}, index=targets.index
+    )
+    future = pd.DataFrame(
+        {"known": [18.0, 19.0]},
+        index=pd.date_range(targets.index[-1], periods=3, freq="ME")[1:],
+    )
+    model = ForecastTimestral().fit(targets, X=regressors)
+    model.forecast(steps=2, X=future)
+    options = backend.forecast.call_args.kwargs
+    np.testing.assert_array_equal(
+        options["past_covariates"], np.arange(8.0)[None, None, :]
+    )
+    np.testing.assert_array_equal(
+        options["known_covariates"], (np.arange(10.0) + 10)[None, None, :]
+    )
 
 
 def test_local_period_index(local_model):
@@ -304,6 +514,38 @@ def tiny_local_model(request, tmp_path):
         torch.set_num_threads(previous_threads)
 
 
+def _interpolate_native_quantiles(values, levels, probabilities):
+    return np.apply_along_axis(
+        lambda row: np.interp(probabilities, levels, row), -1, values
+    )
+
+
+@pytest.mark.parametrize("tiny_local_model", [ForecastTimestral], indirect=True)
+def test_timestral_native_past_only_checkpoint(tiny_local_model, targets, monkeypatch):
+    from timestral import TimestralForecaster
+    from timestral.model import TimestralModel
+
+    model_class, backend, checkpoint = tiny_local_model
+    config = replace(backend.config, block_schedule=("time_variate",))
+    backend = TimestralForecaster(TimestralModel(config).eval())
+    assert backend.supports_covariates
+    assert not backend.supports_known_covariates
+    monkeypatch.setattr(
+        "forecast_realtime.models.timestral._load_forecaster", lambda *args: backend
+    )
+    regressors = targets[["first"]].rename(columns={"first": "indicator"})
+    model = model_class(model_id=checkpoint).fit(targets, X=regressors)
+    result = model.forecast(steps=2)
+    native = backend.forecast(
+        targets.to_numpy(copy=True).T[None, ...],
+        prediction_length=2,
+        past_covariates=regressors.to_numpy(copy=True).T[None, ...],
+    )
+    expected = native.median.detach().cpu().numpy()[0].T
+    np.testing.assert_allclose(result["value"], expected.reshape(-1))
+    assert np.isfinite(result["value"]).all()
+
+
 @pytest.mark.filterwarnings("error:The given NumPy array is not writable:UserWarning")
 def test_local_real_backend_inference(tiny_local_model, targets):
     model_class, backend, checkpoint = tiny_local_model
@@ -323,7 +565,8 @@ def test_local_real_backend_inference(tiny_local_model, targets):
         covariates = (
             regressors.to_numpy(copy=True).T[None, ...] if with_regressors else None
         )
-        for quantiles in (False, [0.1, 0.5, 0.9]):
+        for quantiles in (False, True, [0.1, 0.5, 0.9]):
+            probabilities = [0.16, 0.5, 0.84] if quantiles is True else quantiles
             result = model.forecast(
                 steps=steps,
                 X=regressors.loc[dates] if with_regressors else None,
@@ -337,17 +580,305 @@ def test_local_real_backend_inference(tiny_local_model, targets):
                 prediction = backend.predict(
                     context,
                     horizon=steps,
-                    quantile_levels=(0.5,) if quantiles is False else tuple(quantiles),
+                    quantile_levels=(0.5,) if quantiles is False else probabilities,
                     future_covariates=covariates,
                 )
             values = prediction.median if quantiles is False else prediction.quantiles
-            expected = values.detach().cpu().numpy()[0].swapaxes(0, 1)
+            expected = values.detach().cpu().numpy()[0]
+            if model_class is ForecastTimestral and quantiles is not False:
+                expected = _interpolate_native_quantiles(
+                    expected, prediction.quantile_levels, probabilities
+                )
+            expected = expected.swapaxes(0, 1)
             np.testing.assert_allclose(result["value"], expected.reshape(-1))
             assert np.isfinite(result["value"]).all()
             assert result["date"].drop_duplicates().tolist() == dates.tolist()
             if quantiles is not False:
                 ordered = result["value"].to_numpy().reshape(steps, 2, 3)
                 assert (np.diff(ordered, axis=-1) >= 0).all()
+
+
+@pytest.fixture(params=[ForecastChronos2, ForecastTimesFM])
+def tiny_new_foundation_model(request, tmp_path):
+    torch = pytest.importorskip("torch")
+    loader = sys.modules[request.param.__module__]._load_forecaster
+    loader.cache_clear()
+    previous_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    levels = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    try:
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(42)
+            if request.param is ForecastChronos2:
+                chronos = pytest.importorskip("chronos")
+                from chronos.chronos2.config import Chronos2CoreConfig
+                from chronos.chronos2.model import Chronos2Model
+
+                config = Chronos2CoreConfig(
+                    d_model=16,
+                    d_kv=8,
+                    d_ff=32,
+                    num_layers=1,
+                    num_heads=2,
+                    dropout_rate=0.0,
+                    chronos_config={
+                        "context_length": 64,
+                        "input_patch_size": 4,
+                        "input_patch_stride": 4,
+                        "output_patch_size": 4,
+                        "quantiles": levels,
+                        "max_output_patches": 2,
+                        "use_reg_token": True,
+                        "use_arcsinh": False,
+                    },
+                )
+                network = Chronos2Model(config).eval()
+                with torch.no_grad():
+                    for parameter in network.output_patch_embedding.parameters():
+                        parameter.zero_()
+                    network.output_patch_embedding.output_layer.bias.copy_(
+                        torch.tensor(levels).repeat_interleave(4)
+                    )
+                chronos.Chronos2Pipeline(network).save_pretrained(tmp_path)
+            else:
+                pytest.importorskip("timesfm3")
+                from timesfm3.torch.configs import (
+                    ResidualBlockConfig,
+                    StackedTransformersConfig,
+                    TransformerConfig,
+                )
+                from timesfm3.torch.timesfm3_forecaster import (
+                    ModelConfig,
+                    _make_torch_model,
+                )
+
+                config = ModelConfig(
+                    input_patch_length=4,
+                    output_patch_length=8,
+                    residual_block_config=ResidualBlockConfig(
+                        hidden_dims=16, output_dims=16, use_bias=False, activation="relu"
+                    ),
+                    transformer_config=StackedTransformersConfig(
+                        num_layers=1,
+                        transformer=TransformerConfig(
+                            model_dims=16,
+                            hidden_dims=32,
+                            num_heads=2,
+                            attention_norm="rms",
+                            feedforward_norm="rms",
+                            qk_norm="rms",
+                            use_bias=False,
+                            use_rope_seq=True,
+                            use_rope_var=True,
+                            ff_activation="relu",
+                            deterministic=True,
+                        ),
+                    ),
+                    device="cpu",
+                )
+                _make_torch_model(config).save_pretrained(tmp_path)
+        backend = loader(str(tmp_path), "cpu")
+        assert loader(str(tmp_path), "cpu") is backend
+        yield request.param, backend, str(tmp_path)
+    finally:
+        loader.cache_clear()
+        torch.set_num_threads(previous_threads)
+
+
+@pytest.mark.parametrize("n_targets", [1, 2])
+@pytest.mark.parametrize("future_known", [False, True])
+def test_new_foundation_native_backend_parity(
+    tiny_new_foundation_model, targets, n_targets, future_known
+):
+    model_class, backend, checkpoint = tiny_new_foundation_model
+    history = targets.iloc[:, :n_targets].copy()
+    history.iloc[2, 0] = np.nan
+    history = history.drop(history.index[3])
+    steps = 9
+    dates = pd.date_range(targets.index[-1], periods=steps + 1, freq="ME")[1:]
+    regressors = pd.DataFrame(
+        {"indicator": np.arange(len(targets) + steps, dtype=float)},
+        index=targets.index.append(dates),
+    )
+    model = model_class(model_id=checkpoint)
+    model.fit(history, X=regressors.loc[targets.index])
+    context = history.reindex(targets.index).to_numpy(copy=True).T
+    known_path = regressors.to_numpy(copy=True).T if future_known else None
+    for quantiles in (False, True, [0.1, 0.5, 0.9]):
+        result = model.forecast(
+            steps=steps,
+            X=regressors.loc[dates] if future_known else None,
+            quantiles=quantiles,
+        )
+        probabilities = [0.16, 0.5, 0.84] if quantiles is True else quantiles
+        if quantiles is False:
+            probabilities = [0.5]
+        if model_class is ForecastChronos2:
+            task = {
+                "target": context,
+                "past_covariates": {
+                    "indicator": regressors.loc[targets.index, "indicator"].to_numpy()
+                },
+                "future_covariates": (
+                    {"indicator": regressors.loc[dates, "indicator"].to_numpy()}
+                    if future_known
+                    else {}
+                ),
+            }
+            distributions, points = backend.predict_quantiles(
+                inputs=[task], prediction_length=steps, quantile_levels=probabilities
+            )
+            values = points[0] if quantiles is False else distributions[0]
+            values = values.detach().cpu().numpy()
+        else:
+            prediction = backend.predict(
+                context,
+                horizon=steps,
+                past_only_covariates=(
+                    regressors.loc[targets.index].to_numpy(copy=True).T
+                    if not future_known
+                    else None
+                ),
+                past_future_covariates=known_path,
+                return_quantiles=quantiles is not False,
+            )
+            values = prediction.forecast if quantiles is False else prediction.quantiles
+            if n_targets == 1 and values.ndim == (1 if quantiles is False else 2):
+                values = values[None, ...]
+            if quantiles is not False:
+                values = _interpolate_native_quantiles(
+                    values, backend.config.quantiles, probabilities
+                )
+        expected = values.swapaxes(0, 1)
+        np.testing.assert_allclose(
+            result["value"], expected.reshape(-1), rtol=1e-5, atol=1e-6
+        )
+        assert np.isfinite(result["value"]).all()
+        assert result["date"].drop_duplicates().tolist() == dates.tolist()
+
+
+def test_new_foundation_realtime_parity_and_target_availability(
+    tiny_new_foundation_model, targets
+):
+    from forecast_evaluation import ForecastData
+
+    model_class, _, checkpoint = tiny_new_foundation_model
+    origin = targets.index[-1]
+    steps = 2
+    dates = pd.date_range(origin, periods=steps + 1, freq="ME")[1:]
+    regressors = pd.DataFrame(
+        {"indicator": np.arange(len(targets) + steps, dtype=float)},
+        index=targets.index.append(dates),
+    )
+    observed = pd.concat([targets, regressors.loc[targets.index]], axis=1)
+    outturns = (
+        observed.rename_axis("date")
+        .reset_index()
+        .melt(id_vars="date", var_name="variable", value_name="value")
+        .assign(vintage_date=lambda rows: rows["date"], frequency="M", metric="levels")
+    )
+    withheld = pd.DataFrame(
+        {"first": [1000.0, 2000.0], "second": [3000.0, 4000.0]}, index=dates
+    )
+    withheld = (
+        withheld.rename_axis("date")
+        .reset_index()
+        .melt(id_vars="date", var_name="variable", value_name="value")
+        .assign(vintage_date=lambda rows: rows["date"], frequency="M", metric="levels")
+    )
+    known = pd.DataFrame(
+        {
+            "date": dates,
+            "variable": "indicator",
+            "value": regressors.loc[dates, "indicator"].to_numpy(),
+            "vintage_date": origin,
+            "frequency": "M",
+            "metric": "levels",
+            "source": "known",
+            "forecast_horizon": np.arange(steps),
+        }
+    )
+    direct = model_class(model_id=checkpoint).fit(
+        targets, X=regressors.loc[targets.index]
+    )
+    for probabilities in (False, True, [0.1, 0.9]):
+        expected = direct.forecast(
+            steps=steps, X=regressors.loc[dates], quantiles=probabilities
+        )
+        keys = ["date", "variable"]
+        if probabilities is not False:
+            keys.append("quantile")
+        expected = expected[keys + ["value"]].sort_values(keys).reset_index(drop=True)
+        data = ForecastData(
+            outturns_data=pd.concat([outturns, withheld], ignore_index=True),
+            forecasts_data=known,
+            compute_levels=False,
+        )
+        realtime = rt.RealTimeModel(
+            data,
+            [
+                model_class(
+                    model_id=checkpoint,
+                    label="foundation",
+                    conditioning={
+                        "X": {"indicator": {"source": "known", "periods": steps}}
+                    },
+                )
+            ],
+        )
+        realtime.forecast(
+            y_variables=list(targets.columns),
+            X_variables=["indicator"],
+            data_transformation=dict.fromkeys(observed.columns, "levels"),
+            steps=steps,
+            first_forecast_horizon=1,
+            first_vintage=origin,
+            last_vintage=origin,
+            parallel=False,
+            reconstruct_levels=False,
+            quantiles=probabilities,
+        )
+        actual = realtime.data.forecasts if probabilities is False else realtime.quantiles
+        actual = (
+            actual.loc[
+                actual["source"].eq("foundation") & actual["metric"].eq("levels"),
+                keys + ["value"],
+            ]
+            .sort_values(keys)
+            .reset_index(drop=True)
+        )
+        pd.testing.assert_frame_equal(
+            actual, expected, check_dtype=False, check_exact=False, rtol=1e-5, atol=1e-6
+        )
+
+
+@pytest.mark.parametrize("model_class", [ForecastChronos2, ForecastTimesFM])
+def test_new_foundation_loader_uses_device_and_cache(model_class, monkeypatch):
+    loader = sys.modules[model_class.__module__]._load_forecaster
+    backend = object()
+    factory = Mock(return_value=backend)
+    package, symbol = (
+        ("chronos", "Chronos2Pipeline")
+        if model_class is ForecastChronos2
+        else ("timesfm3", "TimesFM3Forecaster")
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        package,
+        SimpleNamespace(**{symbol: SimpleNamespace(from_pretrained=factory)}),
+    )
+    loader.cache_clear()
+    try:
+        assert loader("test-checkpoint", "cpu") is backend
+        assert loader("test-checkpoint", "cpu") is backend
+        device_option = (
+            {"device_map": "cpu"}
+            if model_class is ForecastChronos2
+            else {"device": "cpu"}
+        )
+        factory.assert_called_once_with("test-checkpoint", **device_option)
+    finally:
+        loader.cache_clear()
 
 
 @pytest.fixture(scope="module", params=[ForecastTimestral, ForecastT0])
@@ -432,11 +963,12 @@ def _assert_pretrained_parity(
     )
     model = model_class(model_id=checkpoint)
     model.fit(history, X=None if regressors is None else regressors.loc[calendar])
-    for probabilities in (False, [0.1, 0.5, 0.9]):
+    for quantiles in (False, True, [0.1, 0.5, 0.9]):
+        probabilities = [0.16, 0.5, 0.84] if quantiles is True else quantiles
         result = model.forecast(
             steps=steps,
             X=None if regressors is None else regressors.loc[dates],
-            quantiles=probabilities,
+            quantiles=quantiles,
         )
         if model_class is ForecastTimestral:
             native = backend.forecast(
@@ -454,12 +986,10 @@ def _assert_pretrained_parity(
             assert result["variable"].tolist() == list(history.columns) * steps
         else:
             levels = np.asarray(native.quantile_levels)
-            selected = [
-                np.flatnonzero(np.isclose(levels, probability))[0]
-                for probability in probabilities
-            ]
             expected = native.quantiles.detach().cpu().numpy()[0]
-            expected = np.take(expected, selected, axis=-1).swapaxes(0, 1)
+            expected = _interpolate_native_quantiles(
+                expected, levels, probabilities
+            ).swapaxes(0, 1)
             assert result["variable"].tolist() == list(
                 np.tile(np.repeat(history.columns, len(probabilities)), steps)
             )
@@ -600,7 +1130,7 @@ def test_pretrained_realtime_parity_and_no_future_target_leakage(
     paths = pd.concat([known, later_covariates], ignore_index=True)
     mapping = dict.fromkeys([*history.columns, "indicator"], "levels")
 
-    for probabilities in (False, [0.1, 0.5, 0.9]):
+    for probabilities in (False, True, [0.1, 0.5, 0.9]):
         expected = model.forecast(
             steps=steps, X=regressors.loc[dates], quantiles=probabilities
         )

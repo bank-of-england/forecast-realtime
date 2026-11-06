@@ -27,7 +27,8 @@ class ForecastTimestral(ForecastModel):
     """Forecast locally with pretrained Timestral weights.
 
     Fit stores the context and loads the pretrained model; forecasting reuses it.
-    Point forecasts are medians. Quantiles must be supplied by the checkpoint.
+    Point forecasts are medians. Requested quantiles are linearly interpolated
+    within the checkpoint's output grid; extrapolation is not supported.
     The backend predicts horizons jointly within each block and rolls longer
     horizons forward using predicted medians. The linear-model option
     ``forecast_strategy`` is not supported; backend block recursion remains enabled.
@@ -82,6 +83,7 @@ class ForecastTimestral(ForecastModel):
         calendar = pd.date_range(history.index[0], forecast_origin, freq=frequency)
         history = history.reindex(calendar)
         context = history.to_numpy(dtype=float, copy=True).T[None, ...]
+        past_covariates = None
         covariates = None
         if self.X is not None:
             if X is None:
@@ -89,14 +91,22 @@ class ForecastTimestral(ForecastModel):
             if isinstance(X.index, pd.PeriodIndex):
                 X = X.copy()
                 X.index = X.index.to_timestamp(how="end").normalize()
-            covariates = (
-                X.reindex(index=calendar.append(dates), columns=self.X.columns)
-                .to_numpy(dtype=float, copy=True)
-                .T[None, ...]
-            )
+            regressors = X.reindex(index=calendar.append(dates), columns=self.X.columns)
+            known = regressors.loc[dates].notna().any()
+            if (~known).any():
+                past_covariates = (
+                    regressors.loc[calendar, ~known]
+                    .to_numpy(dtype=float, copy=True)
+                    .T[None, ...]
+                )
+            if known.any():
+                covariates = (
+                    regressors.loc[:, known].to_numpy(dtype=float, copy=True).T[None, ...]
+                )
         prediction = _load_forecaster(self.model_id, self.device).forecast(
             context,
             prediction_length=steps,
+            past_covariates=past_covariates,
             known_covariates=covariates,
         )
         values = prediction.median if quantiles is None else prediction.quantiles
@@ -111,13 +121,14 @@ class ForecastTimestral(ForecastModel):
             raise ValueError(
                 f"Backend quantiles have shape {values.shape}; expected {expected}."
             )
-        selected = []
         for probability in quantiles:
-            matches = np.flatnonzero(np.isclose(levels, probability, rtol=0, atol=1e-8))
-            if len(matches) != 1:
+            if probability < levels[0] - 1e-8 or probability > levels[-1] + 1e-8:
                 raise ValueError(f"Backend does not provide quantile {probability}.")
-            selected.append(int(matches[0]))
-        values = np.take(values[0], selected, axis=-1).transpose(1, 0, 2)
+        requested = np.clip(quantiles, levels[0], levels[-1])
+        values = np.apply_along_axis(
+            lambda row: np.interp(requested, levels, row), -1, values[0]
+        )
+        values = values.transpose(1, 0, 2)
         return pd.DataFrame(
             {
                 "date": dates.repeat(len(self.y.columns) * len(quantiles)),

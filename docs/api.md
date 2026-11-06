@@ -157,3 +157,13 @@ current source.
     options:
       show_source: false
       show_root_heading: true
+
+::: forecast_realtime.models.chronos2.ForecastChronos2
+    options:
+      show_source: false
+      show_root_heading: true
+
+::: forecast_realtime.models.timesfm.ForecastTimesFM
+    options:
+      show_source: false
+      show_root_heading: true
