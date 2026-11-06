@@ -28,6 +28,9 @@ class ForecastTimestral(ForecastModel):
 
     Fit stores the context and loads the pretrained model; forecasting reuses it.
     Point forecasts are medians. Quantiles must be supplied by the checkpoint.
+    The backend predicts horizons jointly within each block and rolls longer
+    horizons forward using predicted medians. The linear-model option
+    ``forecast_strategy`` is not supported; backend block recursion remains enabled.
     Other constructor options are passed to ``ForecastModel``.
 
     Parameters

@@ -82,6 +82,37 @@ def test_local_loading_errors_surface_during_fit(
     assert not model._is_fitted
 
 
+@pytest.mark.parametrize("strategy", ["recursive", "direct"])
+@pytest.mark.parametrize("entry_point", ["constructor", "fit", "forecast"])
+def test_local_rejects_linear_forecast_strategy(
+    local_model, targets, strategy, entry_point
+):
+    model, calls = local_model
+    if entry_point == "forecast":
+        model.fit(targets)
+
+    with pytest.raises(TypeError, match="forecast_strategy"):
+        if entry_point == "constructor":
+            type(model)(forecast_strategy=strategy)
+        elif entry_point == "fit":
+            model.fit(targets, forecast_strategy=strategy)
+        else:
+            model.forecast(steps=2, forecast_strategy=strategy)
+    assert not calls
+
+
+@pytest.mark.parametrize("steps", [12, 1025])
+def test_local_delegates_full_horizon_to_backend(local_model, targets, steps):
+    model, calls = local_model
+    model.fit(targets)
+    result = model.forecast(steps=steps)
+
+    assert len(calls) == 1
+    _, options = calls[0]
+    assert options.get("prediction_length", options.get("horizon")) == steps
+    assert result["date"].nunique() == steps
+
+
 def test_local_multivariate_point_forecast(local_model, targets):
     model, calls = local_model
     assert model.fit(targets) is model

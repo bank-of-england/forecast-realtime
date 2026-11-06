@@ -27,6 +27,9 @@ class ForecastT0(ForecastModel):
 
     Fit stores the context and loads the pretrained model; forecasting reuses it.
     Point forecasts are medians. No API key is required.
+    The backend predicts horizons jointly within each block and rolls longer
+    horizons forward using quantile-based prediction paths. The linear-model option
+    ``forecast_strategy`` is not supported; backend block recursion remains enabled.
     Other constructor options are passed to ``ForecastModel``.
 
     Parameters
