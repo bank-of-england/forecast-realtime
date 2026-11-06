@@ -36,6 +36,14 @@ class ForecastT0(ForecastModel):
     ----------
     model_id : str
         Hugging Face checkpoint. Defaults to ``theforecastingcompany/t0-gamma``.
+        Available checkpoints (approximate parameter counts):
+
+        - ``theforecastingcompany/t0-alpha``: 102 million parameters.
+        - ``theforecastingcompany/t0-beta``: 256 million parameters.
+        - ``theforecastingcompany/t0-gamma``: 256 million parameters.
+
+        Alpha has five trained quantile levels; beta and gamma have 21.
+        Other requested quantiles are interpolated or extrapolated by the backend.
     device : str
         PyTorch device. Defaults to ``cpu``.
     """

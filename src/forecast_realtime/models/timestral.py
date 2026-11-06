@@ -37,6 +37,13 @@ class ForecastTimestral(ForecastModel):
     ----------
     model_id : str
         Hugging Face checkpoint. Defaults to ``mistralai/Timestral-209M``.
+        Available checkpoints (approximate parameter counts):
+
+        - ``mistralai/Timestral-5M``: 5 million parameters.
+        - ``mistralai/Timestral-28M``: 28 million parameters.
+        - ``mistralai/Timestral-123M``: 123 million parameters.
+        - ``mistralai/Timestral-209M``: 209 million parameters.
+
     device : str
         PyTorch device. Defaults to ``cpu``.
     """
