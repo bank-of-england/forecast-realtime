@@ -67,6 +67,9 @@ models = [
     "forecast_realtime[xgboost]",
     "forecast_realtime[bvar]",
     "forecast_realtime[nowcast_midas]",
+    "forecast_realtime[t0]",
+    "forecast_realtime[chronos2]",
+    "forecast_realtime[timesfm]",
 ]
 
 ridge = ["scikit-learn >= 1.8.0"]
