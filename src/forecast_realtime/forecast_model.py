@@ -815,6 +815,11 @@ class ForecastModel(ABC):
             for variable in y_columns
             if y_frequency_map[variable] is not None
         }
+        if not self._handles_mixed_frequencies and len(y_frequency_values) > 1:
+            raise ValueError(
+                f"{self.__class__.__name__} does not support mixed frequencies: "
+                f"y has {sorted(y_frequency_values)!r}."
+            )
         y_frequency = (
             next(iter(y_frequency_values)) if len(y_frequency_values) == 1 else None
         )

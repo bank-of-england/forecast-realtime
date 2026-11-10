@@ -1,0 +1,139 @@
+"""Local forecasting with Mistral's Timestral models."""
+
+from functools import lru_cache
+
+import numpy as np
+import pandas as pd
+
+from forecast_realtime.forecast_model import ForecastModel
+
+
+@lru_cache(maxsize=4)
+def _load_forecaster(model_id, device):
+    try:
+        from timestral import TimestralForecaster
+    except ModuleNotFoundError as error:
+        if error.name != "timestral":
+            raise
+        raise ModuleNotFoundError(
+            "Install Timestral with pip install "
+            "git+https://github.com/mistralai/timestral.git.",
+            name="timestral",
+        ) from error
+    return TimestralForecaster.from_pretrained(model_id, device=device)
+
+
+class ForecastTimestral(ForecastModel):
+    """Forecast locally with pretrained Timestral weights.
+
+    Fit stores the context and loads the pretrained model; forecasting reuses it.
+    Point forecasts are medians. Requested quantiles are linearly interpolated
+    within the checkpoint's output grid; extrapolation is not supported.
+    The backend predicts horizons jointly within each block and rolls longer
+    horizons forward using predicted medians. The linear-model option
+    ``forecast_strategy`` is not supported; backend block recursion remains enabled.
+    Other constructor options are passed to ``ForecastModel``.
+
+    Parameters
+    ----------
+    model_id : str
+        Hugging Face checkpoint. Defaults to ``mistralai/Timestral-209M``.
+        Available checkpoints (approximate parameter counts):
+
+        - ``mistralai/Timestral-5M``: 5 million parameters.
+        - ``mistralai/Timestral-28M``: 28 million parameters.
+        - ``mistralai/Timestral-123M``: 123 million parameters.
+        - ``mistralai/Timestral-209M``: 209 million parameters.
+
+    device : str
+        PyTorch device. Defaults to ``cpu``.
+    """
+
+    _supports_quantiles = True
+    _handles_mixed_frequencies = False
+
+    def __init__(
+        self, model_id: str = "mistralai/Timestral-209M", device: str = "cpu", **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.model_id = model_id
+        self.device = device
+
+    def _fit(self, y, X=None, **kwargs):
+        if kwargs:
+            raise TypeError(f"Unexpected fit options: {sorted(kwargs)}")
+        _load_forecaster(self.model_id, self.device)
+        return self
+
+    def _forecast(
+        self, steps=1, X=None, y=None, forecast_origin=None, quantiles=None, **kwargs
+    ):
+        if kwargs:
+            raise TypeError(f"Unexpected forecast options: {sorted(kwargs)}")
+        history = self.y if y is None else y
+        history = history.loc[:forecast_origin].reindex(columns=self.y.columns)
+        if isinstance(history.index, pd.PeriodIndex):
+            history = history.copy()
+            history.index = history.index.to_timestamp(how="end").normalize()
+        dates = self._forecast_dates(forecast_origin, steps)
+        design = self._fitted_model_configuration.design
+        frequency = design.frequency
+        if frequency in ("M", "Q"):
+            frequency += "S" if design.month_start else "E"
+        calendar = pd.date_range(history.index[0], forecast_origin, freq=frequency)
+        history = history.reindex(calendar)
+        context = history.to_numpy(dtype=float, copy=True).T[None, ...]
+        past_covariates = None
+        covariates = None
+        if self.X is not None:
+            if X is None:
+                X = self.X
+            if isinstance(X.index, pd.PeriodIndex):
+                X = X.copy()
+                X.index = X.index.to_timestamp(how="end").normalize()
+            regressors = X.reindex(index=calendar.append(dates), columns=self.X.columns)
+            known = regressors.loc[dates].notna().any()
+            if (~known).any():
+                past_covariates = (
+                    regressors.loc[calendar, ~known]
+                    .to_numpy(dtype=float, copy=True)
+                    .T[None, ...]
+                )
+            if known.any():
+                covariates = (
+                    regressors.loc[:, known].to_numpy(dtype=float, copy=True).T[None, ...]
+                )
+        prediction = _load_forecaster(self.model_id, self.device).forecast(
+            context,
+            prediction_length=steps,
+            past_covariates=past_covariates,
+            known_covariates=covariates,
+        )
+        values = prediction.median if quantiles is None else prediction.quantiles
+        if hasattr(values, "detach"):
+            values = values.detach().cpu().numpy()
+        values = np.asarray(values)
+        if quantiles is None:
+            return values[0].T
+        levels = np.asarray(prediction.quantile_levels, dtype=float)
+        expected = (1, len(self.y.columns), steps, len(levels))
+        if values.shape != expected:
+            raise ValueError(
+                f"Backend quantiles have shape {values.shape}; expected {expected}."
+            )
+        for probability in quantiles:
+            if probability < levels[0] - 1e-8 or probability > levels[-1] + 1e-8:
+                raise ValueError(f"Backend does not provide quantile {probability}.")
+        requested = np.clip(quantiles, levels[0], levels[-1])
+        values = np.apply_along_axis(
+            lambda row: np.interp(requested, levels, row), -1, values[0]
+        )
+        values = values.transpose(1, 0, 2)
+        return pd.DataFrame(
+            {
+                "date": dates.repeat(len(self.y.columns) * len(quantiles)),
+                "variable": np.tile(np.repeat(self.y.columns, len(quantiles)), steps),
+                "quantile": np.tile(quantiles, steps * len(self.y.columns)),
+                "value": values.reshape(-1),
+            }
+        )
