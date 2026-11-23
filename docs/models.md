@@ -19,6 +19,7 @@ Install the extra for the model you use, for example `pip install
 | `ForecastT0` | Local forecasts with The Forecasting Company's t0 weights |
 | `ForecastChronos2` | Local Amazon Chronos-2 forecasts with pretrained weights |
 | `ForecastTimesFM` | Local Google TimesFM 3.0 forecasts with pretrained weights |
+| `ForecastTabICLv2`, `ForecastTabPFN` | Native multi-step point and quantile forecasts with TabICL and TabPFN-TS |
 
 ```python
 import forecast_evaluation as fe
@@ -120,6 +121,41 @@ Reference: Bergmeir, C., Hyndman, R. J. and Koo, B. (2018), "A note on the
 validity of cross-validation for evaluating autoregressive time series
 prediction", *Computational Statistics & Data Analysis*, 120, 70-83.
 https://doi.org/10.1016/j.csda.2017.11.003
+
+## Tabular foundation models
+
+Install TabICLv2 with `pip install "forecast-realtime[tabicl]"` and TabPFN with
+`pip install "forecast-realtime[tabpfn]"`.
+`ForecastTabICLv2` wraps `TabICLForecaster`; `ForecastTabPFN` uses
+`TabPFNTSPipeline` in local mode. Each calls the native forecasting pipeline
+once for the whole horizon. Multiple target columns are passed as separate
+series, not modeled jointly. No target lags or predictors are required.
+
+```python
+import forecast_realtime as rt
+
+model = rt.models.ForecastTabICLv2().fit(y_train)
+predictions = model.forecast(steps=3)
+intervals = model.forecast(steps=3, quantiles=[0.1, 0.9])
+```
+
+Both return medians by default. To use known future covariates, pass their
+history as `X` to `fit()` and their forecast-period values as `X` to `forecast()`.
+The native pipelines ignore predictors with no values in the forecast period.
+They do not support `forecast_strategy`. Both default to CPU. Use `device="cuda"`
+for GPU inference and `estimator_kwargs` for native regressor options.
+
+Use `model_id` to select a checkpoint on all six foundation models. For example,
+`ForecastTabPFN(model_id="tabpfn-v3.5-fast-20260909.safetensors")` selects
+TabPFN Fast. TabICLv2 accepts a published regression checkpoint filename or an
+existing local checkpoint file. Omit `model_id` to keep each model's default.
+Existing `ForecastTabPFN(model_path=...)` calls still work; use only one of the
+two keywords.
+
+The TabPFN extra currently resolves to pandas 2.3 because GluonTS requires
+pandas below 3. Some TabPFN checkpoints require Prior Labs authorisation.
+Use `ForecastTabPFN(model_id="tabpfn-v2-regressor.ckpt")` for a public
+checkpoint. Inference runs locally, with no hosted fallback.
 
 ## Foundation models
 

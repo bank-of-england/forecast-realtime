@@ -22,6 +22,8 @@ _MODEL_SPECS = {
     "ForecastT0": ("t0", (), "t0"),
     "ForecastChronos2": ("chronos2", (), "chronos2"),
     "ForecastTimesFM": ("timesfm", (), "timesfm"),
+    "ForecastTabICLv2": ("tabicl", (), "tabicl"),
+    "ForecastTabPFN": ("tabpfn", (), None),
 }
 
 
@@ -74,6 +76,8 @@ __all__ = [
     "ForecastT0",
     "ForecastChronos2",
     "ForecastTimesFM",
+    "ForecastTabICLv2",
+    "ForecastTabPFN",
 ]
 
 

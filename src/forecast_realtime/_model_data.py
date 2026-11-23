@@ -1117,9 +1117,10 @@ class ModelData:
             )
             rows["metric"] = rows["series"].map(lambda s: self._catalogue[s]["metric"])
             return rows.drop(columns="series").reset_index(drop=True)
-        metadata = self._metadata.loc[
-            self._metadata["_row"].isin(self._observations.index)
-        ]
+        metadata = self._metadata
+        present = metadata["_row"].isin(self._observations.index)
+        if not present.all():
+            metadata = metadata.loc[present]
         rows = self._observations.loc[metadata["_row"]].copy()
         rows.index = metadata.index
         result = metadata.drop(columns="_row").copy()

@@ -1,6 +1,7 @@
 """Foundation model contracts, without model downloads.
 
-Set FORECAST_REALTIME_PRETRAINED=1 to test cached full checkpoints.
+Set FORECAST_REALTIME_PRETRAINED=1 to test full checkpoints. The tabular tests
+can download public checkpoints if they are not cached.
 Run those tests with ``pytest -n auto --dist loadgroup -k pretrained``.
 """
 
@@ -9,6 +10,7 @@ import os
 import sys
 from dataclasses import replace
 from functools import lru_cache
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -90,6 +92,202 @@ def targets():
     return pd.DataFrame(
         {"first": np.arange(8.0), "second": np.arange(8.0) + 10}, index=dates
     )
+
+
+@pytest.mark.parametrize("public_name", ["ForecastTabICLv2", "ForecastTabPFN"])
+def test_tabular_foundation_forecasts(public_name, monkeypatch, targets):
+    model_class = getattr(rt.models, public_name)
+    assert model_class.__bases__ == (rt.ForecastModel,)
+    with pytest.raises(TypeError, match="forecast_strategy"):
+        model_class(forecast_strategy="recursive")
+    dates = pd.date_range("2020-09-30", periods=3, freq="ME")
+    index = pd.MultiIndex.from_product(
+        [targets.columns, dates], names=["item_id", "timestamp"]
+    )
+    predictions = pd.DataFrame({"target": [8, 9, 10, 18, 19, 20]}, index=index)
+    backend = Mock()
+    backend.predict_df.return_value = predictions.iloc[::-1]
+    _install_tabular_test_backend(public_name, Mock(return_value=backend), monkeypatch)
+    model = model_class().fit(targets)
+    backend.predict_df.assert_not_called()
+    result = model.forecast(steps=3)
+    backend.predict_df.assert_called_once()
+    options = backend.predict_df.call_args.kwargs
+    assert options["prediction_length"] == 3
+    context = options["context_df"].pivot(
+        index="timestamp", columns="item_id", values="target"
+    )
+    pd.testing.assert_frame_equal(context, targets, check_names=False, check_freq=False)
+    assert result["date"].tolist() == dates.repeat(2).tolist()
+    assert result["variable"].tolist() == ["first", "second"] * 3
+    assert result["value"].tolist() == [8, 18, 9, 19, 10, 20]
+
+
+def _install_tabular_test_backend(public_name, factory, monkeypatch):
+    if public_name == "ForecastTabICLv2":
+        monkeypatch.setitem(
+            sys.modules, "tabicl", SimpleNamespace(TabICLForecaster=factory)
+        )
+    else:
+        monkeypatch.setitem(
+            sys.modules,
+            "tabpfn_time_series",
+            SimpleNamespace(
+                TABPFN_DEFAULT_CONFIG={},
+                TabPFNMode=SimpleNamespace(LOCAL="local"),
+                TabPFNTSPipeline=factory,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "model_path", [None, "fast.safetensors", Path("fast.safetensors")]
+)
+def test_tabpfn_model_path(model_path, monkeypatch, targets):
+    factory = Mock()
+    _install_tabular_test_backend("ForecastTabPFN", factory, monkeypatch)
+    model = rt.models.ForecastTabPFN(
+        model_path=model_path, estimator_kwargs={"model_path": "legacy.ckpt"}
+    )
+    model.fit(targets)
+    factory.assert_called_once_with(
+        tabpfn_mode="local",
+        tabpfn_model_config={
+            "device": "cpu",
+            "model_path": "legacy.ckpt" if model_path is None else model_path,
+        },
+    )
+
+
+def test_tabpfn_model_id(monkeypatch, targets):
+    factory = Mock()
+    _install_tabular_test_backend("ForecastTabPFN", factory, monkeypatch)
+    checkpoint = Path("fast.safetensors")
+    model = rt.models.ForecastTabPFN(
+        model_id=checkpoint, estimator_kwargs={"model_path": "legacy.ckpt"}
+    ).fit(targets)
+    assert model.model_path == model.model_id == checkpoint
+    factory.assert_called_once_with(
+        tabpfn_mode="local",
+        tabpfn_model_config={"device": "cpu", "model_path": checkpoint},
+    )
+    with pytest.raises(TypeError, match="only one of model_id and model_path"):
+        rt.models.ForecastTabPFN(model_id=checkpoint, model_path="other.ckpt")
+
+
+def test_tabicl_model_id(monkeypatch, targets, tmp_path):
+    factory = Mock()
+    _install_tabular_test_backend("ForecastTabICLv2", factory, monkeypatch)
+    model_class = rt.models.ForecastTabICLv2
+    name = "tabicl-regressor-v2-20260212.ckpt"
+    model_class(model_id=name, estimator_kwargs={"model_path": "legacy.ckpt"}).fit(
+        targets
+    )
+    factory.assert_called_once_with(
+        point_estimate="median",
+        tabicl_config={"device": "cpu", "checkpoint_version": name},
+    )
+
+    path = tmp_path / "local.ckpt"
+    with pytest.raises(FileNotFoundError, match="local.ckpt"):
+        model_class(model_id=path).fit(targets)
+    path.touch()
+    model_class(model_id=path).fit(targets)
+    factory.assert_called_with(
+        point_estimate="median", tabicl_config={"device": "cpu", "model_path": path}
+    )
+
+
+@pytest.mark.parametrize(
+    ("public_name", "package"),
+    [
+        ("ForecastTabICLv2", "tabicl"),
+        ("ForecastTabPFN", "tabpfn_time_series"),
+    ],
+)
+def test_tabular_foundation_fit_errors(public_name, package, monkeypatch, targets):
+    monkeypatch.setitem(sys.modules, package, None)
+    model = getattr(rt.models, public_name)()
+    with pytest.raises(ModuleNotFoundError) as error:
+        model.fit(targets)
+    assert error.value.name == package
+
+
+@pytest.mark.parametrize("public_name", ["ForecastTabICLv2", "ForecastTabPFN"])
+def test_tabular_foundation_known_covariates_and_quantiles(
+    public_name, monkeypatch, targets
+):
+    dates = pd.date_range(targets.index[0], periods=len(targets) + 2, freq="ME")
+    regressors = pd.DataFrame(
+        {"signal": np.arange(len(dates)), "past_only": 1.0}, index=dates
+    )
+    regressors.loc[dates[-2:], "past_only"] = np.nan
+
+    def predict(context_df, quantiles, future_df, prediction_length=None):
+        assert prediction_length is None
+        assert list(quantiles) == [0.1, 0.9]
+        assert set(context_df.columns) == {
+            "timestamp",
+            "item_id",
+            "target",
+            "covariate_0",
+        }
+        assert context_df.timestamp.max() == targets.index[-1]
+        assert set(future_df.columns) == {"timestamp", "item_id", "covariate_0"}
+        assert future_df["covariate_0"].tolist() == [8, 8, 9, 9]
+        index = pd.MultiIndex.from_frame(future_df[["item_id", "timestamp"]])
+        return pd.DataFrame({"0.1": range(4), "0.9": range(10, 14)}, index=index).iloc[
+            ::-1
+        ]
+
+    factory = Mock(return_value=SimpleNamespace(predict_df=predict))
+    _install_tabular_test_backend(public_name, factory, monkeypatch)
+    model = getattr(rt.models, public_name)()
+    model.fit(targets, X=regressors.loc[targets.index])
+    result = model.forecast(steps=2, X=regressors, quantiles=[0.1, 0.9])
+    assert result["value"].tolist() == [0, 10, 1, 11, 2, 12, 3, 13]
+    assert result["quantile"].tolist() == [0.1, 0.9] * 4
+    if public_name == "ForecastTabPFN":
+        factory.assert_called_once_with(
+            tabpfn_mode="local", tabpfn_model_config={"device": "cpu"}
+        )
+    else:
+        factory.assert_called_once_with(
+            point_estimate="median", tabicl_config={"device": "cpu"}
+        )
+
+
+@pytest.mark.xdist_group(name="pretrained_foundation")
+@pytest.mark.parametrize(
+    ("public_name", "model_id"),
+    [
+        ("ForecastTabICLv2", None),
+        ("ForecastTabPFN", "tabpfn-v2-regressor.ckpt"),
+    ],
+)
+def test_pretrained_tabular_foundation_inference(public_name, model_id):
+    if os.environ.get("FORECAST_REALTIME_PRETRAINED") != "1":
+        pytest.skip("Set FORECAST_REALTIME_PRETRAINED=1 to test real checkpoints.")
+
+    dates = pd.date_range("2020-01-31", periods=26, freq="ME")
+    history, horizon = dates[:-2], dates[-2:]
+    targets = pd.DataFrame({"sales": np.arange(len(history), dtype=float)}, index=history)
+    regressors = pd.DataFrame({"signal": np.sin(np.arange(len(dates)))}, index=dates)
+    levels = [0.1, 0.5, 0.9]
+    model = getattr(rt.models, public_name)(
+        model_id=model_id, estimator_kwargs={"n_estimators": 1}
+    )
+    model.fit(targets, X=regressors.loc[history])
+    point = model.forecast(steps=2, X=regressors.loc[horizon])
+    intervals = model.forecast(steps=2, X=regressors.loc[horizon], quantiles=levels)
+
+    assert point["date"].tolist() == horizon.tolist()
+    assert point["variable"].tolist() == ["sales"] * 2
+    assert intervals["date"].tolist() == horizon.repeat(len(levels)).tolist()
+    assert intervals["variable"].tolist() == ["sales"] * 6
+    assert intervals["quantile"].tolist() == levels * 2
+    assert np.isfinite(point["value"]).all()
+    assert np.isfinite(intervals["value"]).all()
 
 
 def test_local_loads_backend_during_fit(local_model, targets, monkeypatch):

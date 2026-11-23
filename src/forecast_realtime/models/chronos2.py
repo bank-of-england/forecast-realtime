@@ -25,12 +25,15 @@ def _load_forecaster(model_id, device):
 class ForecastChronos2(ForecastModel):
     """Forecast locally with pretrained Chronos-2 weights.
 
-    Fit stores the context and loads the pretrained model without fine-tuning.
+    ``fit()`` stores the history and loads the checkpoint without fine-tuning.
+    Chronos-2 receives all target columns as one multivariate series. It uses
+    the history of every fitted predictor, even if its future values are
+    unknown. Pass known future predictor values as ``X`` to ``forecast()``.
+
     Point forecasts are medians. The backend interpolates requested quantiles;
     probabilities outside its trained grid are clipped to the grid endpoints.
     Forecasting uses the backend's native multi-horizon inference and quantile-path
     rollout for longer horizons. ``forecast_strategy`` is not supported.
-    Other constructor options are passed to ``ForecastModel``.
 
     Parameters
     ----------
@@ -44,6 +47,11 @@ class ForecastChronos2(ForecastModel):
 
     device : str
         PyTorch device. Defaults to ``cpu``.
+
+    Notes
+    -----
+    Additional keyword arguments, such as ``label`` and ``formula``, go to
+    ``ForecastModel``.
     """
 
     _supports_quantiles = True

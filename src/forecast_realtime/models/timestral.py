@@ -26,18 +26,23 @@ def _load_forecaster(model_id, device):
 class ForecastTimestral(ForecastModel):
     """Forecast locally with pretrained Timestral weights.
 
-    Fit stores the context and loads the pretrained model; forecasting reuses it.
+    ``fit()`` stores the history and loads the checkpoint without fine-tuning.
+    Timestral forecasts target columns jointly. A predictor with no values in
+    the forecast horizon goes to the backend as past-only; otherwise the backend
+    receives both its history and its future values. Covariate support depends
+    on the checkpoint.
+
     Point forecasts are medians. Requested quantiles are linearly interpolated
     within the checkpoint's output grid; extrapolation is not supported.
     The backend predicts horizons jointly within each block and rolls longer
     horizons forward using predicted medians. The linear-model option
     ``forecast_strategy`` is not supported; backend block recursion remains enabled.
-    Other constructor options are passed to ``ForecastModel``.
 
     Parameters
     ----------
     model_id : str
-        Hugging Face checkpoint. Defaults to ``mistralai/Timestral-209M``.
+        Hugging Face checkpoint or local checkpoint directory.
+        Defaults to ``mistralai/Timestral-209M``.
         Available checkpoints (approximate parameter counts):
 
         - ``mistralai/Timestral-5M``: 5 million parameters.
@@ -47,6 +52,11 @@ class ForecastTimestral(ForecastModel):
 
     device : str
         PyTorch device. Defaults to ``cpu``.
+
+    Notes
+    -----
+    Additional keyword arguments, such as ``label`` and ``formula``, go to
+    ``ForecastModel``.
     """
 
     _supports_quantiles = True

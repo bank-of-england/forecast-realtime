@@ -167,3 +167,13 @@ current source.
     options:
       show_source: false
       show_root_heading: true
+
+::: forecast_realtime.models.tabicl.ForecastTabICLv2
+    options:
+      show_source: false
+      show_root_heading: true
+
+::: forecast_realtime.models.tabpfn.ForecastTabPFN
+    options:
+      show_source: false
+      show_root_heading: true

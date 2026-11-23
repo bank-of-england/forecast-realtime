@@ -466,14 +466,14 @@ def test_sequential_revisions_reconcile_to_revised_forecasts():
         "decomposition == 'level' and variable == 'target_a'"
     )
     revised = (
-        levels.query("vintage_date == '2020-04-30'")
-        .groupby(["date", "forecast_horizon"])["contribution"]
+        levels.loc[levels["vintage_date"].eq(pd.Timestamp("2020-04-30"))]
+        .groupby("date")["contribution"]
         .sum()
     )
-    prior = levels.query("vintage_date == '2020-03-31'").set_index(
-        ["date", "forecast_horizon"]
+    prior = levels.loc[levels["vintage_date"].eq(pd.Timestamp("2020-03-31"))].set_index(
+        "date"
     )["contribution"]
-    revision = revision_totals
+    revision = revision_totals.droplevel("forecast_horizon")
     prior = prior.reindex(revised.index, fill_value=0.0)
     np.testing.assert_allclose(
         revised.sort_index().to_numpy(),

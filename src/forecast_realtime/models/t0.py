@@ -25,12 +25,15 @@ def _load_forecaster(model_id, device):
 class ForecastT0(ForecastModel):
     """Forecast locally with pretrained t0 weights.
 
-    Fit stores the context and loads the pretrained model; forecasting reuses it.
+    ``fit()`` stores the history and loads the checkpoint without fine-tuning.
+    t0 forecasts target columns jointly. When you supply predictors, the
+    backend treats missing future values as zero. Pass known future values
+    as ``X`` to ``forecast()`` or use ``X_imputation`` if zero is inappropriate.
+
     Point forecasts are medians. No API key is required.
     The backend predicts horizons jointly within each block and rolls longer
     horizons forward using quantile-based prediction paths. The linear-model option
     ``forecast_strategy`` is not supported; backend block recursion remains enabled.
-    Other constructor options are passed to ``ForecastModel``.
 
     Parameters
     ----------
@@ -46,6 +49,11 @@ class ForecastT0(ForecastModel):
         Other requested quantiles are interpolated or extrapolated by the backend.
     device : str
         PyTorch device. Defaults to ``cpu``.
+
+    Notes
+    -----
+    Additional keyword arguments, such as ``label`` and ``formula``, go to
+    ``ForecastModel``.
     """
 
     _supports_quantiles = True

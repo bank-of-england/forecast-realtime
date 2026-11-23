@@ -25,12 +25,15 @@ def _load_forecaster(model_id, device):
 class ForecastTimesFM(ForecastModel):
     """Forecast locally with pretrained TimesFM 3.0 weights.
 
-    Fit stores the context and loads the pretrained model without fine-tuning.
+    ``fit()`` stores the history and loads the checkpoint without fine-tuning.
+    Pass known future predictor values as ``X`` to ``forecast()``. TimesFM
+    receives the history and future values of those predictors, and only the
+    history of predictors with no values in the forecast horizon.
+
     Point forecasts are medians. Requested quantiles are linearly interpolated
     within the checkpoint's output grid; extrapolation is not supported.
     The backend interpolates missing observations and owns its
     multi-horizon inference; ``forecast_strategy`` is not supported.
-    Other constructor options are passed to ``ForecastModel``.
 
     TimesFM 3.0 weights have a separate non-commercial, non-production licence.
     Commercial or production use of downloaded weights is not permitted.
@@ -44,6 +47,11 @@ class ForecastTimesFM(ForecastModel):
         parameters with nine quantiles from 0.1 to 0.9.
     device : str
         PyTorch device. Defaults to ``cpu``.
+
+    Notes
+    -----
+    Additional keyword arguments, such as ``label`` and ``formula``, go to
+    ``ForecastModel``.
     """
 
     _supports_quantiles = True

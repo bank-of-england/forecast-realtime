@@ -27,7 +27,7 @@ dependencies = [
     # Remove this constraint when forecast-evaluation resolves the compatibility issue.
     "statsmodels>=0.14.0,<0.15.0",
     "forecast_evaluation>=0.1.13",
-    "pandas >= 3.0.3",
+    "pandas >= 2.3.3",
     "scipy >= 1.17.1",
     "tqdm >= 4.67.3",
     "numpy >= 2.4.5",
@@ -70,6 +70,8 @@ models = [
     "forecast_realtime[t0]",
     "forecast_realtime[chronos2]",
     "forecast_realtime[timesfm]",
+    "forecast_realtime[tabicl]",
+    "forecast_realtime[tabpfn]",
 ]
 
 ridge = ["scikit-learn >= 1.8.0"]
@@ -82,6 +84,8 @@ nowcast_midas = ["nowcast-midas>=0.0.2"]
 t0 = ["tfc-t0[torch]>=0.6.0"]
 chronos2 = ["chronos-forecasting>=2.3.0"]
 timesfm = ["timesfm[torch]>=3.0.2,<4"]
+tabicl = ["tabicl[forecast]>=2.2,<3"]
+tabpfn = ["tabpfn-time-series>=1.4,<2"]
 
 [build-system]
 requires = ["setuptools"]
