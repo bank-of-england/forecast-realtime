@@ -970,6 +970,9 @@ class ForecastModel(ABC):
     ):
         """Fit the model by orchestrating the preparation stages."""
         _validate_X_imputation(X_imputation)
+        formula = getattr(self, "_formula", None)
+        if formula is not None and formula.raw_X_only:
+            y_lags, X_lags, dummies = 0, 0, None
         mapping, mapping_source = self._resolve_mapping(data_transformation)
         data, frequency = data.resolve_frequencies(
             mapping,

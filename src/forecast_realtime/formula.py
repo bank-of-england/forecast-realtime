@@ -7,6 +7,8 @@ class Formula:
     Supports:
     - Basic: "y ~ x1 + x2" (select y and specific X columns)
     - Wildcard: "y ~ ." (y with all X columns)
+    - Raw wildcard: "y ~ raw(.)" (all supplied X columns, 
+    without generated lags or dummies)
     - Future: interactions, polynomial terms, transformations
     """
 
@@ -41,7 +43,8 @@ class Formula:
         if not rhs:
             raise ValueError("Right side of formula (X variables) cannot be empty")
 
-        self.has_wildcard = rhs == "."
+        self.raw_X_only = rhs == "raw(.)"
+        self.has_wildcard = rhs == "." or self.raw_X_only
         if self.has_wildcard:
             self.X_cols = None  # Will be determined at extraction time
         else:
