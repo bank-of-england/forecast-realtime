@@ -7,7 +7,7 @@ class Formula:
     Supports:
     - Basic: "y ~ x1 + x2" (select y and specific X columns)
     - Wildcard: "y ~ ." (y with all X columns)
-    - Raw wildcard: "y ~ raw(.)" (all supplied X columns, 
+    - Raw wildcard: "y ~ raw(.)" (all supplied X columns,
     without generated lags or dummies)
     - Future: interactions, polynomial terms, transformations
     """
