@@ -370,7 +370,8 @@ class ModelData:
         rows = rows.loc[rows["vintage_date"].le(vintage)]
         if not carry_forward_history:
             conditioning = [
-                stream for stream, entry in enumerate(self._catalogue)
+                stream
+                for stream, entry in enumerate(self._catalogue)
                 if entry["kind"] == "conditioning"
             ]
             rows = rows.loc[
