@@ -355,8 +355,8 @@ class ModelData:
             metadata = metadata.loc[metadata["_row"].isin(rows.index)]
         return self._replace(observations=rows, metadata=metadata, layouts=layouts)
 
-    def as_of(self, vintage):
-        """Select the latest available release in each selected archive stream."""
+    def as_of(self, vintage, *, carry_forward_history: bool = True):
+        """Select as-of releases, optionally restricting history to the exact vintage."""
         if self._semantics != "archive":
             raise ValueError(
                 "as_of() requires a revision archive, not a supplied trajectory "
@@ -366,7 +366,16 @@ class ModelData:
         if self._layouts:
             ids = {s for streams, _, _ in self._layouts.values() for s in streams}
             rows = rows.loc[rows["series"].isin(ids)]
-        rows = rows.loc[rows["vintage_date"].le(pd.Timestamp(vintage))]
+        vintage = pd.Timestamp(vintage)
+        rows = rows.loc[rows["vintage_date"].le(vintage)]
+        if not carry_forward_history:
+            conditioning = [
+                stream for stream, entry in enumerate(self._catalogue)
+                if entry["kind"] == "conditioning"
+            ]
+            rows = rows.loc[
+                rows["vintage_date"].eq(vintage) | rows["series"].isin(conditioning)
+            ]
         rows = rows.sort_values("vintage_date", ascending=False, kind="stable")
         rows = rows.drop_duplicates(["series", "date"])
         return self._replace(observations=rows)
