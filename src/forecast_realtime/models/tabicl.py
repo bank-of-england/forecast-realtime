@@ -9,12 +9,14 @@ from tqdm import tqdm
 
 from forecast_realtime.forecast_model import ForecastModel
 
-
 _show_series_progress = ContextVar("tabicl_show_series_progress", default=True)
 
 
 def _series_progress(iterable, **options):
-    if options.get("desc") == "Predicting time series" and not _show_series_progress.get():
+    if (
+        options.get("desc") == "Predicting time series"
+        and not _show_series_progress.get()
+    ):
         options["disable"] = True
     return tqdm(iterable, **options)
 
