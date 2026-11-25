@@ -1,10 +1,22 @@
 """Local forecasting with TabICLv2."""
 
+import sys
+from contextvars import ContextVar
 from pathlib import Path
 
 import pandas as pd
+from tqdm import tqdm
 
 from forecast_realtime.forecast_model import ForecastModel
+
+
+_show_series_progress = ContextVar("tabicl_show_series_progress", default=True)
+
+
+def _series_progress(iterable, **options):
+    if options.get("desc") == "Predicting time series" and not _show_series_progress.get():
+        options["disable"] = True
+    return tqdm(iterable, **options)
 
 
 def _timestamps(frame):
@@ -35,6 +47,8 @@ class ForecastTabICLv2(ForecastModel):
     estimator_kwargs : dict | None
         Options for the underlying TabICL regressor, passed to the forecaster
         as ``tabicl_config``.
+    progressbar : bool
+        Show TabICL's per-series prediction bar. Default is False.
 
     Notes
     -----
@@ -53,12 +67,14 @@ class ForecastTabICLv2(ForecastModel):
         device: str = "cpu",
         model_id: str | Path | None = None,
         estimator_kwargs: dict | None = None,
+        progressbar: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.device = device
         self.model_id = model_id
         self.estimator_kwargs = dict(estimator_kwargs or {})
+        self.progressbar = progressbar
 
     def _fit(self, y, X=None):
         try:
@@ -81,6 +97,9 @@ class ForecastTabICLv2(ForecastModel):
             else:
                 raise FileNotFoundError(f"TabICL checkpoint file not found: {path}")
         self._backend = TabICLForecaster(point_estimate="median", tabicl_config=config)
+        dispatch = sys.modules.get("tabicl.forecast._dispatch")
+        if dispatch is not None and getattr(dispatch, "tqdm", None) is tqdm:
+            dispatch.tqdm = _series_progress
         return self
 
     def _forecast(self, steps=1, X=None, y=None, forecast_origin=None, quantiles=None):
@@ -117,11 +136,15 @@ class ForecastTabICLv2(ForecastModel):
             if regular and len(future.columns) == 2
             else {"future_df": future}
         )
-        prediction = self._backend.predict_df(
-            context_df=context,
-            quantiles=[0.5] if quantiles is None else list(quantiles),
-            **options,
-        ).reorder_levels(index.names)
+        token = _show_series_progress.set(self.progressbar)
+        try:
+            prediction = self._backend.predict_df(
+                context_df=context,
+                quantiles=[0.5] if quantiles is None else list(quantiles),
+                **options,
+            ).reorder_levels(index.names)
+        finally:
+            _show_series_progress.reset(token)
         if (
             not prediction.index.is_unique
             or len(prediction) != len(index)
