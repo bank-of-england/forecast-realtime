@@ -355,8 +355,8 @@ class ModelData:
             metadata = metadata.loc[metadata["_row"].isin(rows.index)]
         return self._replace(observations=rows, metadata=metadata, layouts=layouts)
 
-    def as_of(self, vintage):
-        """Select the latest available release in each selected archive stream."""
+    def as_of(self, vintage, *, carry_forward_history: bool = True):
+        """Select as-of releases, optionally restricting history to the exact vintage."""
         if self._semantics != "archive":
             raise ValueError(
                 "as_of() requires a revision archive, not a supplied trajectory "
@@ -366,7 +366,17 @@ class ModelData:
         if self._layouts:
             ids = {s for streams, _, _ in self._layouts.values() for s in streams}
             rows = rows.loc[rows["series"].isin(ids)]
-        rows = rows.loc[rows["vintage_date"].le(pd.Timestamp(vintage))]
+        vintage = pd.Timestamp(vintage)
+        rows = rows.loc[rows["vintage_date"].le(vintage)]
+        if not carry_forward_history:
+            conditioning = [
+                stream
+                for stream, entry in enumerate(self._catalogue)
+                if entry["kind"] == "conditioning"
+            ]
+            rows = rows.loc[
+                rows["vintage_date"].eq(vintage) | rows["series"].isin(conditioning)
+            ]
         rows = rows.sort_values("vintage_date", ascending=False, kind="stable")
         rows = rows.drop_duplicates(["series", "date"])
         return self._replace(observations=rows)
@@ -1117,9 +1127,10 @@ class ModelData:
             )
             rows["metric"] = rows["series"].map(lambda s: self._catalogue[s]["metric"])
             return rows.drop(columns="series").reset_index(drop=True)
-        metadata = self._metadata.loc[
-            self._metadata["_row"].isin(self._observations.index)
-        ]
+        metadata = self._metadata
+        present = metadata["_row"].isin(self._observations.index)
+        if not present.all():
+            metadata = metadata.loc[present]
         rows = self._observations.loc[metadata["_row"]].copy()
         rows.index = metadata.index
         result = metadata.drop(columns="_row").copy()

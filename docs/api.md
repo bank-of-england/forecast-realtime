@@ -147,3 +147,33 @@ current source.
     options:
       show_source: false
       show_root_heading: true
+
+::: forecast_realtime.models.timestral.ForecastTimestral
+    options:
+      show_source: false
+      show_root_heading: true
+
+::: forecast_realtime.models.t0.ForecastT0
+    options:
+      show_source: false
+      show_root_heading: true
+
+::: forecast_realtime.models.chronos2.ForecastChronos2
+    options:
+      show_source: false
+      show_root_heading: true
+
+::: forecast_realtime.models.timesfm.ForecastTimesFM
+    options:
+      show_source: false
+      show_root_heading: true
+
+::: forecast_realtime.models.tabicl.ForecastTabICLv2
+    options:
+      show_source: false
+      show_root_heading: true
+
+::: forecast_realtime.models.tabpfn.ForecastTabPFN
+    options:
+      show_source: false
+      show_root_heading: true

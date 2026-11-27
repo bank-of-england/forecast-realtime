@@ -73,7 +73,6 @@ def snapshot_decompositions(frame):
     result = frame.sort_values(_DECOMPOSITION_SORT_COLUMNS).reset_index(drop=True)
     for column in ("date", "vintage_date", "base_vintage_date"):
         result[column] = result[column].dt.strftime("%Y-%m-%d")
-        result[column] = result[column].where(result[column].notna(), None)
     for column in ("contribution", "weight", "news"):
         result[column] = result[column].round(5)
     result["revision_source"] = result["revision_source"].astype(object)

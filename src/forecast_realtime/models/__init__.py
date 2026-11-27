@@ -18,6 +18,12 @@ _MODEL_SPECS = {
     "ForecastMIDAS": ("midas", ("nowcast_midas",), "nowcast_midas"),
     "ForecastMIDASCombo": ("midas_combo", ("nowcast_midas",), "nowcast_midas"),
     "ForecastMultiMIDAS": ("multi_midas", ("nowcast_midas",), "nowcast_midas"),
+    "ForecastTimestral": ("timestral", (), None),
+    "ForecastT0": ("t0", (), "t0"),
+    "ForecastChronos2": ("chronos2", (), "chronos2"),
+    "ForecastTimesFM": ("timesfm", (), "timesfm"),
+    "ForecastTabICLv2": ("tabicl", (), "tabicl"),
+    "ForecastTabPFN": ("tabpfn", (), None),
 }
 
 
@@ -66,6 +72,12 @@ __all__ = [
     "ForecastMultiMIDAS",
     "ForecastOLS",
     "ForecastBridgeOLS",
+    "ForecastTimestral",
+    "ForecastT0",
+    "ForecastChronos2",
+    "ForecastTimesFM",
+    "ForecastTabICLv2",
+    "ForecastTabPFN",
 ]
 
 

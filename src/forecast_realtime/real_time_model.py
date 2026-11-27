@@ -184,6 +184,7 @@ class RealTimeModel:
         drop_transformation_nans: bool = True,
         *,
         quantiles: bool | list[float] = False,
+        carry_forward_history: bool = True,
         **kwargs,
     ):
         """Produce forecasts in real-time.
@@ -254,6 +255,9 @@ class RealTimeModel:
             last_vintage : str, optional
                 The last vintage to use for forecasting.
                 Defaults to None, which means the latest vintage in the data will be used.
+            carry_forward_history : bool, optional
+                Use the latest outturn for each series and reference date on or
+                before the vintage (default).
             y_lags : int, optional
                 Number of autoregressive lags of y to append to X before fitting.
                 When provided, overrides any ``y_lags`` set on the model itself.
@@ -329,6 +333,8 @@ class RealTimeModel:
             reconstruct_levels = False
         if type(steps) is not int or steps < 1:
             raise ValueError("steps must be a positive integer")
+        if not isinstance(carry_forward_history, bool):
+            raise TypeError("carry_forward_history must be a boolean")
 
         # Validate the extra forecast label
         if label is not None and not isinstance(label, str):
@@ -548,6 +554,7 @@ class RealTimeModel:
         common = dict(
             steps=steps,
             label=label,
+            carry_forward_history=carry_forward_history,
             first_forecast_horizon=ffh_dict,
             frequency=step_frequency,
             y_lags=y_lags,
@@ -758,6 +765,7 @@ def _loop_through_vintages(
     drop_transformation_nans=True,
     model_kwargs=None,
     quantiles=False,
+    carry_forward_history=True,
 ):
     """Loop through selected model data by vintage and produce forecasts.
 
@@ -776,16 +784,24 @@ def _loop_through_vintages(
     min_ffh = min(first_forecast_horizon.values()) if first_forecast_horizon else 0
 
     forecasts_list = []
-    forecast_metrics = None
     decomp_rows = []  # Collect decomposition rows if decomp=True
     prev_vintage_state = {}  # Track previous vintage's model state and decomp
 
     for vintage in tqdm(vintages, desc=f"Running {model.label}"):
-        vintage_data = data.as_of(vintage)
+        vintage_data = data.as_of(vintage, carry_forward_history=carry_forward_history)
         y_vintage = vintage_data.to_wide("y")
         vintage_period = pd.Period(vintage, freq=frequency)
 
         model_formula = getattr(model, "_formula", None)
+        if not carry_forward_history and model_formula:
+            missing = set(model_formula.y_cols).difference(y_vintage.columns)
+            if missing:
+                warnings.warn(
+                    f"Model {model.label!r}: targets {sorted(missing)} are absent "
+                    f"from the snapshot at {vintage}. Skipping this vintage.",
+                    UserWarning,
+                )
+                continue
         y_vintage_for_cutoff = (
             model_formula.extract_y(y_vintage) if model_formula else y_vintage
         )
@@ -973,6 +989,7 @@ def _loop_through_vintages(
             ].copy()
         forecast_df["date"] = forecast_df["date"].dt.normalize()
         forecast_df["vintage_date"] = vintage
+        forecast_df["metric"] = forecast_df["variable"].map(forecast_metrics)
 
         # save
         forecasts_list.append(forecast_df)
@@ -1004,8 +1021,6 @@ def _loop_through_vintages(
             all_forecasts["_target_minus_vintage"] >= all_forecasts["_min_h"]
         ].copy()
         all_forecasts = all_forecasts.drop(columns=["_target_minus_vintage", "_min_h"])
-
-    all_forecasts["metric"] = all_forecasts["variable"].map(forecast_metrics)
 
     # add additional columns to work with ForecastData
     label_forecast = model_vintage.label

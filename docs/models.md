@@ -15,6 +15,11 @@ Install the extra for the model you use, for example `pip install
 | `ForecastBVAR` | Bayesian VAR with conditional forecasting |
 | `ForecastMIDAS`, `ForecastMultiMIDAS`, `ForecastMIDASCombo` | Mixed-frequency (MIDAS) models |
 | `ForecastRlm` | Wrapper for an R-based `lm()` model |
+| `ForecastTimestral` | Local Mistral Timestral forecasts with pretrained weights |
+| `ForecastT0` | Local forecasts with The Forecasting Company's t0 weights |
+| `ForecastChronos2` | Local Amazon Chronos-2 forecasts with pretrained weights |
+| `ForecastTimesFM` | Local Google TimesFM 3.0 forecasts with pretrained weights |
+| `ForecastTabICLv2`, `ForecastTabPFN` | Multi-step point and quantile forecasts with TabICL and the local TabPFN regressor |
 
 ```python
 import forecast_evaluation as fe
@@ -117,6 +122,28 @@ validity of cross-validation for evaluating autoregressive time series
 prediction", *Computational Statistics & Data Analysis*, 120, 70-83.
 https://doi.org/10.1016/j.csda.2017.11.003
 
+## Foundation models
+
+Foundation models run locally and download pretrained weights on demand unless
+the weights are already cached. For example, install Chronos-2 with
+`pip install "forecast-realtime[chronos2]"` and pass a date-indexed DataFrame
+with one column per target:
+
+```python
+import forecast_realtime as rt
+
+model = rt.models.ForecastChronos2().fit(y_train)
+point = model.forecast(steps=3)
+interval = model.forecast(steps=3, quantiles=[0.1, 0.9])
+```
+
+TabICLv2 and TabPFN forecast each target independently; the other four models
+forecast the targets jointly. To use known future predictors, pass their history
+as `X` to `fit()` and their future values as `X` to `forecast()`. TabICLv2 and
+TabPFN ignore predictors with no values in the forecast period. See the
+[API reference](api.md) for checkpoint options and each model's treatment of
+missing predictors.
+
 ## Models in other languages
 
 Models written in R, MATLAB or Julia can be wrapped with `RModel`,
@@ -146,7 +173,8 @@ signatures.
 
 ## Density forecasts
 
-Built-in density support is available for `ForecastOLS` and `ForecastBVAR`.
+`ForecastOLS`, `ForecastBVAR` and all six [foundation models](#foundation-models)
+support quantile forecasts.
 Penalised regressions (`ForecastRidge`, `ForecastLasso`, and
 `ForecastElasticNet`), `ForecastBridgeOLS`, `RandomForest`, and `XGBoost` do
 not support quantile forecasts.
