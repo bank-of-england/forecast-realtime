@@ -27,7 +27,7 @@ dependencies = [
     # Remove this constraint when forecast-evaluation resolves the compatibility issue.
     "statsmodels>=0.14.0,<0.15.0",
     "forecast_evaluation>=0.1.13",
-    "pandas >= 2.3.3",
+    "pandas >= 3.0.3",
     "scipy >= 1.17.1",
     "tqdm >= 4.67.3",
     "numpy >= 2.4.5",
@@ -85,7 +85,7 @@ t0 = ["tfc-t0[torch]>=0.6.0"]
 chronos2 = ["chronos-forecasting>=2.3.0"]
 timesfm = ["timesfm[torch]>=3.0.2,<4"]
 tabicl = ["tabicl[forecast]>=2.2,<3"]
-tabpfn = ["tabpfn-time-series>=1.4,<2"]
+tabpfn = ["tabpfn>=9.2,<10"]
 
 [build-system]
 requires = ["setuptools"]

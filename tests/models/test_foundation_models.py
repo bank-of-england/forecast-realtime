@@ -94,9 +94,8 @@ def targets():
     )
 
 
-@pytest.mark.parametrize("public_name", ["ForecastTabICLv2", "ForecastTabPFN"])
-def test_tabular_foundation_forecasts(public_name, monkeypatch, targets):
-    model_class = getattr(rt.models, public_name)
+def test_tabicl_foundation_forecasts(monkeypatch, targets):
+    model_class = rt.models.ForecastTabICLv2
     assert model_class.__bases__ == (rt.ForecastModel,)
     with pytest.raises(TypeError, match="forecast_strategy"):
         model_class(forecast_strategy="recursive")
@@ -107,7 +106,9 @@ def test_tabular_foundation_forecasts(public_name, monkeypatch, targets):
     predictions = pd.DataFrame({"target": [8, 9, 10, 18, 19, 20]}, index=index)
     backend = Mock()
     backend.predict_df.return_value = predictions.iloc[::-1]
-    _install_tabular_test_backend(public_name, Mock(return_value=backend), monkeypatch)
+    _install_tabular_test_backend(
+        "ForecastTabICLv2", Mock(return_value=backend), monkeypatch
+    )
     model = model_class().fit(targets)
     backend.predict_df.assert_not_called()
     result = model.forecast(steps=3)
@@ -131,12 +132,11 @@ def _install_tabular_test_backend(public_name, factory, monkeypatch):
     else:
         monkeypatch.setitem(
             sys.modules,
-            "tabpfn_time_series",
-            SimpleNamespace(
-                TABPFN_DEFAULT_CONFIG={},
-                TabPFNMode=SimpleNamespace(LOCAL="local"),
-                TabPFNTSPipeline=factory,
-            ),
+            "tabpfn",
+            SimpleNamespace(TabPFNRegressor=factory),
+        )
+        monkeypatch.setitem(
+            sys.modules, "tabpfn.constants", SimpleNamespace(ModelVersion=str)
         )
 
 
@@ -150,13 +150,11 @@ def test_tabpfn_model_path(model_path, monkeypatch, targets):
         model_path=model_path, estimator_kwargs={"model_path": "legacy.ckpt"}
     )
     model.fit(targets)
-    factory.assert_called_once_with(
-        tabpfn_mode="local",
-        tabpfn_model_config={
-            "device": "cpu",
-            "model_path": "legacy.ckpt" if model_path is None else model_path,
-        },
-    )
+    factory.assert_not_called()
+    assert model._regressor_config == {
+        "device": "cpu",
+        "model_path": "legacy.ckpt" if model_path is None else model_path,
+    }
 
 
 def test_tabpfn_model_id(monkeypatch, targets):
@@ -167,10 +165,7 @@ def test_tabpfn_model_id(monkeypatch, targets):
         model_id=checkpoint, estimator_kwargs={"model_path": "legacy.ckpt"}
     ).fit(targets)
     assert model.model_path == model.model_id == checkpoint
-    factory.assert_called_once_with(
-        tabpfn_mode="local",
-        tabpfn_model_config={"device": "cpu", "model_path": checkpoint},
-    )
+    assert model._regressor_config == {"device": "cpu", "model_path": checkpoint}
     with pytest.raises(TypeError, match="only one of model_id and model_path"):
         rt.models.ForecastTabPFN(model_id=checkpoint, model_path="other.ckpt")
 
@@ -202,7 +197,7 @@ def test_tabicl_model_id(monkeypatch, targets, tmp_path):
     ("public_name", "package"),
     [
         ("ForecastTabICLv2", "tabicl"),
-        ("ForecastTabPFN", "tabpfn_time_series"),
+        ("ForecastTabPFN", "tabpfn"),
     ],
 )
 def test_tabular_foundation_fit_errors(public_name, package, monkeypatch, targets):
@@ -213,10 +208,7 @@ def test_tabular_foundation_fit_errors(public_name, package, monkeypatch, target
     assert error.value.name == package
 
 
-@pytest.mark.parametrize("public_name", ["ForecastTabICLv2", "ForecastTabPFN"])
-def test_tabular_foundation_known_covariates_and_quantiles(
-    public_name, monkeypatch, targets
-):
+def test_tabicl_known_covariates_and_quantiles(monkeypatch, targets):
     dates = pd.date_range(targets.index[0], periods=len(targets) + 2, freq="ME")
     regressors = pd.DataFrame(
         {"signal": np.arange(len(dates)), "past_only": 1.0}, index=dates
@@ -241,20 +233,135 @@ def test_tabular_foundation_known_covariates_and_quantiles(
         ]
 
     factory = Mock(return_value=SimpleNamespace(predict_df=predict))
-    _install_tabular_test_backend(public_name, factory, monkeypatch)
-    model = getattr(rt.models, public_name)()
+    _install_tabular_test_backend("ForecastTabICLv2", factory, monkeypatch)
+    model = rt.models.ForecastTabICLv2()
     model.fit(targets, X=regressors.loc[targets.index])
     result = model.forecast(steps=2, X=regressors, quantiles=[0.1, 0.9])
     assert result["value"].tolist() == [0, 10, 1, 11, 2, 12, 3, 13]
     assert result["quantile"].tolist() == [0.1, 0.9] * 4
-    if public_name == "ForecastTabPFN":
-        factory.assert_called_once_with(
-            tabpfn_mode="local", tabpfn_model_config={"device": "cpu"}
-        )
-    else:
-        factory.assert_called_once_with(
-            point_estimate="median", tabicl_config={"device": "cpu"}
-        )
+    factory.assert_called_once_with(
+        point_estimate="median", tabicl_config={"device": "cpu"}
+    )
+
+
+def test_tabpfn_direct_forecasts(monkeypatch, targets):
+    dates = pd.date_range(targets.index[0], periods=len(targets) + 2, freq="ME")
+    predictors = pd.DataFrame(
+        {"signal": np.arange(len(dates), dtype=float), "past_only": 1.0}, index=dates
+    )
+    predictors.loc[dates[-2:], "past_only"] = np.nan
+    factory = Mock()
+    factory.create_default_for_version.return_value.model_path = "default-3.5"
+    _install_tabular_test_backend("ForecastTabPFN", factory, monkeypatch)
+    monkeypatch.setitem(sys.modules, "tabpfn_time_series", None)
+    calls = []
+
+    class Regressor:
+        def fit(self, features, values):
+            calls.append((features.copy(), values.copy()))
+            self.last = values[-1]
+
+        def predict(self, features, *, output_type, quantiles):
+            assert output_type == "main"
+            assert features.shape == (2, 46)
+            np.testing.assert_equal(features[:, 0], [8, 9])
+            np.testing.assert_equal(features[:, 1], [7, 8])
+            np.testing.assert_equal(features[:, 2], [np.nan, np.nan])
+            assert np.isfinite(features[:, 4:]).all()
+            return {
+                "median": self.last + np.array([1, 2]),
+                "quantiles": [
+                    self.last + np.array([1, 2]) + level for level in quantiles
+                ],
+            }
+
+    factory.side_effect = lambda **kwargs: Regressor()
+    model = rt.models.ForecastTabPFN(estimator_kwargs={"n_estimators": 2}).fit(
+        targets, X=predictors.loc[targets.index]
+    )
+    factory.create_default_for_version.assert_called_once_with("v3.5")
+    assert not calls
+    point = model.forecast(steps=2, X=predictors)
+    result = model.forecast(steps=2, X=predictors, quantiles=[0.1, 0.9])
+    assert factory.call_count == 4
+    factory.assert_called_with(device="cpu", n_estimators=2, model_path="default-3.5")
+    for (features, values), name in zip(calls, list(targets) * 2, strict=True):
+        np.testing.assert_equal(values, targets[name].to_numpy())
+        np.testing.assert_equal(features[:, 0], np.arange(len(targets)))
+    assert point["value"].tolist() == [8, 18, 9, 19]
+    assert result["date"].tolist() == dates[-2:].repeat(4).tolist()
+    assert result["variable"].tolist() == ["first", "first", "second", "second"] * 2
+    np.testing.assert_allclose(
+        result["value"], [8.1, 8.9, 18.1, 18.9, 9.1, 9.9, 19.1, 19.9]
+    )
+
+
+def test_tabpfn_time_features():
+    from forecast_realtime.models.tabpfn import _feature_matrix
+
+    dates = pd.date_range("2018-01-31", periods=64, freq="ME")
+    position = np.arange(len(dates))
+    target = pd.Series(np.sin(2 * np.pi * position[:-4] / 12), index=dates[:-4])
+    features = _feature_matrix(target, dates[-4:], None, 12)
+    assert features.shape == (64, 42)
+    np.testing.assert_equal(features[:, 0], position)
+    np.testing.assert_equal(features[:, 1], dates.year)
+    np.testing.assert_allclose(
+        features[:, 16], np.sin(2 * np.pi * (dates.month - 1) / 11), atol=1e-6
+    )
+    np.testing.assert_allclose(
+        features[:, 18], np.sin(2 * np.pi * position / 12), atol=1e-6
+    )
+    np.testing.assert_equal(features[:, -2:], 0)
+    flat = _feature_matrix(target.iloc[:1], dates[-4:], None, 12)
+    np.testing.assert_equal(flat[:, 18:], 0)
+
+
+@pytest.mark.xdist_group(name="pretrained_foundation")
+@pytest.mark.parametrize("with_predictors", [False, True])
+def test_pretrained_tabpfn_ts_14_parity(with_predictors):
+    if os.environ.get("FORECAST_REALTIME_PRETRAINED") != "1":
+        pytest.skip("Set FORECAST_REALTIME_PRETRAINED=1 to compare real checkpoints.")
+    reference = pytest.importorskip("tabpfn_time_series")
+    dates = pd.date_range("2018-01-31", periods=64, freq="ME")
+    position = np.arange(len(dates))
+    signal = np.cos(position / 3)
+    values = np.sin(2 * np.pi * position / 12) + 0.3 * signal
+    values[15] = np.nan
+    target = pd.DataFrame({"series": values[:-4]}, index=dates[:-4])
+    predictors = pd.DataFrame({"known": signal}, index=dates) if with_predictors else None
+    context = pd.DataFrame(
+        {
+            "item_id": "series",
+            "timestamp": target.index,
+            "target": target["series"].to_numpy(),
+        }
+    )
+    future = pd.DataFrame({"item_id": "series", "timestamp": dates[-4:]})
+    if with_predictors:
+        context["covariate_0"] = signal[:-4]
+        future["covariate_0"] = signal[-4:]
+    config = {
+        "device": "cpu",
+        "model_path": "tabpfn-v2-regressor.ckpt",
+        "n_estimators": 1,
+        "random_state": 42,
+    }
+    levels = [0.1, 0.5, 0.9]
+    pipeline = reference.TabPFNTSPipeline(
+        tabpfn_mode=reference.TabPFNMode.LOCAL, tabpfn_model_config=config
+    )
+    expected = pipeline.predict_df(context_df=context, future_df=future, quantiles=levels)
+    expected.columns = expected.columns.map(str)
+    model = rt.models.ForecastTabPFN(estimator_kwargs=config).fit(
+        target, X=None if predictors is None else predictors.loc[target.index]
+    )
+    point = model.forecast(steps=4, X=predictors)
+    intervals = model.forecast(steps=4, X=predictors, quantiles=levels)
+    np.testing.assert_allclose(point["value"], expected["target"], atol=1e-6)
+    np.testing.assert_allclose(
+        intervals["value"], expected[list(map(str, levels))].to_numpy().ravel(), atol=1e-6
+    )
 
 
 @pytest.mark.xdist_group(name="pretrained_foundation")
